@@ -4732,14 +4732,41 @@ export function createDelegationGateHook(
 		if (targetAgent === 'coder' || targetAgent === 'reviewer') {
 			// Reuse the same broad text-field extraction other checks in this file
 			// use (see resolveDelegatedPlanTaskId / taskLooksLikePlanCritic) so the
-			// ACCEPTANCE line is found regardless of which arg carried the prompt.
-			const acceptancePromptText = ACCEPTANCE_ARGS_FIELDS.map(
+			let acceptancePromptText = ACCEPTANCE_ARGS_FIELDS.map(
 				(field) => args[field],
 			)
 				.filter((value): value is string => typeof value === 'string')
 				.join('\n');
-			const acceptanceCheck =
+			let acceptanceCheck =
 				validateCoderReviewerAcceptanceField(acceptancePromptText);
+			if (!acceptanceCheck.valid && config.hooks?.auto_inject_acceptance) {
+				// Auto-inject a synthesized ACCEPTANCE: requirement block into args so delegations
+				// without explicit ACCEPTANCE lines proceed safely without triggering gate rejection.
+				const defaultRequirement = '- Complete verification of changes, tests, and documentation';
+				const targetField: (typeof ACCEPTANCE_ARGS_FIELDS)[number] =
+					(typeof args.prompt === 'string'
+						? 'prompt'
+						: ACCEPTANCE_ARGS_FIELDS.find((f) => typeof args[f] === 'string')) ?? 'prompt';
+				const existingVal = typeof args[targetField] === 'string' ? (args[targetField] as string) : '';
+
+				if (acceptanceCheck.reason === 'acceptance_field_empty') {
+					args[targetField] = existingVal.replace(
+						/^ACCEPTANCE:[ \t]*$/im,
+						`ACCEPTANCE:\n${defaultRequirement}`,
+					);
+				} else {
+					args[targetField] = existingVal
+						? `${existingVal}\n\nACCEPTANCE:\n${defaultRequirement}\n`
+						: `ACCEPTANCE:\n${defaultRequirement}\n`;
+				}
+				logger.warn(
+					`[delegation-gate] Auto-injected default ACCEPTANCE requirement into ${targetField} for ${targetAgent} dispatch (${acceptanceCheck.reason})`,
+				);
+				acceptancePromptText = ACCEPTANCE_ARGS_FIELDS.map((field) => args[field])
+					.filter((value): value is string => typeof value === 'string')
+					.join('\n');
+				acceptanceCheck = validateCoderReviewerAcceptanceField(acceptancePromptText);
+			}
 			if (!acceptanceCheck.valid) {
 				const detail =
 					acceptanceCheck.reason === 'acceptance_field_empty'

@@ -269,6 +269,12 @@ export const HooksConfigSchema = z.object({
 		.min(1)
 		.max(1440)
 		.default(30),
+	/**
+	 * Auto-inject default ACCEPTANCE: block into coder and reviewer dispatches lacking one.
+	 * When true, dispatches without explicit ACCEPTANCE criteria automatically receive
+	 * a synthesized default requirement instead of being fail-closed rejected.
+	 */
+	auto_inject_acceptance: z.boolean().default(false),
 });
 
 export type HooksConfig = z.infer<typeof HooksConfigSchema>;

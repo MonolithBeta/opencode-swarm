@@ -315,6 +315,10 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 1440
+        },
+        "auto_inject_acceptance": {
+          "default": false,
+          "type": "boolean"
         }
       }
     },
