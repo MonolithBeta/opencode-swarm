@@ -1,0 +1,15 @@
+{
+  "label": "v2",
+  "host": "opencode v2.0.29",
+  "distSha": "b587ced33a3067303c365d310debd6b9ffec253ca4aa2e52ac50f49840f96363",
+  "attempt": 2,
+  "exit": 0,
+  "wallMs": 16262,
+  "hostStartToPluginInitMs": null,
+  "pluginInitToSessionCreatedMs": null,
+  "sessionCreatedToSyncLastMs": null,
+  "syncDurationMs": null,
+  "sessionCreatedToModelStreamMs": null,
+  "firstTurnArrivedBeforeSyncDone": null,
+  "syncCompletionVisible": false
+}

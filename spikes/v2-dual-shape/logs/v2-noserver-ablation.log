@@ -1,0 +1,9 @@
+HOST: opencode v2.0.29 | C:\Users\Brett\AppData\Roaming\npm\node_modules\@opencode\cli\node_modules\@opencode\cli-windows-x64\bin\opencode.exe
+ABLATION: removed export key 'server' (wrapper module; pre-validated keys=id,setup)
+ABLATION: expected=loads (key is inert on v2) observed=plugin loaded (banner present) — MATCH
+RUN: 2026-10-16T23:26:35.878Z | exit=0 | dist sha256 b587ced33a3067303c365d310debd6b9ffec253ca4aa2e52ac50f49840f96363
+--- verbatim host output (captured in full; lightly excerpted below) ---
+timestamp=2026-10-16T23:26:17.613Z level=INFO run=a4c57189 msg="loading plugin" id="C:\\Users\\Brett\\AppData\\Local\\Temp\\2909-scratch-G2tnYt\\2909-v2proj-3oHJ8r\\.opencode\\plugins\\local-spike.js" entrypoint=file:///C:/Users/Brett/AppData/Local/Temp/2909-scratch-G2tnYt/2909-v2proj-3oHJ8r/.opencode/plugins/local-spike.js http.span=126 role=server
+[opencode-swarm] running v7.197.3
+[91m[1mError: [0mBLOCKED: bash/shell write to a dynamic path target that cannot be statically resolved (shell variable or command substitution) — rejecting for safety.
+[91m[1mError: [0mBLOCKED: bash/shell write to a dynamic path target that cannot be statically resolved (shell variable or command substitution) — rejecting for safety.

@@ -1,0 +1,45 @@
+HOST: opencode 1.19.0 | C:\OpenCode\opencode.exe
+ABLATION: removed export key 'setup' (wrapper module; pre-validated keys=id,server)
+ABLATION: expected=loads (key is inert on v1) observed=plugin loaded (banner present) — MATCH
+RUN: 2026-10-16T23:25:32.551Z | exit=0 | dist sha256 b587ced33a3067303c365d310debd6b9ffec253ca4aa2e52ac50f49840f96363
+--- verbatim host output (captured in full; lightly excerpted below) ---
+[opencode-swarm 2026-10-16T23:25:31.743Z] architect prompt size {
+    "architect", "explorer", "sme", "researcher", "coder", "reviewer", "test_engineer", "docs", "skill_improver",
+    "critic_architecture_supervisor", "critic_finding_validator", "critic_oversight", "curator_init",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+architect (primary)
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "permission": "write_architecture_supervisor_evidence",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "permission": "write_architecture_supervisor_evidence",
+critic_architecture_supervisor (subagent)
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "permission": "write_architecture_supervisor_evidence",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "permission": "write_architecture_supervisor_evidence",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
+    "permission": "write_architecture_supervisor_evidence",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-windows-pytest-permissionerror-teardown\\*",
+    "pattern": "C:\\Users\\Brett\\.claude\\skills\\zmem-typescript-tsconfig-es2022-error-cause\\*",
