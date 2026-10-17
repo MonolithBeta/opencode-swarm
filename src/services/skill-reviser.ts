@@ -14,6 +14,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { splitSkillFrontmatter } from '../config/skill-contract-digest.js';
 import type { SkillImproverLLMDelegate } from '../hooks/skill-improver-llm-factory.js';
+import { parseMetadataFlowMap } from '../hooks/skill-scoring.js';
 import { warn } from '../utils/logger.js';
 import type { SkillChangelogEntry } from './skill-changelog.js';
 import { appendSkillChangelog } from './skill-changelog.js';
@@ -108,8 +109,42 @@ export function buildDeterministicRevision(
 	// writer never produces frontmatter its own detector rejects.
 	const split = splitSkillFrontmatter(result);
 	let fm = split.frontmatter;
-	const nestedVersion = /^(\s+)version:\s*"?(\d+)"?\s*[ \t]*$/m.exec(fm);
-	if (nestedVersion?.[1]) {
+	// Inline-value `metadata:` (flow maps and any other non-empty inline
+	// value) is rewritten to the canonical block form FIRST (issue #3217):
+	// the version child is bumped in place inside the rewrite, so the anchor
+	// branches below never fire for these inputs and a revision can never
+	// stack a second `metadata:` block beneath an inline one.
+	const inlineMetadata = /^metadata:[ \t]*(\S.*)$/m.exec(fm);
+	const nestedVersion = inlineMetadata
+		? null
+		: /^(\s+)version:\s*"?(\d+)"?\s*[ \t]*$/m.exec(fm);
+	if (inlineMetadata?.[1]) {
+		const flow = parseMetadataFlowMap(inlineMetadata[1]);
+		const childLines: string[] = [];
+		let versionHandled = false;
+		if (flow) {
+			const seen = new Set<string>();
+			for (const [rawKey, rawValue] of flow.pairs) {
+				const key = rawKey.toLowerCase();
+				if (seen.has(key)) continue; // first wins, mirrors the reader
+				seen.add(key);
+				if (key === 'version') {
+					childLines.push(`  version: "${nextVersion}"`);
+					versionHandled = true;
+					continue;
+				}
+				childLines.push(`  ${rawKey}: ${rawValue}`);
+			}
+		} else {
+			// Unbalanced or non-flow inline value: preserve it verbatim as a
+			// quoted child so the rewrite stays lossless and single-key.
+			childLines.push(
+				`  legacy_inline: '${inlineMetadata[1].replace(/'/g, "''")}'`,
+			);
+		}
+		if (!versionHandled) childLines.push(`  version: "${nextVersion}"`);
+		fm = fm.replace(inlineMetadata[0], ['metadata:', ...childLines].join('\n'));
+	} else if (nestedVersion?.[1]) {
 		fm = fm.replace(
 			/^(\s+)version:\s*"?(\d+)"?\s*[ \t]*$/m,
 			`${nestedVersion[1]}version: "${nextVersion}"`,

@@ -361,6 +361,68 @@ interface SkillMetadataChild {
 	listItems: string[];
 }
 
+/** A parsed inline flow-map `metadata: {k: v, ...}` value (issue #3217). */
+export interface MetadataFlowMap {
+	/** (key, rawValue) pairs in declaration order; keys NOT lowercased. */
+	pairs: Array<[string, string]>;
+	/** Keys declared more than once inside the flow map. */
+	duplicateKeys: Set<string>;
+}
+
+/**
+ * Parse a single-level YAML flow mapping (`{key: value, ...}`) within the
+ * bounded line parser — the same subset collectMetadataChildren reads in
+ * block form (issue #3217). Values are kept raw (quotes intact); nested
+ * flow collections are tolerated as opaque values only when balanced.
+ * Returns null when the value is not a `{...}` form or any segment is not a
+ * `key: value` pair — callers treat that as malformed and fail closed.
+ */
+export function parseMetadataFlowMap(raw: string): MetadataFlowMap | null {
+	const trimmed = raw.trim();
+	if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+	const inner = trimmed.slice(1, -1).trim();
+	const pairs: Array<[string, string]> = [];
+	const duplicateKeys = new Set<string>();
+	if (inner === '') return { pairs, duplicateKeys };
+	// Split on top-level commas only (quotes and nested [] {} guard depth).
+	const segments: string[] = [];
+	let depth = 0;
+	let quote: '"' | "'" | undefined;
+	let current = '';
+	for (const ch of inner) {
+		if (quote) {
+			current += ch;
+			if (ch === quote) quote = undefined;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			quote = ch;
+			current += ch;
+			continue;
+		}
+		if (ch === '[' || ch === '{') depth += 1;
+		if (ch === ']' || ch === '}') depth -= 1;
+		if (ch === ',' && depth === 0) {
+			segments.push(current);
+			current = '';
+			continue;
+		}
+		current += ch;
+	}
+	if (quote || depth !== 0) return null;
+	segments.push(current);
+	const seen = new Set<string>();
+	for (const segment of segments) {
+		const pair = segment.trim().match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+		if (!pair || pair[2].trim() === '') return null;
+		const key = pair[1].toLowerCase();
+		if (seen.has(key)) duplicateKeys.add(key);
+		seen.add(key);
+		pairs.push([pair[1], pair[2].trim()]);
+	}
+	return { pairs, duplicateKeys };
+}
+
 /**
  * Collect the indented children of an Agent-Skills-spec `metadata:` map
  * (https://agentskills.io/specification — a string-keyed map for non-spec
@@ -528,12 +590,38 @@ export function parseSkillFrontmatter(
 		if (key === 'metadata') {
 			duplicateMetadataBlocks += 1;
 			if (duplicateMetadataBlocks === 1) {
-				const collected = collectMetadataChildren(lines, i + 1, end);
-				metadataChildren = collected.children;
-				if (collected.duplicateKeys.has('audience')) {
-					audience = { status: 'invalid', values: [] };
+				if (rawValue.startsWith('{')) {
+					// Inline flow-map form (issue #3217): resolve the map per
+					// bounded YAML flow-mapping semantics; malformed values
+					// fail closed (audience invalid, never absent/match-all).
+					// The line cursor is NOT advanced — flow form has no
+					// following indented children to collect.
+					const flow = parseMetadataFlowMap(rawValue);
+					if (flow === null) {
+						audience = { status: 'invalid', values: [] };
+					} else {
+						const children = new Map<string, SkillMetadataChild>();
+						for (const [rawKey, rawValueOfPair] of flow.pairs) {
+							const childKey = rawKey.toLowerCase();
+							if (children.has(childKey)) continue; // first wins
+							children.set(childKey, {
+								inline: stripQuotes(rawValueOfPair.trim()).replace(/''/g, "'"),
+								listItems: [],
+							});
+						}
+						metadataChildren = children;
+						if (flow.duplicateKeys.has('audience')) {
+							audience = { status: 'invalid', values: [] };
+						}
+					}
+				} else {
+					const collected = collectMetadataChildren(lines, i + 1, end);
+					metadataChildren = collected.children;
+					if (collected.duplicateKeys.has('audience')) {
+						audience = { status: 'invalid', values: [] };
+					}
+					i = collected.nextIndex;
 				}
-				i = collected.nextIndex;
 			}
 			continue;
 		}
