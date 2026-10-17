@@ -35,11 +35,11 @@ import {
 } from '../../scope/path-identity';
 import { isPolicyProtectedPath } from '../../security/protected-path-policy.js';
 import { log, warn } from '../../utils';
-import { resolveGitExecutable } from '../../utils/git-executable.js';
 import {
 	boundedBunHash,
 	coarseObjectDiscriminator,
 } from '../../utils/arg-hash';
+import { resolveGitExecutable } from '../../utils/git-executable.js';
 import { stableCanonicalStringify } from '../../utils/stable-stringify';
 
 /**
