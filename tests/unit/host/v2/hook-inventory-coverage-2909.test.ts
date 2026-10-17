@@ -165,6 +165,10 @@ describe('acceptance evidence durability (#2909 closure contract)', () => {
 
 	test('ADR-0003 appendices: first-turn window measurement and dated invalidation re-check', () => {
 		const adr = fs.readFileSync(ADR, 'utf8');
+		// AC3 durable arm (final-critic finding 3): the ADR's status contract
+		// must not silently flip after the trace-local frozen checks die.
+		expect(adr).toContain('Accepted (2026-09-30)');
+		expect(adr).toMatch(/^\*\*GO\.\*\*/m);
 		const firstTurn =
 			/#[# ]*[^\n]*First-turn window[^\n]*\n([\s\S]*?)(\n#[#] |\n$)/.exec(adr);
 		expect(firstTurn).toBeTruthy();
