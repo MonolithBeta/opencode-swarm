@@ -5049,9 +5049,11 @@ async function initializeOpenCodeSwarm(
 				console.error(
 					`[DIAG] toolBefore tool=${normalizeToolName(input.tool) ?? input.tool} session=${input.sessionID}`,
 				);
-			const hostProvidedAgent = (input as { agent?: string }).agent?.trim();
-			// If no active agent is mapped for this session, it's the primary agent (architect)
-			// Subagent delegations always set activeAgent via chat.message before tool calls
+			const hostProvidedAgent = readHostAgent(input);
+			// If no active agent is mapped for this session, seed it with the
+			// host-provided agent when the host supplied one (OpenCode v2), else the
+			// primary agent (architect). Subagent delegations always set activeAgent
+			// via chat.message before tool calls.
 			if (!swarmState.activeAgent.has(input.sessionID)) {
 				swarmState.activeAgent.set(
 					input.sessionID,
@@ -5059,9 +5061,11 @@ async function initializeOpenCodeSwarm(
 				);
 			}
 
-			// Revert to primary agent if delegation appears stale (v1 only; on v2
-			// the host passes the authoritative input.agent on every tool hook).
-			// Delegation is stale when BOTH conditions are met:
+			// Revert to primary agent if delegation appears stale. Skipped whenever
+			// the host supplied input.agent (OpenCode v2 passes the authoritative
+			// agent on every tool hook); hosts that do not send it keep this revert.
+			// Delegation is stale when ALL of these conditions are met:
+			// 0. The host did NOT provide input.agent (!hostProvidedAgent), AND
 			// 1. delegationActive is explicitly false (set by chat.message or Task toolAfter), AND
 			// 2. The session's lastAgentEventTime is >10s old (subagent completed, no chat.message reset)
 			// Using AND (&&) ensures active delegations are never interrupted — the
@@ -6113,8 +6117,7 @@ async function initializeOpenCodeSwarm(
 						.digest('hex')
 						.slice(0, 32);
 				}
-				const restoredAgent =
-					(input as { agent?: string }).agent?.trim() || ORCHESTRATOR_NAME;
+				const restoredAgent = readHostAgent(input) || ORCHESTRATOR_NAME;
 				swarmState.activeAgent.set(sessionId, restoredAgent);
 				ensureAgentSession(sessionId, restoredAgent, bootstrapRoot);
 				const taskSession = swarmState.agentSessions.get(sessionId);
@@ -6450,6 +6453,16 @@ async function initializeOpenCodeSwarm(
 		// Exposed for future Task 5.x business feature integration
 		automation: automationManager,
 	};
+}
+
+/**
+ * Read the host-provided agent name off a tool hook input (OpenCode v2 sends
+ * it on every tool hook; v1 does not). Returns the trimmed name, or undefined
+ * when absent / empty / not a string, so a malformed value can never throw.
+ */
+function readHostAgent(input: unknown): string | undefined {
+	const agent = (input as { agent?: unknown } | undefined)?.agent;
+	return typeof agent === 'string' ? agent.trim() || undefined : undefined;
 }
 
 // Dual-shape plugin entrypoint (issue #3004 / ADR-0003):
