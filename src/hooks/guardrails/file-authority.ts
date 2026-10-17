@@ -570,7 +570,7 @@ export function matchesAuthorityDenyPrefix(
 export function buildEffectiveRules(
 	authorityConfig?: AuthorityConfig,
 ): Record<string, AgentRule> {
-	if (!authorityConfig?.rules) {
+	if (authorityConfig?.enabled === false || !authorityConfig?.rules) {
 		return { ...DEFAULT_AGENT_AUTHORITY_RULES };
 	}
 	const entries = Object.entries(authorityConfig.rules);
@@ -849,6 +849,29 @@ export function checkFileAuthorityWithRules(
 		});
 	}
 
+	const classifiedRules =
+		effectiveRules[normalizedAgent] ?? effectiveRules[strippedAgent];
+	// With authority disabled, an agent that has no classification (a custom or
+	// host agent such as `sre-planner`) is not denied merely for being unknown.
+	// It still passes through every hard-policy check below (universal deny,
+	// control-state protection, canonical capabilities) and then hits the
+	// authorityEnabled === false allow. The literal `unknown` name is the
+	// fail-open sentinel for a session registered without an agent name
+	// (state.ts ensureAgentSession), so it keeps the unknown-agent denial.
+	const unclassifiedWhileDisabled =
+		!classifiedRules &&
+		options.authorityEnabled === false &&
+		normalizedAgent !== 'unknown';
+	const rules: AgentRule | undefined =
+		classifiedRules ?? (unclassifiedWhileDisabled ? {} : undefined);
+	if (!rules) {
+		return denyAuthority(agentName, normalizedPath, {
+			code: 'AUTHORITY_UNKNOWN_AGENT',
+			layer: 'role-capability',
+			rule: 'known-agent-role',
+			detail: 'Unknown agent: no authority classification exists',
+		});
+	}
 	const flavor = getPathFlavor();
 	const matchesPathPrefix = (candidate: string, prefix: string): boolean =>
 		isPathIdentityWithin(
@@ -884,6 +907,25 @@ export function checkFileAuthorityWithRules(
 			rule: 'coder-control-state-protection',
 			detail:
 				'coder writes to repository control state (.git/.swarm) are always protected',
+		});
+	}
+	// Agents admitted only because authority is disabled were denied outright
+	// before authority.enabled:false admitted them, so through this file-write
+	// authority check they never gain write access to repository control state.
+	// (Shell-command writes are decided by the shell path in tool-before.ts.)
+	if (
+		unclassifiedWhileDisabled &&
+		isPolicyProtectedPath(normalizedPath, {
+			includeDefaults: false,
+			additional: ['.git', '.swarm'],
+		})
+	) {
+		return denyAuthority(agentName, normalizedPath, {
+			code: 'AUTHORITY_PROTECTED_PATH',
+			layer: 'protected-path',
+			rule: 'unclassified-agent-control-state-protection',
+			detail:
+				'unclassified agent writes to repository control state (.git/.swarm) are always protected',
 		});
 	}
 	const isSwarmRole = Object.hasOwn(AUTHORITY_ROLE_CAPABILITIES, strippedAgent);
@@ -922,26 +964,6 @@ export function checkFileAuthorityWithRules(
 		});
 	}
 
-	if (options.authorityEnabled === false) {
-		return {
-			allowed: true,
-			layer: 'role-policy',
-			path: sanitizeDiagnosticText(normalizedPath, 320),
-			agent: sanitizeDiagnosticText(agentName, 96),
-		};
-	}
-
-	const rules =
-		effectiveRules[normalizedAgent] ?? effectiveRules[strippedAgent];
-	if (!rules) {
-		return denyAuthority(agentName, normalizedPath, {
-			code: 'AUTHORITY_UNKNOWN_AGENT',
-			layer: 'role-capability',
-			rule: 'known-agent-role',
-			detail: 'Unknown agent: no authority classification exists',
-		});
-	}
-
 	// Configurable readOnly only narrows roles that otherwise have write ability.
 	if (rules.readOnly) {
 		return denyAuthority(agentName, normalizedPath, {
@@ -961,6 +983,14 @@ export function checkFileAuthorityWithRules(
 		return {
 			allowed: true,
 			layer: 'declared-scope',
+			path: sanitizeDiagnosticText(normalizedPath, 320),
+			agent: sanitizeDiagnosticText(agentName, 96),
+		};
+	}
+	if (options.authorityEnabled === false) {
+		return {
+			allowed: true,
+			layer: 'role-policy',
 			path: sanitizeDiagnosticText(normalizedPath, 320),
 			agent: sanitizeDiagnosticText(agentName, 96),
 		};
