@@ -86,3 +86,60 @@ describe('issue #3310 AC1: reviewer verdict-row foreign-grammar quarantine', () 
 		expect(parsed.has('C-1')).toBe(true);
 	});
 });
+
+describe('issue #3334 AC1: quarantined ids are bounded to identifier-charset text', () => {
+	test('row prose in the id field collapses to (invalid-id), never leaks', () => {
+		const artifact = [
+			'[REVIEWED] | c1 | CONFIRMED | STATIC_TRACE_PROVEN | HIGH | YES | a.ts:1 | rationale long | probe text | notes | UNKNOWN |',
+			'[REVIEWED] | reviewed files a b c and gates | APPROVED | looks fine',
+		].join('\n');
+		const { quarantined } = parsePrReviewVerdictRows(
+			artifact,
+			['c1'],
+			'reviewer',
+		);
+		expect(quarantined).toHaveLength(1);
+		expect(quarantined[0]?.itemId).toBe('(invalid-id)');
+		const serialized = JSON.stringify(quarantined);
+		expect(serialized).not.toContain('reviewed files');
+	});
+
+	test('a clean id longer than 64 characters is sliced to 64', () => {
+		const longId = 'x'.repeat(80);
+		const artifact = `[REVIEWED] | ${longId} | APPROVED | looks fine`;
+		const { quarantined } = parsePrReviewVerdictRows(
+			artifact,
+			['c1'],
+			'reviewer',
+		);
+		expect(quarantined[0]?.itemId).toBe('x'.repeat(64));
+	});
+
+	test('a secret-shaped id renders the fixed (redacted) sentinel', () => {
+		// Charset-clean token shapes (GitHub PAT style) pass the identifier
+		// check but must never surface through the diagnostic; redaction
+		// placeholders ([REDACTED:<type>]) are themselves outside the
+		// identifier charset. The fixture is built by concatenation so the
+		// literal token shape never appears in source (push-protection rule).
+		const secretPrefix = ['ghp', '_'].join('');
+		const secretId = secretPrefix + '0123456789abcdefghijklmnopqrstuvwxyzAB';
+		const artifact = `[REVIEWED] | ${secretId} | APPROVED | looks fine`;
+		const { quarantined } = parsePrReviewVerdictRows(
+			artifact,
+			['c1'],
+			'reviewer',
+		);
+		expect(quarantined[0]?.itemId).toBe('(redacted)');
+		expect(JSON.stringify(quarantined)).not.toContain(secretId);
+	});
+
+	test('an absent id field surfaces as the (missing) sentinel', () => {
+		const artifact = '[REVIEWED] |  | APPROVED | looks fine';
+		const { quarantined } = parsePrReviewVerdictRows(
+			artifact,
+			['c1'],
+			'reviewer',
+		);
+		expect(quarantined[0]?.itemId).toBe('(missing)');
+	});
+});

@@ -50,6 +50,7 @@ import {
 	buildPrReviewContractCard,
 	decodePrReviewWorkflowBinding,
 	encodePrReviewWorkflowBinding,
+	firstPrReviewVerdictRowTemplateLine,
 	PrReviewLaneResultEnvelopeSchema,
 	prReviewLegacyTranscriptCompatibilityEnabled,
 } from '../background/pr-review-contract.js';
@@ -6156,21 +6157,36 @@ function applyPrWorkflowPromptContract(
 				: normalizedMode.token === 'swarm-pr-review:critic'
 					? '[CRITIC]'
 					: null;
-		// Whitespace-tolerant: the transport splits on the pipe and trims
-		// every field, so a marker followed by any spaces or a tab before the
-		// pipe parses as a canonical row. Checked on every operator-controlled
-		// channel that reaches the lane prompt: lane.prompt AND callerFocus,
-		// which is rendered verbatim after the authoritative card.
+		// Whitespace-tolerant and grammar-derived (#3335): the parser accepts a
+		// marker followed by ANY String.prototype.trim() whitespace run before
+		// the pipe (U+3000, U+00A0, U+FEFF, U+202F, a lone \r, ...), so the row
+		// arm calls the parser itself via firstPrReviewVerdictRowTemplateLine —
+		// any line that parses as a live row rejects the prompt. The second arm
+		// keeps the anywhere-in-text anti-teaching shape (a marker-pipe fragment
+		// mid-sentence teaches the format even though it would not parse as a
+		// row); its whitespace class is trim-whitespace minus `\n` — the one
+		// character the transport's `/\r?\n/` line-split guarantees to break on
+		// (a lone `\r` stays in-line and is trimmable, so it belongs IN the
+		// class; a CRLF `\r` never reaches it because `\n` ends the run).
+		// Checked on every operator-controlled channel that reaches the lane
+		// prompt: lane.prompt AND callerFocus, which is rendered verbatim after
+		// the authoritative card.
 		if (prReviewVerdictTemplateToken) {
-			const rowShape = new RegExp(
-				'\\[' + prReviewVerdictTemplateToken.slice(1, -1) + '\\][ \\t]*\\|',
+			const kind =
+				prReviewVerdictTemplateToken === '[REVIEWED]'
+					? ('reviewer' as const)
+					: ('critic' as const);
+			const markerPipeAnywhere = new RegExp(
+				'\\[' + prReviewVerdictTemplateToken.slice(1, -1) + '\\][^\\S\\n]*\\|',
 			);
 			const operatorChannels: Array<[string, string]> = [
 				['lane prompt', lane.prompt],
 				['caller scope', options.callerFocus ?? ''],
 			];
-			const offending = operatorChannels.find(([, text]) =>
-				rowShape.test(text),
+			const offending = operatorChannels.find(
+				([, text]) =>
+					firstPrReviewVerdictRowTemplateLine(text, kind) !== null ||
+					markerPipeAnywhere.test(text),
 			);
 			if (offending) {
 				errors.push(

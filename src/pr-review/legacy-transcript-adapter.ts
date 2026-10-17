@@ -442,6 +442,33 @@ function appendCompositionDiagnostic(
 	diagnostics.push(message.slice(0, MAX_BASE_COVERAGE_DIAGNOSTIC_CHARS));
 }
 
+/**
+ * Issue #3334: lane-authored transcript text (the item-id field of a verdict
+ * row) must never reach diagnostics, telemetry payloads, or operator-facing
+ * BLOCKED messages as free prose. The ONE bounding helper every quarantine /
+ * recovery egress routes through. Sentinels: `(missing)` for an absent field,
+ * `(invalid-id)` for control characters (the parser decodes `\n`/`\r` escapes
+ * into real control characters) or non-identifier text, `(redacted)` when
+ * secret redaction fires (redaction placeholders render `[REDACTED:<type>]`,
+ * which is outside the identifier charset). A lane CAN author these sentinel
+ * strings as a real id — the collision is diagnostic-ambiguity only; claim
+ * keys keep the raw id.
+ */
+const VERDICT_ROW_IDENTIFIER_CHARSET = /^[A-Za-z0-9._:-]+$/;
+
+function boundVerdictRowIdentifier(raw: string | undefined): string {
+	if (raw === undefined || raw === '') return '(missing)';
+	// Control characters (the parser decodes `\n`/`\r` escapes into real
+	// control characters) are non-charset by construction, so the charset
+	// check is the single gate that covers both the control-character rule
+	// (#3334 AC2) and the prose rule (#3334 AC1).
+	if (!VERDICT_ROW_IDENTIFIER_CHARSET.test(raw)) return '(invalid-id)';
+	const redacted = redactSecrets(raw).slice(0, 64);
+	return VERDICT_ROW_IDENTIFIER_CHARSET.test(redacted)
+		? redacted
+		: '(redacted)';
+}
+
 const REVIEWER_ITEM_BINDING_KEY_PREFIX = 'item:';
 
 /**
@@ -564,6 +591,13 @@ export function composePrReviewPhaseVerdicts(
 	const claims = new Map<string, PrReviewItemClaim>();
 	const contributingBatchIds: string[] = [];
 	const diagnostics: string[] = [];
+	// #3334: quarantine diagnostics are deferred until AFTER the batch loop so
+	// they can never consume the shared composition-diagnostic budget ahead of
+	// lane-voiding evidence (unassigned-row, abandoned-lane). They flush after
+	// the integrity diagnostics, still subject to the same cap. This defers
+	// QUARANTINE noise only — the batch non-contribution diagnostic shares the
+	// same cap and is NOT deferred.
+	const deferredQuarantineDiagnostics: string[] = [];
 	const satisfiedObligations = new Set<string>();
 	const scannedBatches: PrReviewTranscriptBatch[] = [];
 	// Issue #3098: formatted artifact-integrity failure per declared obligation.
@@ -683,19 +717,19 @@ export function composePrReviewPhaseVerdicts(
 			// ONE aggregated bounded diagnostic per lane, so a stray-row-heavy
 			// artifact cannot exhaust the shared composition-diagnostic budget
 			// ahead of the unassigned-row and abandoned-lane evidence below.
-			// Identifiers and arity only — never row prose — and the item id is
-			// model-controlled transcript text, so it is redacted and bounded
-			// exactly like the verdict-rejection journal does.
+			// Identifiers and arity only — never row prose: the item id is
+			// model-controlled transcript text, bounded to the sentinel-safe
+			// identifier form by boundVerdictRowIdentifier at the quarantine
+			// producer ((missing)/(invalid-id)/(redacted) sentinels).
 			if (quarantined.length > 0) {
 				const arities = [
 					...new Set(quarantined.map((stray) => stray.arity)),
 				].sort((a, b) => a - b);
 				const ids = quarantined
-					.map((stray) => redactSecrets(stray.itemId).slice(0, 64))
+					.map((stray) => stray.itemId)
 					.filter((value, index, all) => all.indexOf(value) === index)
 					.slice(0, 8);
-				appendCompositionDiagnostic(
-					diagnostics,
+				deferredQuarantineDiagnostics.push(
 					`${phase} lane "${qualified.expectedLane.laneId}" quarantined ${quarantined.length} illegal-arity ${quarantined[0]?.marker ?? 'verdict'} row(s) (arities ${arities.join(', ')}; item ids ${ids.map((id) => `"${id}"`).join(', ')}); quarantined rows carry no verdict`,
 				);
 			}
@@ -881,6 +915,15 @@ export function composePrReviewPhaseVerdicts(
 		);
 	}
 
+	// #3334: flush the deferred quarantine diagnostics AFTER every integrity
+	// diagnostic had its chance at the capped budget. Quarantine noise explains
+	// nothing about WHY a settlement blocked; the unassigned-row and
+	// abandoned-lane diagnostics do, so they win the cap contention by
+	// construction.
+	for (const message of deferredQuarantineDiagnostics) {
+		appendCompositionDiagnostic(diagnostics, message);
+	}
+
 	const composition: PrReviewPhaseComposition = {
 		claims,
 		requiredInventory,
@@ -956,7 +999,7 @@ export function indexVerdictRows(
 			// exact-set count, so valid siblings keep their claims.
 			quarantined.push({
 				marker,
-				itemId: fields[1] ?? '(missing)',
+				itemId: boundVerdictRowIdentifier(fields[1]),
 				arity: fields.length,
 			});
 			continue;
@@ -965,7 +1008,12 @@ export function indexVerdictRows(
 			const recovery = row.overflowClass as
 				| 'legacy-fidelity-safe'
 				| 'legacy-lossy';
-			const itemId = fields[1] ?? '(missing)';
+			// #3334: the recovery entry feeds warn(), the
+			// verdict_row_pipe_recovery telemetry event, and the durable
+			// recovery receipt — the id is bounded at this single producer so
+			// every consumer (including future ones) sees the sentinel-safe
+			// form.
+			const itemId = boundVerdictRowIdentifier(fields[1]);
 			recoveries.push({ marker, itemId, recovery });
 			warn(
 				'PR_REVIEW recovered a legacy verdict row with unescaped pipe overflow',
@@ -1073,6 +1121,13 @@ export function parsePrReviewVerdictRows(
 		if (itemId === PR_REVIEW_DISCARDED_EXAMPLE_ITEM_ID) continue;
 		if (phase === 'reviewer') {
 			const rows = rowsByItemId.get(itemId);
+			// #3336 durable replay rule: a schema-invalid row NEVER claims —
+			// this is the read-time gate that makes pre-upgrade artifacts
+			// re-parse under the LIVE schema (fail-closed for tightened
+			// rules like CONFIRMED+NONE; accepting for widened rules like
+			// UPHELD LOW/INFO; see the schema comments in
+			// pr-review-contract.ts and the skill's
+			// lane-output-recoverability reference).
 			const fields =
 				rows?.length === 1 ? validateReviewerVerdictFields(rows[0]) : null;
 			if (!fields) continue;
@@ -1122,7 +1177,13 @@ export function analyzePrReviewVerdictRowContract(
 	const assigned = new Set(itemIds);
 	const { markerRows, parsed, recoveries, quarantined } =
 		parsePrReviewVerdictRows(text, itemIds, phase, reviewerClaims);
-	const observedIds = markerRows.map((fields) => fields[1] || '(missing)');
+	// #3334 recurrence sweep: observedIds render into the exact-set contract
+	// failure (analysis.actual → formatPrReviewLaneValidationFailure →
+	// lane-failure diagnostics), so this identifier egress is bounded by the
+	// same helper as the quarantine/recovery producers.
+	const observedIds = markerRows.map((fields) =>
+		boundVerdictRowIdentifier(fields[1]),
+	);
 	const unexpectedIds = [
 		...new Set(observedIds.filter((itemId) => !assigned.has(itemId))),
 	];

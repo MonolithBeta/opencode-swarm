@@ -73,4 +73,28 @@ describe('issue #3310 AC25: quarantined short duplicate does not fail the valid 
 		expect(parsed.get('C-1')?.classification).toBe('UPHELD');
 		expect(parsed.get('C-1')?.severity).toBe('HIGH');
 	});
+
+	test('#3334 AC3 (parse-level): 16+ stray rows in one lane stay ONE aggregated quarantine surface', () => {
+		// The composition diagnostic is one aggregated bounded entry per lane
+		// regardless of stray-row count (review-fix 6292746f0 shape), so a
+		// stray-row-heavy single lane cannot exhaust the diagnostic budget by
+		// itself. The composition-level cross-lane ordering contract is pinned
+		// by tests/unit/hooks/pr-workflow-gate-quarantine-diagnostic-order-3334.test.ts.
+		const artifact = [
+			'[REVIEWED] | C-1 | CONFIRMED | STATIC_TRACE_PROVEN | HIGH | YES | a.ts:1 | rationale long | probe text | notes | UNKNOWN |',
+			...Array.from(
+				{ length: 20 },
+				(_v, index) => `[REVIEWED] | stray-${index} | APPROVED | looks fine`,
+			),
+		].join('\n');
+		const { quarantined, parsed } = parsePrReviewVerdictRows(
+			artifact,
+			['C-1'],
+			'reviewer',
+		);
+		expect(quarantined).toHaveLength(20);
+		// Every stray id is bounded and distinct; the valid row still settles.
+		expect(new Set(quarantined.map((entry) => entry.itemId)).size).toBe(20);
+		expect(parsed.has('C-1')).toBe(true);
+	});
 });
