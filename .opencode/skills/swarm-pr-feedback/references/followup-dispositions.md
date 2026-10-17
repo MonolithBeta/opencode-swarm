@@ -10,18 +10,18 @@ Nothing is silently dropped.
 | Disposition | Use when | What you write |
 |---|---|---|
 | `ABSORB` | An open issue already covers it | A comment on that issue with the new evidence, plus the issue number in the ledger. No new issue. |
-| `FILE` | It passes the necessity gate below | One collated follow-up issue (see Collation) |
+| `FILE` | It passes the necessity gate below and is Priority, or the user approved it | One collated follow-up issue (see Collation) |
 | `RECORD` | It fails gate 1 or gate 2 of the necessity gate, or the user declined it | One row in the PR body's "Considered, not filed" table: item, reason, which gate test failed (or the quoted decline), re-evaluation trigger. This is a complete closure. |
-| `ASK` | It needs a product or maintainer decision, or it fails only gate 3 | A question to the user. Nothing is filed until they answer. |
+| `ASK` | It needs a product or maintainer decision, it fails only gate 3, or it is an Improvement item awaiting approval | A question to the user. Nothing is filed until they answer. |
 
-`ASK` takes precedence over fixing in the PR when the fix itself needs a product or compatibility decision.
+`ASK` takes precedence over fixing in the PR when the fix itself needs a product or compatibility decision. `ABSORB` takes precedence over `RECORD` when an open issue already covers the item.
 
 ## Necessity gate
 
-`FILE` only when all four hold. Route failures as follows:
-- **Failing gate 1 or gate 2** is `RECORD`.
+`FILE` only when all four hold, or when the user approves an `ASK` proposal. Route failures as follows:
+- **Failing gate 1 or gate 2** is `RECORD`, except that an unverified item whose claimed consequence is a wedge, fail-open gate, security, or data loss is `ASK` (or added to the standing investigation issue).
 - **Failing only gate 3** makes the item an Improvement-tier proposal. It stays `ASK` until the user approves it (`FILE`) or declines it (`RECORD`, quoting the decline).
-- **Failing gate 4** is `ABSORB` when the item is already tracked, or a fix in this PR as a `CONFIRMED` item when it is fixable here. It is never `RECORD`.
+- **Failing gate 4** is `ABSORB` when the item is already tracked. When it is untracked but fixable inside this PR's files and scope, it is `ASK`: propose the fix to the user. If they approve, it is fixed in this PR (ledger status becomes fixed) and the run restarts at Stage A. It is never `RECORD`, and its status is never relabelled `CONFIRMED`.
 - **A wedge, fail-open gate, security, or data-loss consequence** satisfies gate 3 automatically.
 
 1. **Verified.** An executed probe or an exact source trace at `path:line` proves it on the current head. Never file an `INFERENCE`. Record it instead, or add it to the repository's standing investigation issue if one exists.
@@ -40,18 +40,18 @@ Nothing is silently dropped.
 - A HIGH-severity item (fail-open gate, security, data loss) may stand alone.
 - **Budget: at most two follow-up issues per PR.** A standalone HIGH item counts toward it.
   - If the gate passes more, stop and present the list to the user before filing.
-  - Exception: Priority items over the budget are still filed at closeout, and the overflow is reported to the user. Only Improvement items wait for approval.
+  - Exception: Priority items over the budget are still filed during Publishing And Communication, after the push is verified, and the overflow is reported to the user. Only Improvement items wait for approval.
 
 ## Tiers
 
-- **Priority.** A wedge, fail-open gate, security, or data-loss item. File it at closeout.
-- **Improvement.** Passes the gate but is not Priority. Present these as a proposed list in the closeout report, and file them only after the user approves.
+- **Priority.** A wedge, fail-open gate, security, or data-loss item. File it during Publishing And Communication, after the push is verified.
+- **Improvement.** Passes the gate but is not Priority. Present these as a proposed list in the final response to the user, and file them only after the user approves.
 
 ## Findings about how the round was conducted
 
 Findings about how this review or feedback round was conducted are `RECORD` unless they block a workflow. Examples are an incomplete ledger table, a missed disposition, or a formatting slip in a review artifact.
 
-This never covers defects in the code, skill text, or gates the PR changes. Those are ordinary items:
+This never covers defects in any code, skill text, or gate, whether or not the PR changes it. Those are ordinary items:
 - PR-introduced defects are fixed in this PR.
 - A fail-open gate is Priority.
 

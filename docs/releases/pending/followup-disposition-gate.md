@@ -10,7 +10,7 @@ PR-feedback rounds no longer turn every unfixed review finding into its own GitH
     - `RECORD` means a "Considered, not filed" row in the PR body, for items that are unverified or have no real consequence, or that the maintainer declined. It closes the item without opening an issue.
     - Verified, consequential items that are judged not material go to the maintainer as an `ASK`; the agent never closes them alone.
   - **A four-part necessity gate before filing:** verified, consequential, material, and untracked/not fixable here.
-  - **One collated `Follow-up from PR #N: <theme>` issue per PR.** More than two follow-up issues from one PR needs the maintainer's go-ahead.
+  - **One collated `Follow-up from PR #N: <theme>` issue per PR.** More than two follow-up issues from one PR needs the maintainer's go-ahead (Priority items excepted).
   - **Priority versus Improvement tiers.** Improvement items are proposed for approval, not filed automatically.
   - **The filing checklist gains a follow-up line.**
 - **swarm-pr-feedback skill:**

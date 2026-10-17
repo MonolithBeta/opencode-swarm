@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "1f59a833ee32"
+  swarm-contract-digest: "fd640bf3a2c6"
 ---
 
 # Swarm PR Feedback
@@ -726,7 +726,7 @@ FB-001 | fixed | commit/test evidence
 FB-002 | disproved | code evidence
 FB-003 | pre-existing | base-branch evidence | ABSORB #NNNN
 FB-004 | needs user decision | decision required | ASK
-FB-005 | needs more evidence | .swarm/evidence/{phase}/phase-council.json missing | RECORD
+FB-005 | needs more evidence | .swarm/evidence/{phase}/phase-council.json missing | ASK
 CONFLICT-001 | fixed | remote mergeability is MERGEABLE/CLEAN
 CI-001 | fixed | current-head check/run evidence
 ```
