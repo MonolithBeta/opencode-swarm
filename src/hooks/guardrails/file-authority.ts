@@ -35,6 +35,7 @@ import {
 } from '../../scope/path-identity';
 import { isPolicyProtectedPath } from '../../security/protected-path-policy.js';
 import { log, warn } from '../../utils';
+import { resolveGitExecutable } from '../../utils/git-executable.js';
 import {
 	boundedBunHash,
 	coarseObjectDiscriminator,
@@ -207,12 +208,16 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 
 	const worktrees: string[] = [];
 	try {
-		const output = execFileSync('git', ['worktree', 'list', '--porcelain'], {
-			cwd: dir,
-			encoding: 'utf8',
-			stdio: ['ignore', 'pipe', 'ignore'],
-			timeout: 1500,
-		});
+		const output = execFileSync(
+			resolveGitExecutable(),
+			['worktree', 'list', '--porcelain'],
+			{
+				cwd: dir,
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'ignore'],
+				timeout: 1500,
+			},
+		);
 
 		for (const line of output.split('\n')) {
 			if (line.startsWith('worktree ')) {
