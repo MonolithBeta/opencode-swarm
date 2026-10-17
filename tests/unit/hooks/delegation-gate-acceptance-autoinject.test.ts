@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import {
 	createDelegationGateHook,
 	makeConfig,
@@ -17,7 +17,7 @@ describe('delegation-gate acceptance auto-injection', () => {
 	beforeEach(async () => {
 		isolatedEnv = createIsolatedTestEnv();
 		resetSwarmState();
-		directory = await mkdtemp(join(tmpdir(), 'swarm-autoinject-test-'));
+		directory = canonicalMkdtemp('swarm-autoinject-test-');
 		await mkdir(join(directory, '.swarm'), { recursive: true });
 	});
 
