@@ -102,23 +102,24 @@ The core is the required minimum. For issues whose fix has real design surface, 
 - [ ] No vacuous checks; argv runnable from repo root; expect describes the base leg
 - [ ] Program issues: title `[Workstream <letter>] PR n of m`, Sequence section, one issue = one PR
 - [ ] Any NON-EXECUTABLE criterion carries a closed-enum reason and named substitute evidence (not a forced check)
-- [ ] Follow-up issues: passed the necessity gate below, collated one per source PR, titled `Follow-up from PR #N: <theme>`
+- [ ] Follow-up issues: passed the necessity gate below, collated into at most two issues per source PR (more needs the maintainer's go-ahead), titled `Follow-up from PR #N: <theme>`
 
 ### Filing follow-up issues
 
-This section covers work found during a PR review, a PR-feedback round, or an issue closeout that the PR does not fix. Agents and contributors handle it the same way. Nothing is silently dropped. Equally, not every leftover becomes an issue: most review findings are never acted on, and filing all of them turns review noise into backlog noise.
+This section covers work found during a PR review or a PR-feedback round that the PR does not fix. Issue-tracer closeouts keep their own full-resolution contract (`.opencode/skills/issue-tracer/references/full-resolution-contract.md`): a separable concern there is fixed or filed with the user's acknowledgment, and this section does not waive any of its clauses. Collation and the title convention below still apply to issues filed from a trace. Agents and contributors handle it the same way. Anything the PR introduced, or that is small and inside the PR's files and scope, is fixed in the PR, not routed here. Nothing is silently dropped. Equally, not every leftover becomes an issue: most review findings are never acted on, and filing all of them turns review noise into backlog noise.
 
 **1. Give every unfixed item exactly one disposition.**
 
 | Disposition | When |
 |---|---|
-| `FIX-NOW` | The PR introduced it (mandatory), or it is small and inside the PR's files and scope. |
 | `ABSORB` | An open issue already covers it. Comment on that issue with the new evidence instead of opening a new one. |
 | `FILE` | It passes the necessity gate (step 2). |
-| `RECORD` | It fails the gate. Add a row to the PR body's "Considered, not filed" table with: the item, the reason, which gate test failed, and a re-evaluation trigger. This is a complete closure. |
-| `ASK` | It needs a product or maintainer decision. Ask before filing anything. |
+| `RECORD` | It fails gate 1 or gate 2, or the maintainer declined it. Add a row to the PR body's "Considered, not filed" table (inside `## Summary`) with: the item, the reason, which gate test failed, and a re-evaluation trigger. This is a complete closure. |
+| `ASK` | It needs a product or maintainer decision, or it fails only gate 3. Ask before filing anything. |
 
-**2. Apply the necessity gate.** `FILE` only when all four hold:
+`ASK` takes precedence over fixing in the PR when the fix itself needs a product or compatibility decision.
+
+**2. Apply the necessity gate.** `FILE` only when all four hold. Failing gate 1 or 2 is `RECORD`. Failing only gate 3 makes the item an Improvement proposal (`ASK`). Failing gate 4 means `ABSORB` or fixing it in the PR, never `RECORD`. A wedge, fail-open gate, security, or data-loss consequence satisfies gate 3.
 
 1. **Verified.** An executed probe or an exact `path:line` source trace proves it on the current head. An `INFERENCE` is never filed as a fix issue.
 2. **Consequential.** There is a concrete, reachable trigger with a correctness, safety or security, data-loss, or workflow-blocking consequence. Coverage gaps, docs, wording, and "could harden" items fail unless they hide a real defect.
@@ -127,17 +128,17 @@ This section covers work found during a PR review, a PR-feedback round, or an is
 
 **3. Collate the survivors.**
 
-- All `FILE` items from one PR go into one issue titled `Follow-up from PR #<N>: <theme>`, in the executable-contract format above, with one acceptance criterion per item.
+- All `FILE` items from one PR go into one issue titled `Follow-up from PR #<N>: <theme>`, in the executable-contract format above, with at least one acceptance criterion per item, each bound to its own check.
 - Split into a second issue only when the items genuinely need separate PRs. A HIGH-severity item (fail-open gate, security, data loss) may stand alone.
-- More than two follow-up issues from one PR needs the maintainer's go-ahead before filing.
+- More than two follow-up issues from one PR needs the maintainer's go-ahead before filing. A standalone HIGH item counts toward the two. Priority items over the budget are still filed, and the overflow is reported.
 
 **4. Respect the two tiers.**
 
 - **Priority** items (a wedge, fail-open gate, security, or data loss) are filed at closeout.
 - **Improvement** items that pass the gate are proposed as a list in the closeout and filed only once the maintainer approves.
-- Findings about the review or feedback process itself, such as an incomplete ledger or a missed disposition, are `RECORD` unless they block a workflow.
+- Findings about how the review or feedback round was conducted, such as an incomplete ledger or a missed disposition, are `RECORD` unless they block a workflow. This never covers defects in the code, skill text, or gates the PR changes: PR-introduced ones are fixed in the PR, and a fail-open gate is Priority.
 
-**5. Keep the record true.** A disposition is written only after it is true on the live artifact: the issue is filed, the comment is posted, or the table row is in the PR body. The swarm-pr-feedback ledger form of this rule is `.opencode/skills/swarm-pr-feedback/references/followup-dispositions.md`.
+**5. Keep the record true.** A disposition is planned before the closeout review and executed after the push. The published record states it only after it is true on the live artifact: the issue is filed, the comment is posted, or the table row is in the PR body. The swarm-pr-feedback ledger form of this rule is `.opencode/skills/swarm-pr-feedback/references/followup-dispositions.md`.
 
 ### Repo notes (opencode-swarm)
 

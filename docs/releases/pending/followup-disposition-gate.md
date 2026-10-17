@@ -5,9 +5,10 @@ PR-feedback rounds no longer turn every unfixed review finding into its own GitH
 ## Changes
 
 - **`contributing.md`: new "Filing follow-up issues" section.** It applies to agents and contributors alike.
-  - **One disposition per unfixed item:** `FIX-NOW`, `ABSORB`, `FILE`, `RECORD` or `ASK`.
+  - **One disposition per item the PR does not fix:** `ABSORB`, `FILE`, `RECORD` or `ASK`. Items the PR introduced, or small in-scope items, are fixed in the PR.
     - `ABSORB` means commenting on an existing issue.
-    - `RECORD` means a "Considered, not filed" row in the PR body. It closes the item without opening an issue.
+    - `RECORD` means a "Considered, not filed" row in the PR body, for items that are unverified or have no real consequence, or that the maintainer declined. It closes the item without opening an issue.
+    - Verified, consequential items that are judged not material go to the maintainer as an `ASK`; the agent never closes them alone.
   - **A four-part necessity gate before filing:** verified, consequential, material, and untracked/not fixable here.
   - **One collated `Follow-up from PR #N: <theme>` issue per PR.** More than two follow-up issues from one PR needs the maintainer's go-ahead.
   - **Priority versus Improvement tiers.** Improvement items are proposed for approval, not filed automatically.
@@ -19,10 +20,8 @@ PR-feedback rounds no longer turn every unfixed review finding into its own GitH
 
 ## Why
 
-Before this change, every unfixed finding became its own issue: about 100 follow-up issues in 45 days, none ever closed as not needed. Two things drove that:
+Before this change, unfixed findings were routinely filed as follow-up issues, often one per finding. About 100 issues mentioning a follow-up were opened in the 45 days before this change, and the only ones closed without a fix were closed because they were consolidated into a larger issue. Two things drove that:
 - no rule said what deserves an issue or how to group them;
-- the "never defer" rule left filing as the only allowed outcome.
+- the never-defer rule gave no documented outcome between fixing an item and filing it.
 
-Published guidance and the major AI review tools point the other way:
-- they report residual findings on the PR rather than filing one issue per finding;
-- only roughly a third of AI review comments lead to a code change.
+Common practice for AI-assisted review is to report residual findings on the PR rather than file one issue per finding, because most review comments never lead to a code change.

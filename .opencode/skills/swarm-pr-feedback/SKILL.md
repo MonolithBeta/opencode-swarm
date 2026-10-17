@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "22867620e4cf"
+  swarm-contract-digest: "1f59a833ee32"
 ---
 
 # Swarm PR Feedback
@@ -333,7 +333,7 @@ Rules:
     each must be explicitly justified in the closure ledger.
 - **The closure ledger at the end of the run must account for every `FB-###`
   item** with a final status (fixed / disproved / pre-existing / needs user
-  decision / needs more evidence); each unfixed item also gets one disposition (FIX-NOW / ABSORB / FILE / RECORD / ASK) per `references/followup-dispositions.md`.
+  decision / needs more evidence); each PRE_EXISTING, NEEDS_MORE_EVIDENCE, or NEEDS_USER_DECISION item also gets one disposition (ABSORB / FILE / RECORD / ASK) per `references/followup-dispositions.md`; DISPROVED items need none.
 - **Comments from the latest bot round take precedence over earlier rounds**
   for the same finding; the earlier-round `FB-###` item is updated with the
   new evidence rather than a new item being created.
@@ -724,9 +724,9 @@ After fixes, update the PR body or comment with a closure ledger:
 ```text
 FB-001 | fixed | commit/test evidence
 FB-002 | disproved | code evidence
-FB-003 | pre-existing | base-branch evidence
-FB-004 | needs user decision | decision required
-FB-005 | needs more evidence | .swarm/evidence/{phase}/phase-council.json missing
+FB-003 | pre-existing | base-branch evidence | ABSORB #NNNN
+FB-004 | needs user decision | decision required | ASK
+FB-005 | needs more evidence | .swarm/evidence/{phase}/phase-council.json missing | RECORD
 CONFLICT-001 | fixed | remote mergeability is MERGEABLE/CLEAN
 CI-001 | fixed | current-head check/run evidence
 ```
