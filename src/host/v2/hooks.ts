@@ -26,6 +26,7 @@
  */
 
 import { normalizeToolNameLowerCase } from '../../hooks/normalize-tool-name';
+import { getPrimaryOwner } from '../../state';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
 import { normalizeV2AgentRef, seedV1SessionState } from './setup';
@@ -378,10 +379,16 @@ async function onV2Prompt(
 		sessionID: event.sessionID,
 	};
 	const parts = [{ type: 'text', text }];
+	// #3320: pass the session's last-known PRIMARY agent so the v1 chat.message
+	// chain (delegation tracker) does not run its agent-less branch and relabel
+	// a plan/build session as architect. Unowned sessions keep the key absent,
+	// preserving the architect default for the main session.
+	const lastKnownAgent = getPrimaryOwner(event.sessionID);
 	const input = {
 		sessionID: event.sessionID,
 		message: { ...message },
 		parts: [...parts],
+		...(lastKnownAgent !== undefined ? { agent: lastKnownAgent } : {}),
 	};
 	const output = { message: { ...message }, parts: [...parts] };
 	await withTimeout(

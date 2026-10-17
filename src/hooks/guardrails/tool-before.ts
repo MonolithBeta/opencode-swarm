@@ -46,6 +46,7 @@ import {
 	getActiveWindow,
 	getModifiedFilesForTask,
 	type InvocationWindow,
+	isSwarmOwnedSession,
 	recordModifiedFileForTask,
 	recordReviewerScopeGenerationFile,
 	resetModifiedFilesForTask,
@@ -2601,8 +2602,12 @@ export function createToolBeforeHandler(ctx: ToolBeforeContext) {
 			handleLoopDetection(input.sessionID, input.tool, output.args);
 		}
 
-		// Block full test suite execution without file argument
-		if (enforcePolicy) {
+		// Block full test suite execution without file argument.
+		// #3320: swarm-only enforcement — scoped to swarm-owned sessions
+		// (architect + registered swarm agents). Native agents (build/plan/
+		// general) keep their own tool authority; destructive-command,
+		// containment, and symlink checks below stay universal.
+		if (enforcePolicy && isSwarmOwnedSession(input.sessionID)) {
 			handleTestSuiteBlocking(input.tool, output.args);
 		}
 

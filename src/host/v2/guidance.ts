@@ -27,7 +27,7 @@
 import { GUIDANCE_CARRIER_ID_PREFIX } from '../../hooks/system-guidance-carrier';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
-import { seedV1SessionState } from './setup';
+import { normalizeV2AgentRef, seedV1SessionState } from './setup';
 import type {
 	V1HooksSubset,
 	V2Message,
@@ -48,6 +48,7 @@ interface V1PartsMessageView {
 function toV1MessageView(
 	message: V2Message,
 	sessionID: string,
+	agentName?: string,
 ): V1PartsMessageView {
 	const textParts: Array<{ type: string; text?: string }> = [];
 	for (const part of message.content ?? []) {
@@ -65,6 +66,11 @@ function toV1MessageView(
 			id: typeof message.id === 'string' ? message.id : undefined,
 			role: message.role,
 			sessionID,
+			// #3320: stamp the session's agent on the views so the v1 message
+			// stages (which key on info.agent) can tell a plan/build turn from
+			// the architect main session. Absent when the event carries no agent
+			// — the main session keeps identity-absent semantics.
+			...(agentName !== undefined ? { agent: agentName } : {}),
 		},
 		parts: textParts,
 	};
@@ -106,11 +112,12 @@ export async function onV2ContextEvent(
 ): Promise<void> {
 	const sessionID = event.sessionID;
 	seedV1SessionState(sessionID, event.agent, directory);
+	const eventAgentName = normalizeV2AgentRef(event.agent);
 
 	const messagesTransform = hooks['experimental.chat.messages.transform'];
 	if (typeof messagesTransform === 'function') {
 		const views = (event.messages ?? []).map((m) =>
-			toV1MessageView(m, sessionID),
+			toV1MessageView(m, sessionID, eventAgentName),
 		);
 		const originalMessages = [...(event.messages ?? [])];
 		await withTimeout(
@@ -126,7 +133,11 @@ export async function onV2ContextEvent(
 			);
 			// Restore the pre-transform views so a partial failure cannot corrupt content.
 			for (let i = 0; i < originalMessages.length; i += 1) {
-				views[i] = toV1MessageView(originalMessages[i], sessionID);
+				views[i] = toV1MessageView(
+					originalMessages[i],
+					sessionID,
+					eventAgentName,
+				);
 			}
 		});
 

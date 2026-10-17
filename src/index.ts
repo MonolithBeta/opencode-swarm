@@ -327,7 +327,9 @@ import {
 	getFinalPromptPressure,
 	getLiveContextModelIdentity,
 	getLiveContextWindow,
+	getPrimaryOwner,
 	getSessionBudgetPct,
+	isRegisteredSwarmSubagent,
 	setLiveContextWindow,
 	swarmState,
 } from './state';
@@ -5065,21 +5067,27 @@ async function initializeOpenCodeSwarm(
 			// after Task tool completion sets delegationActive=false.
 			// NOTE: Uses lastAgentEventTime (not lastToolCallTime) to ensure tool activity
 			// does not prevent stale subagent identity from being detected
+			// #3320: the revert exists to rescue a parent stuck on a swarm SUBAGENT
+			// identity, so it applies only to registered swarm subagents. Native
+			// agent identities (plan/build/general on the v2 pump, where the
+			// re-seed precedes this hook and nothing sets delegationActive) must
+			// survive it. The restore target is the session's PRIMARY owner.
 			const session = swarmState.agentSessions.get(input.sessionID);
 			const activeAgent = swarmState.activeAgent.get(input.sessionID);
 			if (session && activeAgent && activeAgent !== ORCHESTRATOR_NAME) {
 				const stripActive = stripKnownSwarmPrefix(activeAgent);
-				if (stripActive !== ORCHESTRATOR_NAME) {
+				if (
+					stripActive !== ORCHESTRATOR_NAME &&
+					isRegisteredSwarmSubagent(stripActive)
+				) {
 					const staleDelegation =
 						!session.delegationActive &&
 						Date.now() - session.lastAgentEventTime > 10000;
 					if (staleDelegation) {
-						swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
-						ensureAgentSession(
-							input.sessionID,
-							ORCHESTRATOR_NAME,
-							bootstrapRoot,
-						);
+						const revertOwner =
+							getPrimaryOwner(input.sessionID) ?? ORCHESTRATOR_NAME;
+						swarmState.activeAgent.set(input.sessionID, revertOwner);
+						ensureAgentSession(input.sessionID, revertOwner, bootstrapRoot);
 					}
 				}
 			}
@@ -6103,8 +6111,14 @@ async function initializeOpenCodeSwarm(
 						.digest('hex')
 						.slice(0, 32);
 				}
-				swarmState.activeAgent.set(sessionId, ORCHESTRATOR_NAME);
-				ensureAgentSession(sessionId, ORCHESTRATOR_NAME, bootstrapRoot);
+				// #3320: the parent's identity after a Task handoff is the session's
+				// PRIMARY owner — the architect for swarm sessions (unchanged
+				// behavior), the recorded native agent (build/plan/general) for
+				// non-swarm sessions, so the native-agent exemptions keyed on
+				// identity survive the handoff.
+				const handoffOwner = getPrimaryOwner(sessionId) ?? ORCHESTRATOR_NAME;
+				swarmState.activeAgent.set(sessionId, handoffOwner);
+				ensureAgentSession(sessionId, handoffOwner, bootstrapRoot);
 				const taskSession = swarmState.agentSessions.get(sessionId);
 				if (taskSession) {
 					taskSession.delegationActive = false;
