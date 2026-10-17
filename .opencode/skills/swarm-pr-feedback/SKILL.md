@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "a7fade5b1c40"
+  swarm-contract-digest: "22867620e4cf"
 ---
 
 # Swarm PR Feedback
@@ -333,7 +333,7 @@ Rules:
     each must be explicitly justified in the closure ledger.
 - **The closure ledger at the end of the run must account for every `FB-###`
   item** with a final status (fixed / disproved / pre-existing / needs user
-  decision / needs more evidence).
+  decision / needs more evidence); each unfixed item also gets one disposition (FIX-NOW / ABSORB / FILE / RECORD / ASK) per `references/followup-dispositions.md`.
 - **Comments from the latest bot round take precedence over earlier rounds**
   for the same finding; the earlier-round `FB-###` item is updated with the
   new evidence rather than a new item being created.
@@ -403,7 +403,7 @@ or compatibility policy, mark the item `NEEDS_USER_DECISION` and ask.
 - Do not implement speculative cleanup while feedback remains unclosed.
 - Never ship unwired code. Any new command, tool, skill, config, docs surface, or
   generated artifact must be fully registered and validated.
-- Never defer work or declare it out of scope without explicit user instruction.
+- Never defer work or declare it out of scope without explicit user instruction; route every unfixed item through `references/followup-dispositions.md` (RECORD is a visible closure, never a silent drop).
 - Keep invalid or disproved findings in the closure ledger with the evidence.
 - For CI failures, verify the failing job belongs to the current PR head before
   treating it as current evidence.

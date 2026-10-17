@@ -102,6 +102,42 @@ The core is the required minimum. For issues whose fix has real design surface, 
 - [ ] No vacuous checks; argv runnable from repo root; expect describes the base leg
 - [ ] Program issues: title `[Workstream <letter>] PR n of m`, Sequence section, one issue = one PR
 - [ ] Any NON-EXECUTABLE criterion carries a closed-enum reason and named substitute evidence (not a forced check)
+- [ ] Follow-up issues: passed the necessity gate below, collated one per source PR, titled `Follow-up from PR #N: <theme>`
+
+### Filing follow-up issues
+
+This section covers work found during a PR review, a PR-feedback round, or an issue closeout that the PR does not fix. Agents and contributors handle it the same way. Nothing is silently dropped. Equally, not every leftover becomes an issue: most review findings are never acted on, and filing all of them turns review noise into backlog noise.
+
+**1. Give every unfixed item exactly one disposition.**
+
+| Disposition | When |
+|---|---|
+| `FIX-NOW` | The PR introduced it (mandatory), or it is small and inside the PR's files and scope. |
+| `ABSORB` | An open issue already covers it. Comment on that issue with the new evidence instead of opening a new one. |
+| `FILE` | It passes the necessity gate (step 2). |
+| `RECORD` | It fails the gate. Add a row to the PR body's "Considered, not filed" table with: the item, the reason, which gate test failed, and a re-evaluation trigger. This is a complete closure. |
+| `ASK` | It needs a product or maintainer decision. Ask before filing anything. |
+
+**2. Apply the necessity gate.** `FILE` only when all four hold:
+
+1. **Verified.** An executed probe or an exact `path:line` source trace proves it on the current head. An `INFERENCE` is never filed as a fix issue.
+2. **Consequential.** There is a concrete, reachable trigger with a correctness, safety or security, data-loss, or workflow-blocking consequence. Coverage gaps, docs, wording, and "could harden" items fail unless they hide a real defect.
+3. **Material.** It is on a hot path, invalidates a gate or contract, or blocks planned work.
+4. **Untracked and not fixable here.** No open issue covers it, and it cannot be fixed in the PR without leaving the PR's files or scope.
+
+**3. Collate the survivors.**
+
+- All `FILE` items from one PR go into one issue titled `Follow-up from PR #<N>: <theme>`, in the executable-contract format above, with one acceptance criterion per item.
+- Split into a second issue only when the items genuinely need separate PRs. A HIGH-severity item (fail-open gate, security, data loss) may stand alone.
+- More than two follow-up issues from one PR needs the maintainer's go-ahead before filing.
+
+**4. Respect the two tiers.**
+
+- **Priority** items (a wedge, fail-open gate, security, or data loss) are filed at closeout.
+- **Improvement** items that pass the gate are proposed as a list in the closeout and filed only once the maintainer approves.
+- Findings about the review or feedback process itself, such as an incomplete ledger or a missed disposition, are `RECORD` unless they block a workflow.
+
+**5. Keep the record true.** A disposition is written only after it is true on the live artifact: the issue is filed, the comment is posted, or the table row is in the PR body. The swarm-pr-feedback ledger form of this rule is `.opencode/skills/swarm-pr-feedback/references/followup-dispositions.md`.
 
 ### Repo notes (opencode-swarm)
 
