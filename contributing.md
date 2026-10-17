@@ -106,7 +106,7 @@ The core is the required minimum. For issues whose fix has real design surface, 
 
 ### Filing follow-up issues
 
-This section covers work found during a PR review or a PR-feedback round that the PR does not fix. Agents and contributors handle it the same way. Issue-tracer closeouts keep their own full-resolution contract (`.opencode/skills/issue-tracer/references/full-resolution-contract.md`): a separable concern there is fixed or filed with the user's acknowledgment, and this section does not waive any of its clauses. Collation and the title convention below still apply to issues filed from a trace. Anything the PR introduced is fixed in the PR, not routed here; a small pre-existing item inside the PR's files and scope is fixed only with the maintainer's go-ahead. Nothing is silently dropped. Equally, not every leftover becomes an issue: most review findings are never acted on, and filing all of them turns review noise into backlog noise.
+This section covers work found during a PR review or a PR-feedback round that the PR does not fix. Agents and contributors handle it the same way. Issue-tracer closeouts keep their own full-resolution contract (the issue-tracer skill's `references/full-resolution-contract.md`): a separable concern there is fixed or filed with the user's acknowledgment, and this section does not waive any of its clauses. Collation and the title convention below still apply to issues filed from a trace. Anything the PR introduced is fixed in the PR, not routed here; a small pre-existing item inside the PR's files and scope is fixed only with the maintainer's go-ahead. Nothing is silently dropped. Equally, not every leftover becomes an issue: most review findings are never acted on, and filing all of them turns review noise into backlog noise.
 
 **1. Give every unfixed item exactly one disposition.**
 
@@ -138,7 +138,7 @@ This section covers work found during a PR review or a PR-feedback round that th
 - **Improvement** items that pass the gate are proposed as a list in the final response to the maintainer and filed only once the maintainer approves.
 - Findings about how the review or feedback round was conducted, such as an incomplete ledger or a missed disposition, are `RECORD` unless they block a workflow. This never covers defects in any code, skill text, or gate, changed by the PR or not: PR-introduced ones are fixed in the PR, and a fail-open gate is Priority.
 
-**5. Keep the record true.** A disposition is planned before the closeout review and executed after the push. The published record states it only after it is true on the live artifact: the issue is filed, the comment is posted, or the table row is in the PR body. The swarm-pr-feedback ledger form of this rule is `.opencode/skills/swarm-pr-feedback/references/followup-dispositions.md`.
+**5. Keep the record true.** A disposition is planned before the closeout review and executed after the push. The published record states it only after it is true on the live artifact: the issue is filed, the comment is posted, or the table row is in the PR body. The swarm-pr-feedback ledger form of this rule is the swarm-pr-feedback skill's `references/followup-dispositions.md`.
 
 ### Repo notes (opencode-swarm)
 
