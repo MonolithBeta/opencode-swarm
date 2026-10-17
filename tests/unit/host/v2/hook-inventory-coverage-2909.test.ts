@@ -125,7 +125,11 @@ describe('acceptance evidence durability (#2909 closure contract)', () => {
 			'utf8',
 		);
 		expect(v1Log).toMatch(/^HOST:.*1\.19\.0/m);
-		expect(v1Log).toMatch(/^ENTRYPOINT:.*server/m);
+		// Anchored past the colon: the marker must NAME server() as the invoked
+		// entrypoint, not merely contain the substring somewhere in the line
+		// (implementation-review finding 1: prose mentioning the other host's
+		// key satisfied the loose form).
+		expect(v1Log).toMatch(/^ENTRYPOINT: server/m);
 		expect(v1Log).toMatch(/^HOOK-FIRED:/m);
 
 		const v2Log = fs.readFileSync(
@@ -133,17 +137,30 @@ describe('acceptance evidence durability (#2909 closure contract)', () => {
 			'utf8',
 		);
 		expect(v2Log).toMatch(/^HOST:.*2\.0\.29/m);
-		expect(v2Log).toMatch(/^ENTRYPOINT:.*setup/m);
+		expect(v2Log).toMatch(/^ENTRYPOINT: setup/m);
 		expect(v2Log).toMatch(/^HOOK-FIRED:/m);
 
 		const ablationLogs = fs
 			.readdirSync(path.join(SPIKE_DIR, 'logs'))
 			.filter((f) => f.includes('ablation'));
-		expect(ablationLogs.length).toBeGreaterThanOrEqual(1);
+		expect(ablationLogs.length).toBe(4);
 		const ablationText = ablationLogs
 			.map((f) => fs.readFileSync(path.join(SPIKE_DIR, 'logs', f), 'utf8'))
 			.join('\n');
-		expect(ablationText).toMatch(/^ABLATION:/m);
+		// Every ablation leg must carry a computed MATCH verdict, and the v2
+		// no-setup leg must quote the host's literal decode error.
+		expect(ablationText.match(/^ABLATION:[^\n]*MATCH/gm)?.length).toBe(4);
+		expect(ablationText).not.toMatch(
+			/^ABLATION:[^\n]*(MISMATCH|HARNESS ERROR)/m,
+		);
+		expect(
+			fs.readFileSync(
+				path.join(SPIKE_DIR, 'logs', 'v2-nosetup-ablation.log'),
+				'utf8',
+			),
+		).toContain(
+			'Plugin must export a default definition with an id and an effect or setup function.',
+		);
 	});
 
 	test('ADR-0003 appendices: first-turn window measurement and dated invalidation re-check', () => {

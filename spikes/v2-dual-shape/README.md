@@ -85,12 +85,14 @@ package the issue sketched.
 - v1: none observed on the isolated runs (the "Ignored N invalid config
   keys" advisory seen with the developer's real user config does not appear
   under the isolated scratch config).
-- v2: `sqlite-vec extension not available — dense retrieval disabled`
-  (Cannot find module '@sqlite/sqlite-vec/package.json' from the repo
-  `dist/index.js`) — a pre-existing optional-dependency gap when running from
-  a repo checkout rather than the packed npm tarball; non-fatal, dense
-  retrieval falls back. Also note the npm `.cmd` shim postinstall guard
-  described under Hosts.
+- v2 (exploratory runs only): `sqlite-vec extension not available — dense
+  retrieval disabled` (Cannot find module '@sqlite/sqlite-vec/package.json'
+  from the repo `dist/index.js`) — a pre-existing optional-dependency gap when
+  running from a repo checkout rather than the packed npm tarball; non-fatal,
+  dense retrieval falls back. Observed during the non-isolated exploratory
+  boot (user-config environment); the committed isolated run's parser
+  reported `WARNINGS: none observed`. Also note the npm `.cmd` shim
+  postinstall guard described under Hosts.
 
 ## Re-run
 
