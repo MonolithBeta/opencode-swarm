@@ -1117,6 +1117,42 @@ function readTrustedRepositoryValidationContract(
 	return current;
 }
 
+/**
+ * Trust a compound package script only when its text is byte-identical at the
+ * immutable merge base (issue #3314). Same trust root as the `.pr-validation.json`
+ * path above; fail-closed on absent provenance, unreadable/unparseable/oversized
+ * base manifests, and non-string script values on either side.
+ */
+function isBaseIdenticalRepositoryScript(
+	canonicalRoot: string,
+	candidateRoot: string,
+	script: string,
+	workingTreeScript: unknown,
+	contractBase: ContractBaseProvenance | undefined,
+): boolean {
+	if (!contractBase || typeof workingTreeScript !== 'string') return false;
+	const workspaceRelative =
+		path.relative(canonicalRoot, candidateRoot).replaceAll('\\', '/') || '.';
+	const relativeManifest =
+		workspaceRelative === '.'
+			? 'package.json'
+			: `${workspaceRelative}/package.json`;
+	const baseText = _internals.readGitTextAtRevision(
+		canonicalRoot,
+		contractBase.baseSha,
+		relativeManifest,
+	);
+	if (baseText === null || baseText.length > 512 * 1024) return false;
+	try {
+		const baseScript = (
+			JSON.parse(baseText) as { scripts?: Record<string, unknown> }
+		).scripts?.[script];
+		return typeof baseScript === 'string' && baseScript === workingTreeScript;
+	} catch {
+		return false;
+	}
+}
+
 type StageACheckInput = z.infer<typeof StageACheckSchema>;
 
 function isExactRepositoryContractValidator(
@@ -1782,7 +1818,23 @@ function discoverApplicableStageAObligations(
 						);
 						if (!declaredCommand) {
 							if (!authorizingValidator) {
-								discoveryOverflow = `Stage A opaque package script ${path.relative(canonicalRoot, candidateRoot).replaceAll('\\', '/') || '.'}/package.json#${script} requires a trusted base-identical contract validator for ${category}`;
+								if (
+									isBaseIdenticalRepositoryScript(
+										canonicalRoot,
+										candidateRoot,
+										script,
+										commandText,
+										contractBase,
+									)
+								) {
+									addObligation(
+										category,
+										candidateRoot,
+										`package.json#${script}`,
+									);
+									continue;
+								}
+								discoveryOverflow = `Stage A opaque package script ${path.relative(canonicalRoot, candidateRoot).replaceAll('\\', '/') || '.'}/package.json#${script} requires a trusted base-identical contract validator for ${category} — commit a base-identical .pr-validation.json validator, or keep the script unchanged from the merge base named by base_ref and base_sha and select it exactly through the package manager`;
 							}
 							continue;
 						}
