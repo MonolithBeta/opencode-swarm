@@ -19,7 +19,7 @@ import {
 	resetSwarmState,
 	swarmState,
 } from '../../../src/state';
-import { canonicalMkdtemp } from '../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../helpers/tmpdir';
 
 const TEST_SUITE_BLOCK_MESSAGE =
 	'BLOCKED: Full test suite execution is not allowed in-session. Run a specific test file instead: bun test path/to/file.test.ts';
@@ -45,6 +45,7 @@ describe('full test-suite block stays for prefixed swarm agents (#3320)', () => 
 
 	afterEach(() => {
 		resetSwarmState();
+		removeTreeWithRetry(testDir);
 	});
 
 	for (const agentName of ['mega_architect', 'mega_coder', 'local_coder']) {

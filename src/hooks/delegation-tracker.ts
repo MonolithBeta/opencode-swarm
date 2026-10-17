@@ -51,6 +51,18 @@ export function createDelegationTrackerHook(
 		// This is also a verified invocation boundary: fatal non-transient stops
 		// belong to the prior turn and must not poison the corrected turn.
 		if (!input.agent || input.agent === '') {
+			// #3320 review round (PRR-005): with auto_select_architect enabled an
+			// agent-less turn IS the default (architect) agent taking over — a
+			// PRIMARY-owner observation per the issue's AC11. Without this re-arm
+			// a single native turn would pin the owner to that native agent
+			// forever in this mode (the agent-less branch only reads the record).
+			const autoSelect = config.auto_select_architect;
+			if (
+				autoSelect === true ||
+				(typeof autoSelect === 'string' && autoSelect.trim() !== '')
+			) {
+				recordPrimaryOwner(input.sessionID, ORCHESTRATOR_NAME);
+			}
 			const owner = getPrimaryOwner(input.sessionID) ?? ORCHESTRATOR_NAME;
 			const session = ensureAgentSession(input.sessionID, owner, directory);
 			session.delegationActive = false;

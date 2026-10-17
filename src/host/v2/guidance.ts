@@ -66,11 +66,20 @@ function toV1MessageView(
 			id: typeof message.id === 'string' ? message.id : undefined,
 			role: message.role,
 			sessionID,
-			// #3320: stamp the session's agent on the views so the v1 message
+			// #3320: stamp the session's agent on USER views so the v1 message
 			// stages (which key on info.agent) can tell a plan/build turn from
 			// the architect main session. Absent when the event carries no agent
 			// — the main session keeps identity-absent semantics.
-			...(agentName !== undefined ? { agent: agentName } : {}),
+			// #3320 review round (PRR-011): USER views only. The v1 SDK shape
+			// carries `agent` on UserMessage and NOT on AssistantMessage; stamping
+			// assistant views fabricated that field and made the role-unfiltered
+			// consumers (delegation-sanitizer, knowledge-application-gate,
+			// skill-propagation-gate) match the session agent's own ASSISTANT
+			// output — rewriting gate agents' verdict text and letting an
+			// architect's reply satisfy ack/verdict scans.
+			...(message.role === 'user' && agentName !== undefined
+				? { agent: agentName }
+				: {}),
 		},
 		parts: textParts,
 	};

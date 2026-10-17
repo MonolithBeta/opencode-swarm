@@ -5063,7 +5063,14 @@ async function initializeOpenCodeSwarm(
 				);
 			// If no active agent is mapped for this session, it's the primary agent (architect)
 			// Subagent delegations always set activeAgent via chat.message before tool calls
-			if (!swarmState.activeAgent.has(input.sessionID)) {
+			// #3320 review round: an existing 'unknown' entry is the ensureAgentSession
+			// placeholder (session created without an agent name), not an identity —
+			// treat it as unmapped so the architect default (and the swarm-only
+			// enforcement keyed on identity downstream) still applies to it.
+			if (
+				!swarmState.activeAgent.has(input.sessionID) ||
+				swarmState.activeAgent.get(input.sessionID) === 'unknown'
+			) {
 				swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
 			}
 

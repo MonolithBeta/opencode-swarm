@@ -25,25 +25,34 @@ per-session PRIMARY-owner record (`getPrimaryOwner` / `isSwarmOwnedSession` /
 handoff: the Task-completion handoff and the delegation tracker's no-agent
 branch restore `primaryOwner ?? architect`; the stale-delegation revert now
 applies only to registered swarm subagents; v2 message views stamp
-`info.agent`, the v2 prompt adapter passes the last-known agent, and the
-pipeline-tracker / delegation-gate message stages resolve identity through
-the shared `resolveMessageTransformContext` (also fixing prefixed architects
-— `mega_architect` — never receiving the workflow reminder); the full
-test-suite block is scoped to swarm-owned sessions (destructive-command,
-containment, and symlink checks stay universal; the Task-to-coder ACCEPTANCE
-gate stays target-keyed); sessionless `system.transform` calls (title,
-summary, agent generation) emit no swarm-specific system text, including the
-swarm-command-rule banner.
+`info.agent` on USER views, and the pipeline-tracker / delegation-gate message
+stages resolve identity through the shared
+`resolveMessageTransformContext` (also fixing prefixed architects —
+`mega_architect` — never receiving the workflow reminder, and treating the
+`unknown` placeholder identity as unmapped so first-turn architect sessions
+keep their guidance); the full test-suite block is scoped to swarm-owned
+sessions (destructive-command, containment, and symlink checks stay universal;
+the Task-to-coder ACCEPTANCE gate stays target-keyed); sessionless
+`system.transform` calls (title, summary, agent generation) emit no
+swarm-specific system text, including the swarm-command-rule banner and the
+sessionless HF-1b emission.
 
-## Deliberately updated pinned test
+## Deliberately updated pinned tests
 
-`tests/integration/system-transform-global-mode-fallback.test.ts` pinned the
-OLD sessionless-emission behavior (borrowing another session's TURBO/FULL-AUTO
-flags and the PLANNING PROFILE producer). Its three sessionless cases now
-assert the new no-swarm-text contract with byte-exact equality; the sanction
-comes from the issue body itself ("they are replaced; they are not deleted or
-weakened without replacement"), and the new contract is also pinned by the
-new `tests/integration/system-transform-sessionless-no-swarm-text.test.ts`.
+Two pre-existing suites pinned the OLD sessionless behavior and are updated
+under the issue's replacement discipline (replaced, not weakened; each new
+assertion pins the replacement contract):
+
+- `tests/integration/system-transform-global-mode-fallback.test.ts` — its
+  three sessionless cases asserted borrowing another session's TURBO/FULL-AUTO
+  flags and the PLANNING PROFILE producer; they now assert the new
+  no-swarm-text contract with byte-exact equality. Independently pinned by the
+  new `system-transform-sessionless-no-swarm-text.test.ts`.
+- `tests/unit/hooks/system-enhancer-hf1b-adversarial.test.ts` (ATTACK 7) —
+  pinned a sessionless HF-1b emission; sessionless surfaces execute no tools,
+  so the guard's protective value there was nil. ATTACK 7 now asserts the
+  sessionless call emits nothing. Session-bound HF-1b behavior is unchanged
+  (ATTACK 1-6).
 
 ## Known caveats
 
@@ -53,6 +62,14 @@ new `tests/integration/system-transform-sessionless-no-swarm-text.test.ts`.
 - A v2 plan/build session's very first `prompt` event (before any context
   event records its owner) still follows today's behavior until the next
   seeding event.
+- With `auto_select_architect` enabled, an agent-less turn IS the default
+  architect taking over — it re-arms the primary owner to `architect`. A
+  session that ran one native-agent turn and then returns to agent-less
+  default turns is an architect session again (per that option's own
+  semantics).
+- Message-view identity stamping is USER views only (the v1 SDK shape carries
+  `agent` on `UserMessage`, never on `AssistantMessage`), so role-unfiltered
+  consumers keep matching user-authored turns only.
 - `/swarm memory` instruction-pairing can still re-stamp a session identity
   to architect — same defect class, separate surface, filed as #3372.
 
