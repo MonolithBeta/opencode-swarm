@@ -20,6 +20,7 @@ import {
 	findRetiredEpicConfigKeys,
 	GATE_CONFIG_KNOWN_SECTION_KEYS,
 	GateConfigSchema,
+	HooksConfigSchema,
 	PluginConfigSchema,
 	retiredEpicKeyReplacement,
 	stripKnownSwarmPrefix,
@@ -1476,16 +1477,10 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 				value !== null
 			) {
 				const hooks = value as Record<string, unknown>;
-				// Check for deprecated/unknown hook fields
-				const validHooks = [
-					'system_enhancer',
-					'compaction',
-					'agent_activity',
-					'delegation_tracker',
-					'agent_awareness_max_chars',
-					'delegation_gate',
-					'delegation_max_chars',
-				];
+				// Check for deprecated/unknown hook fields. Derived from the schema so a
+				// newly added hooks.* key can never be flagged as unknown (and removed
+				// by --fix) while HooksConfigSchema accepts it.
+				const validHooks: string[] = Object.keys(HooksConfigSchema.shape);
 				for (const hookName of Object.keys(hooks)) {
 					if (!validHooks.includes(hookName)) {
 						findings.push({
