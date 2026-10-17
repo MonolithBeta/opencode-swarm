@@ -388,7 +388,7 @@ describe('seed re-pairing (PRR-009)', () => {
 		seedV1SessionState('seed-s2', 'sre-planner', directory);
 		const session = swarmState.agentSessions.get('seed-s2');
 		expect(session).toBeDefined();
-		const staleTimestamp = Date.now() - 25_000;
+		const staleTimestamp = 1_000;
 		session!.lastAgentEventTime = staleTimestamp;
 
 		seedV1SessionState('seed-s2', 'sre-planner', directory);
@@ -412,7 +412,7 @@ describe('seed re-pairing (PRR-009)', () => {
 		expect(window).not.toBeNull();
 		window!.hardLimitHit = true;
 		session.delegationActive = false;
-		session.lastAgentEventTime = Date.now() - 25_000;
+		session.lastAgentEventTime = 1_000;
 		swarmState.activeAgent.set(sessionID, 'coder');
 
 		const beforeHook = plugin['tool.execute.before'] as (
