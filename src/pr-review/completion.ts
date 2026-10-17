@@ -529,6 +529,11 @@ const PR_REVIEW_FAILURE_CLASS_SAFE_DETAILS: Record<
 		'lane was abandoned by its host (presumed-stale sweep or unobservable host session) without an observed agent failure',
 	operator_cancelled:
 		'lane was cancelled by an explicit operator action (confirmed cancel or human force abort), not by a host or provider failure',
+	// Issue #3311: verdict-lane contract/transport failures carry their own
+	// class. Base dimensions cannot produce it (verdict lanes are not base
+	// lanes), but the map is exhaustive over the disclosure vocabulary.
+	verdict_contract:
+		'vedict lane failed its verdict-row or transport contract (issue #3311 typed terminal class)',
 };
 
 const PrReviewUnresolvedDimensionRecordSchema = z
@@ -938,7 +943,41 @@ function latestTypedFailureForBaseDimension(
 					!terminal && CIRCUIT_TERMINAL_DELEGATION_STATUSES.has(record.status);
 				const result = terminal?.result ?? record.result;
 				const failureClass = result?.workflowLaneFailureClass;
-				if ((!terminal && !eventlessFailure) || !failureClass) continue;
+				if ((!terminal && !eventlessFailure) || !failureClass) {
+					// Issue #3311: a classless provider-terminal record (status
+					// 'error' with terminalErrorClass present, no
+					// workflowLaneFailureClass) is the pre-upgrade settle shape —
+					// typed 'resource' here rather than skipped, so a provider-dead
+					// base dimension derives FAILED/resource instead of tripping
+					// the "lacks a typed terminal failure" admission throw. Scoped
+					// to status 'error': an aborted provider terminal settles
+					// 'cancelled' and must never become typed-dead evidence (the
+					// #3311 AC26 laundering guard).
+					if (
+						(terminal?.status ?? record.status) === 'error' &&
+						result?.terminalErrorClass != null
+					) {
+						const candidateAborted = {
+							failureClass: 'resource' as const,
+							terminalEventId: terminal
+								? terminal.eventId
+								: `eventless:${record.status}:${result?.digest ?? ''}`,
+							recordedAt: terminal ? terminal.recordedAt : 0,
+							batchId: batch.batchId,
+							laneId: lane.laneId,
+						};
+						if (
+							!latest ||
+							candidateAborted.recordedAt > latest.recordedAt ||
+							(candidateAborted.recordedAt === latest.recordedAt &&
+								candidateAborted.terminalEventId > latest.terminalEventId)
+						) {
+							latest = candidateAborted;
+						}
+						continue;
+					}
+					continue;
+				}
 				if ((terminal?.status ?? record.status) === 'completed') continue;
 				const candidate = {
 					failureClass,
