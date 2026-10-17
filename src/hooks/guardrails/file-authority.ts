@@ -570,7 +570,7 @@ export function matchesAuthorityDenyPrefix(
 export function buildEffectiveRules(
 	authorityConfig?: AuthorityConfig,
 ): Record<string, AgentRule> {
-	if (authorityConfig?.enabled === false || !authorityConfig?.rules) {
+	if (!authorityConfig?.rules) {
 		return { ...DEFAULT_AGENT_AUTHORITY_RULES };
 	}
 	const entries = Object.entries(authorityConfig.rules);
@@ -849,16 +849,6 @@ export function checkFileAuthorityWithRules(
 		});
 	}
 
-	const rules =
-		effectiveRules[normalizedAgent] ?? effectiveRules[strippedAgent];
-	if (!rules) {
-		return denyAuthority(agentName, normalizedPath, {
-			code: 'AUTHORITY_UNKNOWN_AGENT',
-			layer: 'role-capability',
-			rule: 'known-agent-role',
-			detail: 'Unknown agent: no authority classification exists',
-		});
-	}
 	const flavor = getPathFlavor();
 	const matchesPathPrefix = (candidate: string, prefix: string): boolean =>
 		isPathIdentityWithin(
@@ -932,6 +922,26 @@ export function checkFileAuthorityWithRules(
 		});
 	}
 
+	if (options.authorityEnabled === false) {
+		return {
+			allowed: true,
+			layer: 'role-policy',
+			path: sanitizeDiagnosticText(normalizedPath, 320),
+			agent: sanitizeDiagnosticText(agentName, 96),
+		};
+	}
+
+	const rules =
+		effectiveRules[normalizedAgent] ?? effectiveRules[strippedAgent];
+	if (!rules) {
+		return denyAuthority(agentName, normalizedPath, {
+			code: 'AUTHORITY_UNKNOWN_AGENT',
+			layer: 'role-capability',
+			rule: 'known-agent-role',
+			detail: 'Unknown agent: no authority classification exists',
+		});
+	}
+
 	// Configurable readOnly only narrows roles that otherwise have write ability.
 	if (rules.readOnly) {
 		return denyAuthority(agentName, normalizedPath, {
@@ -951,14 +961,6 @@ export function checkFileAuthorityWithRules(
 		return {
 			allowed: true,
 			layer: 'declared-scope',
-			path: sanitizeDiagnosticText(normalizedPath, 320),
-			agent: sanitizeDiagnosticText(agentName, 96),
-		};
-	}
-	if (options.authorityEnabled === false) {
-		return {
-			allowed: true,
-			layer: 'role-policy',
 			path: sanitizeDiagnosticText(normalizedPath, 320),
 			agent: sanitizeDiagnosticText(agentName, 96),
 		};
