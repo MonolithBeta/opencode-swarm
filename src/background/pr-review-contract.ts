@@ -802,6 +802,15 @@ export const PrReviewReviewerVerdictFieldsSchema = z
 		}
 		// #3310: a CONFIRMED finding with no severity is incoherent — it is
 		// the one classification for which even DOWNGRADED is impossible.
+		// #3336 in-flight replay: lane artifacts persist RAW text (no
+		// write-time row validation; validation happens at read), so a
+		// reviewer artifact written BEFORE this tightening re-parses under
+		// the live schema on every composition — the CONFIRMED+NONE row now
+		// FAILS validation, its item stays unclaimed, and the phase settles
+		// fail-closed ("items lack an authenticated verdict", forced re-run).
+		// That fail-closed replay is the documented, tested contract; a
+		// verdict-semantic version gate is deliberately out of scope here
+		// (tracked in #3358 AC3).
 		if (fields[2] === 'CONFIRMED' && fields[4] === 'NONE') {
 			ctx.addIssue({
 				code: 'custom',
@@ -844,6 +853,18 @@ export const PrReviewCriticVerdictFieldsSchema = z
 			// rank-equality rule itself lives in the adapter
 			// (validateCriticVerdictFields), which also enforces that UPHELD
 			// keeps the reviewer's exact severity rank.
+			//
+			// #3336 in-flight replay — the ACCEPTING direction: artifacts
+			// persist raw text with no write-time row validation, so a
+			// pre-upgrade critic artifact CAN hold an `UPHELD | LOW/INFO` row
+			// the pre-#3310 read schema rejected (its item was unclaimed and
+			// the phase blocked). After this widening, the same persisted row
+			// becomes CLAIMABLE on the first composition with no re-run —
+			// provided its bound reviewer row still validates under the live
+			// schema. Both replay directions (this acceptance, and the
+			// CONFIRMED+NONE fail-closed flip above) are the documented,
+			// tested consequence of re-parsing durable artifacts through the
+			// live schema with no verdict-semantic version gate (#3358).
 			ctx.addIssue({
 				code: 'custom',
 				path: [3],
@@ -1105,6 +1126,25 @@ export function encodePrReviewVerdictRow(
 		);
 	}
 	return parsed.data.map(encodePrReviewVerdictField).join(' | ');
+}
+
+/**
+ * Issue #3335: does any LINE of `text` parse as a live verdict row of `kind`?
+ * The reference grammar is `parsePrReviewVerdictRow` itself (fields are
+ * pipe-split and `.trim()`-ed — Unicode whitespace — and the marker matches by
+ * equality), so prompt-side guards derive their verdict-row detection from
+ * THIS function instead of reimplementing a regex that drifts from the parser.
+ * Splits lines exactly like the transport consumer (`indexVerdictRows`:
+ * `/\r?\n/`), so a lone `\r` stays in-line, exactly as the parser sees it.
+ */
+export function firstPrReviewVerdictRowTemplateLine(
+	text: string,
+	kind: PrReviewVerdictKind,
+): string | null {
+	for (const line of text.split(/\r?\n/)) {
+		if (parsePrReviewVerdictRow(line, kind) !== null) return line;
+	}
+	return null;
 }
 
 export function parsePrReviewVerdictRow(
