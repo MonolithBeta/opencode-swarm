@@ -962,7 +962,14 @@ function latestTypedFailureForBaseDimension(
 							terminalEventId: terminal
 								? terminal.eventId
 								: `eventless:${record.status}:${result?.digest ?? ''}`,
-							recordedAt: terminal ? terminal.recordedAt : 0,
+							// Same eventless fallback as the sibling candidate below:
+							// `0` would sort this candidate oldest in the latest-
+							// terminal tie-break, letting a chronologically earlier
+							// typed failure win the dimension's disclosed class
+							// (Copilot review finding on #3388).
+							recordedAt: terminal
+								? terminal.recordedAt
+								: (record.completedAt ?? record.updatedAt),
 							batchId: batch.batchId,
 							laneId: lane.laneId,
 						};
