@@ -79,7 +79,11 @@ describe('authority.enabled=false hard-policy hook coverage (FB-006)', () => {
 			authority,
 		).toolBefore;
 
-		const customSession = ensureAgentSession('sre-session', 'sre-planner', directory);
+		const customSession = ensureAgentSession(
+			'sre-session',
+			'sre-planner',
+			directory,
+		);
 		customSession.delegationActive = true;
 		swarmState.activeAgent.set('sre-session', 'sre-planner');
 		beginInvocation('sre-session', 'sre-planner');
@@ -110,25 +114,42 @@ describe('authority.enabled=false hard-policy hook coverage (FB-006)', () => {
 	});
 
 	test('checkFileAuthority allows custom agent when authority is disabled or configured in rules', () => {
-		const { checkFileAuthority } = require('../../../src/hooks/guardrails/file-authority');
+		const {
+			checkFileAuthority,
+		} = require('../../../src/hooks/guardrails/file-authority');
 
 		// 1. When authority is disabled, unknown agents are allowed for normal paths
-		const disabledResult = checkFileAuthority('sre-planner', 'tests/unit/test.py', directory, {
-			enabled: false,
-		});
+		const disabledResult = checkFileAuthority(
+			'sre-planner',
+			'tests/unit/test.py',
+			directory,
+			{
+				enabled: false,
+			},
+		);
 		expect(disabledResult.allowed).toBe(true);
 
 		// 2. When authority is enabled, configured custom agent in rules is allowed
-		const configuredResult = checkFileAuthority('builder', 'src/file.py', directory, {
-			enabled: true,
-			rules: { builder: {} },
-		});
+		const configuredResult = checkFileAuthority(
+			'builder',
+			'src/file.py',
+			directory,
+			{
+				enabled: true,
+				rules: { builder: {} },
+			},
+		);
 		expect(configuredResult.allowed).toBe(true);
 
 		// 3. When authority is enabled, unconfigured custom agent is denied with AUTHORITY_UNKNOWN_AGENT
-		const unknownResult = checkFileAuthority('builder', 'src/file.py', directory, {
-			enabled: true,
-		});
+		const unknownResult = checkFileAuthority(
+			'builder',
+			'src/file.py',
+			directory,
+			{
+				enabled: true,
+			},
+		);
 		expect(unknownResult.allowed).toBe(false);
 		expect(unknownResult.code).toBe('AUTHORITY_UNKNOWN_AGENT');
 	});
