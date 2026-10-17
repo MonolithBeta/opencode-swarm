@@ -392,7 +392,8 @@ export function seedV1SessionState(
 	const agentName = normalizeV2AgentRef(agentRef);
 	if (agentName === undefined) return sessionID;
 	try {
-		ensureAgentSession(sessionID, agentName, directory);
+		const session = ensureAgentSession(sessionID, agentName, directory);
+		session.lastAgentEventTime = Date.now();
 	} catch {
 		// ensureAgentSession is best-effort here; the v1 chain re-resolves.
 	}

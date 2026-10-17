@@ -379,4 +379,103 @@ describe('seed re-pairing (PRR-009)', () => {
 		seedV1SessionState('seed-s1', 'reviewer', directory);
 		expect(swarmState.activeAgent.get('seed-s1')).toBe('reviewer');
 	});
+
+	test('seedV1SessionState refreshes lastAgentEventTime when re-seeded with the same agent', async () => {
+		const { seedV1SessionState } = await import(
+			'../../../../src/host/v2/setup'
+		);
+		const directory = canonicalMkdtemp('swarm-v2-seed-time-');
+		seedV1SessionState('seed-s2', 'sre-planner', directory);
+		const session = swarmState.agentSessions.get('seed-s2');
+		expect(session).toBeDefined();
+		const staleTimestamp = Date.now() - 25_000;
+		session!.lastAgentEventTime = staleTimestamp;
+
+		seedV1SessionState('seed-s2', 'sre-planner', directory);
+		expect(session!.lastAgentEventTime).toBeGreaterThan(staleTimestamp);
+	});
+
+	test('v2 tool.execute.before preserves host-provided agent and does not bypass circuit breaker after >10s', async () => {
+		const OpenCodeSwarm = (await import('../../../../src/index')).default;
+		const directory = canonicalMkdtemp('swarm-v2-circuit-');
+		const plugin = await OpenCodeSwarm.server({
+			directory,
+			worktree: directory,
+		} as never);
+
+		const sessionID = 'v2-circuit-session';
+		const { beginInvocation, ensureAgentSession } = await import(
+			'../../../../src/state'
+		);
+		const session = ensureAgentSession(sessionID, 'coder', directory);
+		const window = beginInvocation(sessionID, 'coder');
+		expect(window).not.toBeNull();
+		window!.hardLimitHit = true;
+		session.delegationActive = false;
+		session.lastAgentEventTime = Date.now() - 25_000;
+		swarmState.activeAgent.set(sessionID, 'coder');
+
+		const beforeHook = plugin['tool.execute.before'] as (
+			input: Record<string, unknown>,
+			output: { args: Record<string, unknown> },
+		) => Promise<void>;
+
+		await expect(
+			beforeHook(
+				{
+					tool: 'read',
+					sessionID,
+					callID: 'call-after-10s',
+					agent: 'coder',
+				},
+				{ args: { filePath: 'README.md' } },
+			),
+		).rejects.toThrow(/CIRCUIT BREAKER/);
+		expect(swarmState.activeAgent.get(sessionID)).toBe('coder');
+		expect(swarmState.agentSessions.get(sessionID)?.agentName).toBe('coder');
+	});
+
+	test('v2 tool.execute.after Task handoff restores host-provided parent agent instead of hardcoding architect', async () => {
+		const OpenCodeSwarm = (await import('../../../../src/index')).default;
+		const directory = canonicalMkdtemp('swarm-v2-handoff-');
+		const plugin = await OpenCodeSwarm.server({
+			directory,
+			worktree: directory,
+		} as never);
+
+		const sessionID = 'v2-parent-session';
+		const { ensureAgentSession } = await import('../../../../src/state');
+		const session = ensureAgentSession(sessionID, 'sre-planner', directory);
+		session.delegationActive = true;
+		swarmState.activeAgent.set(sessionID, 'sre-planner');
+
+		const afterHook = plugin['tool.execute.after'] as (
+			input: Record<string, unknown>,
+			output: Record<string, unknown>,
+		) => Promise<void>;
+
+		await afterHook(
+			{
+				tool: 'task',
+				sessionID,
+				callID: 'task-call-1',
+				agent: 'sre-planner',
+				args: { subagent_type: 'coder' },
+			},
+			{
+				title: 'task',
+				output:
+					'<task id="child-1" state="completed"><task_result>done</task_result></task>',
+				metadata: {},
+			},
+		);
+
+		expect(swarmState.activeAgent.get(sessionID)).toBe('sre-planner');
+		expect(swarmState.agentSessions.get(sessionID)?.agentName).toBe(
+			'sre-planner',
+		);
+		expect(swarmState.agentSessions.get(sessionID)?.delegationActive).toBe(
+			false,
+		);
+	});
 });

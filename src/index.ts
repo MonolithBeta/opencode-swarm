@@ -5049,13 +5049,18 @@ async function initializeOpenCodeSwarm(
 				console.error(
 					`[DIAG] toolBefore tool=${normalizeToolName(input.tool) ?? input.tool} session=${input.sessionID}`,
 				);
+			const hostProvidedAgent = (input as { agent?: string }).agent?.trim();
 			// If no active agent is mapped for this session, it's the primary agent (architect)
 			// Subagent delegations always set activeAgent via chat.message before tool calls
 			if (!swarmState.activeAgent.has(input.sessionID)) {
-				swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
+				swarmState.activeAgent.set(
+					input.sessionID,
+					hostProvidedAgent || ORCHESTRATOR_NAME,
+				);
 			}
 
-			// Revert to primary agent if delegation appears stale.
+			// Revert to primary agent if delegation appears stale (v1 only; on v2
+			// the host passes the authoritative input.agent on every tool hook).
 			// Delegation is stale when BOTH conditions are met:
 			// 1. delegationActive is explicitly false (set by chat.message or Task toolAfter), AND
 			// 2. The session's lastAgentEventTime is >10s old (subagent completed, no chat.message reset)
@@ -5067,7 +5072,12 @@ async function initializeOpenCodeSwarm(
 			// does not prevent stale subagent identity from being detected
 			const session = swarmState.agentSessions.get(input.sessionID);
 			const activeAgent = swarmState.activeAgent.get(input.sessionID);
-			if (session && activeAgent && activeAgent !== ORCHESTRATOR_NAME) {
+			if (
+				!hostProvidedAgent &&
+				session &&
+				activeAgent &&
+				activeAgent !== ORCHESTRATOR_NAME
+			) {
 				const stripActive = stripKnownSwarmPrefix(activeAgent);
 				if (stripActive !== ORCHESTRATOR_NAME) {
 					const staleDelegation =
@@ -6103,8 +6113,10 @@ async function initializeOpenCodeSwarm(
 						.digest('hex')
 						.slice(0, 32);
 				}
-				swarmState.activeAgent.set(sessionId, ORCHESTRATOR_NAME);
-				ensureAgentSession(sessionId, ORCHESTRATOR_NAME, bootstrapRoot);
+				const restoredAgent =
+					(input as { agent?: string }).agent?.trim() || ORCHESTRATOR_NAME;
+				swarmState.activeAgent.set(sessionId, restoredAgent);
+				ensureAgentSession(sessionId, restoredAgent, bootstrapRoot);
 				const taskSession = swarmState.agentSessions.get(sessionId);
 				if (taskSession) {
 					taskSession.delegationActive = false;
