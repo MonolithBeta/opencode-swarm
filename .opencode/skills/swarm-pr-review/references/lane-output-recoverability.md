@@ -381,3 +381,28 @@ the coverage gate use a shared row parser, while the gate separately verifies
 durable provenance such as batch, session, lane, role, head, digest, and
 artifact identity. Parser success therefore proves row structure only; it does
 not settle the durable coverage obligation.
+
+## In-flight replay across plugin upgrades (#3336)
+
+Lane artifacts persist RAW row text — nothing validates verdict rows at write
+time; validation happens at read, on every composition pass. When a plugin
+upgrade tightens or widens the verdict-row schema, artifacts written by the
+OLD version re-parse under the NEW (live) schema, with no migration and no
+verdict-semantic version gate:
+
+- FAIL-CLOSED direction (reviewer, #3310 tightening): a persisted reviewer
+  `CONFIRMED` row with severity `NONE`, written before the tightening, fails
+  the live schema on re-read. Its item stays unclaimed, the phase settles
+  fail-closed with "items lack an authenticated verdict", and the run must
+  re-dispatch the affected lane. No forged or silently-dropped claim is
+  possible — an in-flight reviewer run that spans the upgrade simply fails
+  closed and re-runs.
+- ACCEPTING direction (critic, #3310 widening): a persisted `UPHELD | LOW` or
+  `UPHELD | INFO` critic row written before the widening was REJECTED by the
+  old read schema (its item was unclaimed and the phase blocked). After the
+  upgrade the same persisted row becomes claimable on the first composition,
+  with no re-run — provided its bound reviewer row still validates under the
+  live schema (a stale-bound critic row is never admitted).
+
+Both directions are the documented consequence of live-schema re-parse; they
+are pinned by tests/unit/background/pr-review-reviewer-confirmed-none.test.ts.

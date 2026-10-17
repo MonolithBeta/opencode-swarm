@@ -849,8 +849,21 @@ export function checkFileAuthorityWithRules(
 		});
 	}
 
-	const rules =
+	const classifiedRules =
 		effectiveRules[normalizedAgent] ?? effectiveRules[strippedAgent];
+	// With authority disabled, an agent that has no classification (a custom or
+	// host agent such as `sre-planner`) is not denied merely for being unknown.
+	// It still passes through every hard-policy check below (universal deny,
+	// control-state protection, canonical capabilities) and then hits the
+	// authorityEnabled === false allow. The literal `unknown` name is the
+	// fail-open sentinel for a session registered without an agent name
+	// (state.ts ensureAgentSession), so it keeps the unknown-agent denial.
+	const unclassifiedWhileDisabled =
+		!classifiedRules &&
+		options.authorityEnabled === false &&
+		normalizedAgent !== 'unknown';
+	const rules: AgentRule | undefined =
+		classifiedRules ?? (unclassifiedWhileDisabled ? {} : undefined);
 	if (!rules) {
 		return denyAuthority(agentName, normalizedPath, {
 			code: 'AUTHORITY_UNKNOWN_AGENT',
@@ -894,6 +907,25 @@ export function checkFileAuthorityWithRules(
 			rule: 'coder-control-state-protection',
 			detail:
 				'coder writes to repository control state (.git/.swarm) are always protected',
+		});
+	}
+	// Agents admitted only because authority is disabled were denied outright
+	// before authority.enabled:false admitted them, so through this file-write
+	// authority check they never gain write access to repository control state.
+	// (Shell-command writes are decided by the shell path in tool-before.ts.)
+	if (
+		unclassifiedWhileDisabled &&
+		isPolicyProtectedPath(normalizedPath, {
+			includeDefaults: false,
+			additional: ['.git', '.swarm'],
+		})
+	) {
+		return denyAuthority(agentName, normalizedPath, {
+			code: 'AUTHORITY_PROTECTED_PATH',
+			layer: 'protected-path',
+			rule: 'unclassified-agent-control-state-protection',
+			detail:
+				'unclassified agent writes to repository control state (.git/.swarm) are always protected',
 		});
 	}
 	const isSwarmRole = Object.hasOwn(AUTHORITY_ROLE_CAPABILITIES, strippedAgent);

@@ -751,18 +751,20 @@ scheduling reads only, never write authority.
 
 ## Live-State Ownership and Hydration Fencing (issue #2667)
 
-The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`
-— keyed by sessionID — and `toolAggregates`, keyed by tool/aggregate name, all
-in `src/state.ts`) are PROCESS-LOCAL: every consumer reads them through
+The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`,
+`primaryOwnerBySession` — keyed by sessionID — and `toolAggregates`, keyed by
+tool/aggregate name, all in `src/state.ts`) are PROCESS-LOCAL: every consumer reads them through
 sessionID- (or aggregate-key-) keyed accessors regardless of project. What
 changed in #2667 is that hydration — restoring one project's snapshot — no
 longer mutates state it does not own.
 
 Three layers, with distinct authority:
 
-- **Process-local** — the four live maps themselves and `pendingRehydrations`
+- **Process-local** — the five live maps themselves and `pendingRehydrations`
   (bounded by their pre-existing lifecycle mechanisms: the 2-hour idle-TTL
-  sweep for sessions, `resetSwarmState` for the rest), plus the per-project
+  sweep for sessions — which since #3320 also reclaims `primaryOwnerBySession`
+  rows — the 1000-entry FIFO on the owner map, and `resetSwarmState` for the
+  rest), plus the per-project
   registries in `src/session/hydration-ownership.ts` (hydration authority
   records, per-project rehydration caches, per-project hydrated-aggregate key
   sets — FIFO-capped at 32 entries each, with the directory→key memo
