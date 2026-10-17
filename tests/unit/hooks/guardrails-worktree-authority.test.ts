@@ -19,9 +19,18 @@ describe('guardrails-worktree-authority - Git Worktree Containment Awareness', (
 
 		// Initialise git repo and commit
 		execSync('git init -b main', { cwd: mainRepoDir, stdio: 'pipe' });
-		execSync('git config user.name "Test"', { cwd: mainRepoDir, stdio: 'pipe' });
-		execSync('git config user.email "test@example.com"', { cwd: mainRepoDir, stdio: 'pipe' });
-		execSync('git commit --allow-empty -m "initial commit"', { cwd: mainRepoDir, stdio: 'pipe' });
+		execSync('git config user.name "Test"', {
+			cwd: mainRepoDir,
+			stdio: 'pipe',
+		});
+		execSync('git config user.email "test@example.com"', {
+			cwd: mainRepoDir,
+			stdio: 'pipe',
+		});
+		execSync('git commit --allow-empty -m "initial commit"', {
+			cwd: mainRepoDir,
+			stdio: 'pipe',
+		});
 
 		// Create a linked worktree
 		execSync(`git worktree add "${worktreeDir}" -b feat/worktree`, {
@@ -49,7 +58,10 @@ describe('guardrails-worktree-authority - Git Worktree Containment Awareness', (
 	});
 
 	it('allows architect to write to a file inside a linked worktree using relative traversal path', () => {
-		const relativePath = path.relative(mainRepoDir, path.join(worktreeDir, 'src', 'index.ts'));
+		const relativePath = path.relative(
+			mainRepoDir,
+			path.join(worktreeDir, 'src', 'index.ts'),
+		);
 		// e.g. ../main-repo-worktree/src/index.ts
 		expect(relativePath.startsWith('..')).toBe(true);
 
@@ -59,9 +71,15 @@ describe('guardrails-worktree-authority - Git Worktree Containment Awareness', (
 
 	it('allows coder to write to package.json inside a linked worktree when in declared scope', () => {
 		const targetFile = path.join(worktreeDir, 'package.json');
-		const result = checkFileAuthority('coder', targetFile, mainRepoDir, undefined, {
-			declaredScope: ['package.json'],
-		});
+		const result = checkFileAuthority(
+			'coder',
+			targetFile,
+			mainRepoDir,
+			undefined,
+			{
+				declaredScope: ['package.json'],
+			},
+		);
 		expect(result.allowed).toBe(true);
 		if (result.allowed) {
 			expect(result.layer).toBe('declared-scope');
