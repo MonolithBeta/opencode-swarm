@@ -533,7 +533,7 @@ const PR_REVIEW_FAILURE_CLASS_SAFE_DETAILS: Record<
 	// class. Base dimensions cannot produce it (verdict lanes are not base
 	// lanes), but the map is exhaustive over the disclosure vocabulary.
 	verdict_contract:
-		'vedict lane failed its verdict-row or transport contract (issue #3311 typed terminal class)',
+		'verdict lane failed its verdict-row or transport contract (issue #3311 typed terminal class)',
 };
 
 const PrReviewUnresolvedDimensionRecordSchema = z
@@ -957,7 +957,7 @@ function latestTypedFailureForBaseDimension(
 						(terminal?.status ?? record.status) === 'error' &&
 						result?.terminalErrorClass != null
 					) {
-						const candidateAborted = {
+						const candidateResource = {
 							failureClass: 'resource' as const,
 							terminalEventId: terminal
 								? terminal.eventId
@@ -968,11 +968,11 @@ function latestTypedFailureForBaseDimension(
 						};
 						if (
 							!latest ||
-							candidateAborted.recordedAt > latest.recordedAt ||
-							(candidateAborted.recordedAt === latest.recordedAt &&
-								candidateAborted.terminalEventId > latest.terminalEventId)
+							candidateResource.recordedAt > latest.recordedAt ||
+							(candidateResource.recordedAt === latest.recordedAt &&
+								candidateResource.terminalEventId > latest.terminalEventId)
 						) {
-							latest = candidateAborted;
+							latest = candidateResource;
 						}
 						continue;
 					}
