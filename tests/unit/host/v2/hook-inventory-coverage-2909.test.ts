@@ -49,8 +49,10 @@ const V2_REGISTRATION_SURFACES = [
 ] as const;
 
 /** AGENTS.md invariant-10 contract sentences → acceptable inventory coverage
- * patterns. A superset of the frozen C1 token set (trace 2909); each pattern
- * is distinct so one doc occurrence cannot satisfy two sentences. */
+ * patterns. A superset of the frozen C1 token set (trace 2909). Each sentence
+ * is independently asserted; some patterns can be satisfied by the same doc
+ * region (e.g. row 7 satisfies both output.system tokens), which is accepted
+ * — the census proves presence per sentence, not per distinct doc line. */
 const INVARIANT_10_SENTENCE_TOKENS: Array<[string, RegExp]> = [
 	['v1 output.system string surface', /output\.system/],
 	[
