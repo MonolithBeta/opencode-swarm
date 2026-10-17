@@ -115,11 +115,11 @@ This section covers work found during a PR review or a PR-feedback round that th
 | `ABSORB` | An open issue already covers it. Comment on that issue with the new evidence instead of opening a new one. |
 | `FILE` | It passes the necessity gate (step 2) and is Priority, or the maintainer approved it. |
 | `RECORD` | It fails gate 1 or gate 2, or the maintainer declined it. Add a row to the PR body's "Considered, not filed" table (inside `## Summary`) with: the item, the reason, which gate test failed, and a re-evaluation trigger. This is a complete closure. |
-| `ASK` | It needs a product or maintainer decision, it fails only gate 3, or it is an Improvement item awaiting approval. Ask before filing anything; an approval makes it `FILE`, a decline makes it `RECORD`. |
+| `ASK` | It needs a product or maintainer decision, it fails only gate 3, or it is an Improvement item awaiting approval. Ask before filing anything; a decline makes it `RECORD` (quote it); an approval makes a gate-3 or Improvement item `FILE`, lands a gate-4 fix in the PR, and sends an unverified item back to investigation. |
 
 `ASK` takes precedence over fixing in the PR when the fix itself needs a product or compatibility decision. `ABSORB` takes precedence over `RECORD` when an open issue already covers the item.
 
-**2. Apply the necessity gate.** `FILE` only when all four hold. Failing gate 1 or 2 is `RECORD`, except that an unverified item claiming a wedge, fail-open gate, security, or data-loss consequence is `ASK`. Failing only gate 3 makes the item an Improvement proposal (`ASK`). Failing gate 4 means `ABSORB` (already tracked) or `ASK` to fix it in the PR (fixable here), never `RECORD`. A wedge, fail-open gate, security, or data-loss consequence satisfies gate 3.
+**2. Apply the necessity gate.** `FILE` only when all four hold, or when the maintainer approves an `ASK` proposal. Failing gate 1 or 2 is `RECORD`, except that an unverified item claiming a wedge, fail-open gate, security, or data-loss consequence is `ASK`. Failing only gate 3 makes the item an Improvement proposal (`ASK`). Failing gate 4 means `ABSORB` (already tracked) or `ASK` to fix it in the PR (fixable here), never `RECORD` without the maintainer's decline. A wedge, fail-open gate, security, or data-loss consequence satisfies gate 3.
 
 1. **Verified.** An executed probe or an exact `path:line` source trace proves it on the current head. An `INFERENCE` is never filed.
 2. **Consequential.** There is a concrete, reachable trigger with a correctness, safety or security, data-loss, or workflow-blocking consequence. Coverage gaps, docs, wording, and "could harden" items fail unless they hide a real defect.

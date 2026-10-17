@@ -5,9 +5,9 @@ PR-feedback rounds no longer turn every unfixed review finding into its own GitH
 ## Changes
 
 - **`contributing.md`: new "Filing follow-up issues" section.** It applies to agents and contributors alike.
-  - **One disposition per item the PR does not fix:** `ABSORB`, `FILE`, `RECORD` or `ASK`. Items the PR introduced, or small in-scope items, are fixed in the PR.
+  - **One disposition per item the PR does not fix:** `ABSORB`, `FILE`, `RECORD` or `ASK`. Items the PR introduced are fixed in the PR; small pre-existing in-scope items are fixed only with the maintainer's go-ahead.
     - `ABSORB` means commenting on an existing issue.
-    - `RECORD` means a "Considered, not filed" row in the PR body, for items that are unverified or have no real consequence, or that the maintainer declined. It closes the item without opening an issue.
+    - `RECORD` means a "Considered, not filed" row in the PR body, for items that are unverified (unless they claim a wedge, fail-open gate, security, or data-loss consequence, which go to `ASK`) or have no real consequence, or that the maintainer declined. It closes the item without opening an issue.
     - Verified, consequential items that are judged not material go to the maintainer as an `ASK`; the agent never closes them alone.
   - **A four-part necessity gate before filing:** verified, consequential, material, and untracked/not fixable here.
   - **One collated `Follow-up from PR #N: <theme>` issue per PR.** More than two follow-up issues from one PR needs the maintainer's go-ahead (Priority items excepted).

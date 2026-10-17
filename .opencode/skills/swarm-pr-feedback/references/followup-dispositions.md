@@ -18,13 +18,13 @@ Nothing is silently dropped.
 
 ## Necessity gate
 
-`FILE` only when all four hold, or when the user approves an `ASK` proposal. Route failures as follows:
-- **Failing gate 1 or gate 2** is `RECORD`, except that an unverified item whose claimed consequence is a wedge, fail-open gate, security, or data loss is `ASK` (or added to the standing investigation issue).
+`FILE` only when all four hold, or when the user approves filing a gate-3 or Improvement `ASK` proposal. Route failures as follows:
+- **Failing gate 1 or gate 2** is `RECORD`, except that an unverified item whose claimed consequence is a wedge, fail-open gate, security, or data loss is `ASK` (or added to the standing investigation issue). If the user wants it pursued, it is investigated until it passes gate 1 and is then routed again, or it is added to the standing investigation issue; it is never filed as an `INFERENCE`.
 - **Failing only gate 3** makes the item an Improvement-tier proposal. It stays `ASK` until the user approves it (`FILE`) or declines it (`RECORD`, quoting the decline).
-- **Failing gate 4** is `ABSORB` when the item is already tracked. When it is untracked but fixable inside this PR's files and scope, it is `ASK`: propose the fix to the user. If they approve, it is fixed in this PR (ledger status becomes fixed) and the run restarts at Stage A. It is never `RECORD`, and its status is never relabelled `CONFIRMED`.
+- **Failing gate 4** is `ABSORB` when the item is already tracked. When it is untracked but fixable inside this PR's files and scope, it is `ASK`: propose the fix to the user. If they approve, it is fixed in this PR (ledger status becomes fixed) and the run restarts at Stage A. If they decline, it is `RECORD`, quoting the decline. The agent never records it alone, and its status is never relabelled `CONFIRMED`.
 - **A wedge, fail-open gate, security, or data-loss consequence** satisfies gate 3 automatically.
 
-1. **Verified.** An executed probe or an exact source trace at `path:line` proves it on the current head. Never file an `INFERENCE`. Record it instead, or add it to the repository's standing investigation issue if one exists.
+1. **Verified.** An executed probe or an exact source trace at `path:line` proves it on the current head. Never file an `INFERENCE`. Route it by the gate 1 rule above instead, or add it to the repository's standing investigation issue if one exists.
 2. **Consequential.** There is a concrete, reachable trigger with a correctness, safety/security, data-loss, or workflow-blocking (wedge) consequence.
    - Coverage gaps, docs, wording, and "could harden" items fail unless they hide a real defect.
    - Severity alone never qualifies.
