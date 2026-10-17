@@ -399,7 +399,8 @@ export function seedV1SessionState(
 	// (the recorder ignores swarm subagent names on its own).
 	recordPrimaryOwner(sessionID, agentName);
 	try {
-		ensureAgentSession(sessionID, agentName, directory);
+		const session = ensureAgentSession(sessionID, agentName, directory);
+		session.lastAgentEventTime = Date.now();
 	} catch {
 		// ensureAgentSession is best-effort here; the v1 chain re-resolves.
 	}

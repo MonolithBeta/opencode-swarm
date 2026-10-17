@@ -5061,8 +5061,11 @@ async function initializeOpenCodeSwarm(
 				console.error(
 					`[DIAG] toolBefore tool=${normalizeToolName(input.tool) ?? input.tool} session=${input.sessionID}`,
 				);
-			// If no active agent is mapped for this session, it's the primary agent (architect)
-			// Subagent delegations always set activeAgent via chat.message before tool calls
+			const hostProvidedAgent = readHostAgent(input);
+			// If no active agent is mapped for this session, seed it with the
+			// host-provided agent when the host supplied one (OpenCode v2), else the
+			// primary agent (architect). Subagent delegations always set activeAgent
+			// via chat.message before tool calls.
 			// #3320 review round: an existing 'unknown' entry is the ensureAgentSession
 			// placeholder (session created without an agent name), not an identity —
 			// treat it as unmapped so the architect default (and the swarm-only
@@ -5071,11 +5074,17 @@ async function initializeOpenCodeSwarm(
 				!swarmState.activeAgent.has(input.sessionID) ||
 				swarmState.activeAgent.get(input.sessionID) === 'unknown'
 			) {
-				swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
+				swarmState.activeAgent.set(
+					input.sessionID,
+					hostProvidedAgent || ORCHESTRATOR_NAME,
+				);
 			}
 
-			// Revert to primary agent if delegation appears stale.
-			// Delegation is stale when BOTH conditions are met:
+			// Revert to primary agent if delegation appears stale. Skipped whenever
+			// the host supplied input.agent (OpenCode v2 passes the authoritative
+			// agent on every tool hook); hosts that do not send it keep this revert.
+			// Delegation is stale when ALL of these conditions are met:
+			// 0. The host did NOT provide input.agent (!hostProvidedAgent), AND
 			// 1. delegationActive is explicitly false (set by chat.message or Task toolAfter), AND
 			// 2. The session's lastAgentEventTime is >10s old (subagent completed, no chat.message reset)
 			// Using AND (&&) ensures active delegations are never interrupted — the
@@ -5091,7 +5100,12 @@ async function initializeOpenCodeSwarm(
 			// survive it. The restore target is the session's PRIMARY owner.
 			const session = swarmState.agentSessions.get(input.sessionID);
 			const activeAgent = swarmState.activeAgent.get(input.sessionID);
-			if (session && activeAgent && activeAgent !== ORCHESTRATOR_NAME) {
+			if (
+				!hostProvidedAgent &&
+				session &&
+				activeAgent &&
+				activeAgent !== ORCHESTRATOR_NAME
+			) {
 				const stripActive = stripKnownSwarmPrefix(activeAgent);
 				if (
 					stripActive !== ORCHESTRATOR_NAME &&
@@ -6132,8 +6146,13 @@ async function initializeOpenCodeSwarm(
 				// PRIMARY owner — the architect for swarm sessions (unchanged
 				// behavior), the recorded native agent (build/plan/general) for
 				// non-swarm sessions, so the native-agent exemptions keyed on
-				// identity survive the handoff.
-				const handoffOwner = getPrimaryOwner(sessionId) ?? ORCHESTRATOR_NAME;
+				// identity survive the handoff. Absent a recorded owner, a host-provided
+				// parent agent (OpenCode v2 custom orchestrators) is preserved, else the
+				// architect.
+				const handoffOwner =
+					getPrimaryOwner(sessionId) ??
+					readHostAgent(input) ??
+					ORCHESTRATOR_NAME;
 				swarmState.activeAgent.set(sessionId, handoffOwner);
 				ensureAgentSession(sessionId, handoffOwner, bootstrapRoot);
 				const taskSession = swarmState.agentSessions.get(sessionId);
@@ -6469,6 +6488,16 @@ async function initializeOpenCodeSwarm(
 		// Exposed for future Task 5.x business feature integration
 		automation: automationManager,
 	};
+}
+
+/**
+ * Read the host-provided agent name off a tool hook input (OpenCode v2 sends
+ * it on every tool hook; v1 does not). Returns the trimmed name, or undefined
+ * when absent / empty / not a string, so a malformed value can never throw.
+ */
+function readHostAgent(input: unknown): string | undefined {
+	const agent = (input as { agent?: unknown } | undefined)?.agent;
+	return typeof agent === 'string' ? agent.trim() || undefined : undefined;
 }
 
 // Dual-shape plugin entrypoint (issue #3004 / ADR-0003):
