@@ -4742,12 +4742,18 @@ export function createDelegationGateHook(
 			if (!acceptanceCheck.valid && config.hooks?.auto_inject_acceptance) {
 				// Auto-inject a synthesized ACCEPTANCE: requirement block into args so delegations
 				// without explicit ACCEPTANCE lines proceed safely without triggering gate rejection.
-				const defaultRequirement = '- Complete verification of changes, tests, and documentation';
+				const defaultRequirement =
+					'- Complete verification of changes, tests, and documentation';
 				const targetField: (typeof ACCEPTANCE_ARGS_FIELDS)[number] =
 					(typeof args.prompt === 'string'
 						? 'prompt'
-						: ACCEPTANCE_ARGS_FIELDS.find((f) => typeof args[f] === 'string')) ?? 'prompt';
-				const existingVal = typeof args[targetField] === 'string' ? (args[targetField] as string) : '';
+						: ACCEPTANCE_ARGS_FIELDS.find(
+								(f) => typeof args[f] === 'string',
+							)) ?? 'prompt';
+				const existingVal =
+					typeof args[targetField] === 'string'
+						? (args[targetField] as string)
+						: '';
 
 				if (acceptanceCheck.reason === 'acceptance_field_empty') {
 					args[targetField] = existingVal.replace(
@@ -4762,10 +4768,13 @@ export function createDelegationGateHook(
 				logger.warn(
 					`[delegation-gate] Auto-injected default ACCEPTANCE requirement into ${targetField} for ${targetAgent} dispatch (${acceptanceCheck.reason})`,
 				);
-				acceptancePromptText = ACCEPTANCE_ARGS_FIELDS.map((field) => args[field])
+				acceptancePromptText = ACCEPTANCE_ARGS_FIELDS.map(
+					(field) => args[field],
+				)
 					.filter((value): value is string => typeof value === 'string')
 					.join('\n');
-				acceptanceCheck = validateCoderReviewerAcceptanceField(acceptancePromptText);
+				acceptanceCheck =
+					validateCoderReviewerAcceptanceField(acceptancePromptText);
 			}
 			if (!acceptanceCheck.valid) {
 				const detail =

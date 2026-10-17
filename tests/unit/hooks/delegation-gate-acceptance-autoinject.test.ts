@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
+import { createIsolatedTestEnv } from '../../helpers/isolated-test-env.js';
 import {
 	createDelegationGateHook,
 	makeConfig,
@@ -53,7 +53,9 @@ describe('delegation-gate acceptance auto-injection', () => {
 
 		// args.prompt should have had an ACCEPTANCE block appended by the auto-injection
 		expect(args.prompt).toContain('ACCEPTANCE:');
-		expect(args.prompt).toContain('Complete verification of changes, tests, and documentation');
+		expect(args.prompt).toContain(
+			'Complete verification of changes, tests, and documentation',
+		);
 	});
 
 	test('auto-populates ACCEPTANCE requirement block when empty in reviewer dispatch', async () => {
@@ -75,6 +77,8 @@ describe('delegation-gate acceptance auto-injection', () => {
 			),
 		).resolves.toBeUndefined();
 
-		expect(args.prompt).toContain('ACCEPTANCE:\n- Complete verification of changes, tests, and documentation');
+		expect(args.prompt).toContain(
+			'ACCEPTANCE:\n- Complete verification of changes, tests, and documentation',
+		);
 	});
 });
