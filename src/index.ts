@@ -651,6 +651,16 @@ function createSwarmCommandSystemRuleHook(
 			agent?: string;
 			expectedGeneration?: number;
 		};
+		// #3320: a SESSIONLESS system-surface call (title/summary/agent-generation
+		// surfaces) has no delivery owner — append no swarm-specific system text.
+		// Without this guard the agentHasSwarmCommandTool fallback below resolves
+		// the orchestrator and the command-rule banner is pushed onto surfaces no
+		// swarm session will ever read. Scope discipline matches the
+		// system-enhancer guard: the messages surface resolves identity from
+		// output.messages, so only the system surface keys on input.sessionID.
+		if (surface === 'system' && !sessionID) {
+			return;
+		}
 		const activeAgentName = sessionID
 			? surface === 'messages'
 				? (agent ??

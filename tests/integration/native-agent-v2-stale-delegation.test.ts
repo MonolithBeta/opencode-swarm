@@ -21,7 +21,15 @@
  * activeAgent flips to 'architect'. The fresh-timer control (<10 s) passes
  * at base and proves the harness itself works.
  */
-import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	test,
+} from 'bun:test';
 import { rmSync } from 'node:fs';
 import { ORCHESTRATOR_NAME } from '../../src/config/constants';
 import { seedV1SessionState } from '../../src/host/v2/setup';
@@ -32,6 +40,7 @@ import {
 	bootSwarmPluginHost,
 	createPluginHostProject,
 } from '../helpers/plugin-host';
+import { freezeClock } from '../helpers/test-clock.js';
 
 let directory: string;
 let booted: BootedPluginHost;
@@ -80,6 +89,19 @@ async function seedNativePlanSession(sessionID: string): Promise<void> {
 }
 
 describe('v2-seeded native agent identity survives the stale-delegation revert (#3320 AC2)', () => {
+	// Frozen clock (check:test-clock): the stale/fresh semantics below are
+	// relative to one fixed instant, so the 20 s aging and the <10 s freshness
+	// bound stay deterministic. fixedNow captures a real instant before the
+	// freeze so every Date.now() read (fixture and production) agrees.
+	let restoreClock: ReturnType<typeof freezeClock> | undefined;
+	beforeEach(() => {
+		restoreClock = freezeClock({ fixedNow: Date.now() });
+	});
+	afterEach(() => {
+		restoreClock?.();
+		restoreClock = undefined;
+	});
+
 	test('plan identity is preserved when the delegation timer is stale', async () => {
 		const sessionID = 'native-v2-stale-plan-3320';
 		await seedNativePlanSession(sessionID);
