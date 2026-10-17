@@ -207,16 +207,12 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 
 	const worktrees: string[] = [];
 	try {
-		const output = execFileSync(
-			'git',
-			['worktree', 'list', '--porcelain'],
-			{
-				cwd: dir,
-				encoding: 'utf8',
-				stdio: ['ignore', 'pipe', 'ignore'],
-				timeout: 1500,
-			},
-		);
+		const output = execFileSync('git', ['worktree', 'list', '--porcelain'], {
+			cwd: dir,
+			encoding: 'utf8',
+			stdio: ['ignore', 'pipe', 'ignore'],
+			timeout: 1500,
+		});
 
 		for (const line of output.split('\n')) {
 			if (line.startsWith('worktree ')) {
@@ -892,7 +888,11 @@ export function checkFileAuthorityWithRules(
 		let matchedWorktree: string | undefined;
 		for (const wt of worktrees) {
 			const relToWt = path.relative(wt, resolvedTarget).replace(/\\/g, '/');
-			if (relToWt !== '..' && !relToWt.startsWith('../') && !isOnDifferentFilesystemRoot(resolvedTarget, wt)) {
+			if (
+				relToWt !== '..' &&
+				!relToWt.startsWith('../') &&
+				!isOnDifferentFilesystemRoot(resolvedTarget, wt)
+			) {
 				matchedWorktree = wt;
 				effectiveDir = wt;
 				normalizedPath = relToWt;
@@ -914,7 +914,11 @@ export function checkFileAuthorityWithRules(
 		let matchedWorktree: string | undefined;
 		for (const wt of worktrees) {
 			const relToWt = path.relative(wt, resolvedTarget).replace(/\\/g, '/');
-			if (relToWt !== '..' && !relToWt.startsWith('../') && !isOnDifferentFilesystemRoot(resolvedTarget, wt)) {
+			if (
+				relToWt !== '..' &&
+				!relToWt.startsWith('../') &&
+				!isOnDifferentFilesystemRoot(resolvedTarget, wt)
+			) {
 				matchedWorktree = wt;
 				effectiveDir = wt;
 				normalizedPath = relToWt;
@@ -953,7 +957,9 @@ export function checkFileAuthorityWithRules(
 		getGlobMatcher(glob)(normalizedPath);
 
 	for (const prefix of options.universalDenyPrefixes ?? []) {
-		if (matchesAuthorityDenyPrefix(normalizedPath, prefix, effectiveDir, flavor)) {
+		if (
+			matchesAuthorityDenyPrefix(normalizedPath, prefix, effectiveDir, flavor)
+		) {
 			return denyAuthority(agentName, normalizedPath, {
 				code: 'AUTHORITY_UNIVERSAL_DENY',
 				layer: 'universal-deny',
@@ -1029,8 +1035,12 @@ export function checkFileAuthorityWithRules(
 		isCoderAgent &&
 		options.declaredScope != null &&
 		options.declaredScope.length > 0 &&
-		(isPathWithinDeclaredScope(normalizedPath, options.declaredScope, effectiveDir) ||
-		 isPathWithinDeclaredScope(filePath, options.declaredScope, dir));
+		(isPathWithinDeclaredScope(
+			normalizedPath,
+			options.declaredScope,
+			effectiveDir,
+		) ||
+			isPathWithinDeclaredScope(filePath, options.declaredScope, dir));
 	if (pathIsInDeclaredScope) {
 		return {
 			allowed: true,
