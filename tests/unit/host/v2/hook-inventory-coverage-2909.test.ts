@@ -4,12 +4,15 @@
  * Two properties, both CI-permanent:
  *  1. Every hook surface the plugin registers (quoted hook keys and structural
  *     registrations in src/index.ts; ctx registration surfaces used by the
- *     src/host/v2 adapter) has a row in docs/host/v2-hook-inventory.md, and
+ *     src/host/v2 adapter) has a ROW in docs/host/v2-hook-inventory.md, and
  *     every AGENTS.md invariant-10 contract sentence has a coverage token in
- *     that document (issue #2909 AC1/AC7 — the acceptance census that closed
- *     the slot, kept enforceable after the trace-local frozen checks die with
- *     the git-excluded trace directory).
- *  2. The slot's acceptance evidence artifacts (dual-host spike logs, ADR
+ *     that document (issue #2909 AC1/AC7). Census honesty notes: hook-key
+ *     extraction recognizes single-quoted literals and requires a
+ *     `'key':` registration context (bracket-read mentions are filtered);
+ *     a key re-spelled with double quotes or backticks would evade the
+ *     extraction — re-derive the census if the registration style changes.
+ *  2. The slot's acceptance evidence artifacts (dual-host spike logs with
+ *     their dist-sha bindings, first-turn-window measurement rows, ADR
  *     appendices, release fragment-or-consumed trail) cannot be silently
  *     deleted (issue #2909 closure contract "add tests for every acceptance
  *     row").
@@ -46,10 +49,14 @@ const V2_REGISTRATION_SURFACES = [
 ] as const;
 
 /** AGENTS.md invariant-10 contract sentences → acceptable inventory coverage
- * patterns. A superset of the frozen C1 token set (trace 2909). */
+ * patterns. A superset of the frozen C1 token set (trace 2909); each pattern
+ * is distinct so one doc occurrence cannot satisfy two sentences. */
 const INVARIANT_10_SENTENCE_TOKENS: Array<[string, RegExp]> = [
 	['v1 output.system string surface', /output\.system/],
-	['multiple output.system entries materialize (v1)', /output\.system/],
+	[
+		'multiple output.system entries arrive one-per-part',
+		/multiple `output\.system` entries/,
+	],
 	['v1 in-place output mutation rule', /in place|in-place/],
 	['v2 in-place event.system/event.messages mutation', /event\.messages/],
 	[
@@ -67,25 +74,56 @@ const INVARIANT_10_SENTENCE_TOKENS: Array<[string, RegExp]> = [
 	['deliveredGuidanceDelta host-render predicates', /deliveredGuidanceDelta/],
 ];
 
+/** The four ablation legs the spike must produce, each carrying exactly one
+ * computed MATCH verdict (end-anchored so a MISMATCH line never counts). */
+const ABLATION_LOGS = [
+	'v1-nosetup-ablation.log',
+	'v1-noserver-ablation.log',
+	'v2-noserver-ablation.log',
+	'v2-nosetup-ablation.log',
+] as const;
+
+function escapeRegExp(s: string): string {
+	return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 describe('hook inventory coverage (#2909 AC1/AC7)', () => {
 	const indexSrc = fs.readFileSync(SRC_INDEX, 'utf8');
 	const inventory = fs.readFileSync(INVENTORY, 'utf8');
 
-	test('every quoted hook key registered in src/index.ts has an inventory row', () => {
-		const keys = [
+	test('every quoted hook key REGISTERED in src/index.ts has its own inventory ROW', () => {
+		const mentioned = [
 			...new Set([...indexSrc.matchAll(HOOK_KEY_RE)].map((m) => m[1])),
 		];
 		// Anti-vacuity: the census must extract the full registration set.
-		expect(keys.length).toBeGreaterThanOrEqual(8);
-		const missing = keys.filter((k) => !inventory.includes(k));
+		expect(mentioned.length).toBeGreaterThanOrEqual(8);
+		// Registration context filter: a `'key':` object-key occurrence, not a
+		// bracket-read mention like !!pipelineHook['key'],.
+		const registered = mentioned.filter((k) =>
+			new RegExp(`'${escapeRegExp(k)}'\\s*:`).test(indexSrc),
+		);
+		expect(registered.length).toBeGreaterThanOrEqual(8);
+		// ROW-scoped: the key must open a numbered inventory row's surface cell
+		// (`| 13 | `chat.message` …`), so substring mentions in other rows do
+		// not satisfy a deleted row (feedback PRR-001/TC-4).
+		const missing = registered.filter(
+			(k) =>
+				!new RegExp(`\\| \\d+ \\| \\\`${escapeRegExp(k)}\\\``).test(inventory),
+		);
 		expect(missing).toEqual([]);
 	});
 
-	test('structural registrations (tool map, event, config, automation) are covered', () => {
+	test('structural registrations exist in src/index.ts AND have inventory rows', () => {
+		// Source side (the registration really is wired).
+		expect(indexSrc).toMatch(/tool: buildPluginToolObject/);
+		expect(indexSrc).toMatch(/\n\t\tevent: async/);
+		expect(indexSrc).toMatch(/\n\t\tconfig: async/);
+		expect(indexSrc).toMatch(/automation: automationManager/);
+		// Inventory side (the row documents it).
 		expect(inventory).toContain('buildPluginToolObject');
 		expect(inventory).toMatch(/`event` observer/);
 		expect(inventory).toMatch(/`config` hook/);
-		expect(inventory).toContain('automation:');
+		expect(inventory).toMatch(/\| \d+ \| `automation:`/);
 	});
 
 	test('every AGENTS.md invariant-10 contract sentence has a coverage token', () => {
@@ -140,19 +178,24 @@ describe('acceptance evidence durability (#2909 closure contract)', () => {
 		expect(v2Log).toMatch(/^ENTRYPOINT: setup/m);
 		expect(v2Log).toMatch(/^HOOK-FIRED:/m);
 
-		const ablationLogs = fs
-			.readdirSync(path.join(SPIKE_DIR, 'logs'))
-			.filter((f) => f.includes('ablation'));
-		expect(ablationLogs.length).toBe(4);
-		const ablationText = ablationLogs
-			.map((f) => fs.readFileSync(path.join(SPIKE_DIR, 'logs', f), 'utf8'))
-			.join('\n');
-		// Every ablation leg must carry a computed MATCH verdict, and the v2
-		// no-setup leg must quote the host's literal decode error.
-		expect(ablationText.match(/^ABLATION:[^\n]*MATCH/gm)?.length).toBe(4);
-		expect(ablationText).not.toMatch(
-			/^ABLATION:[^\n]*(MISMATCH|HARNESS ERROR)/m,
-		);
+		// Per-leg ablation assertions (feedback PRR-018): each canonical leg
+		// carries exactly one computed MATCH verdict; the end anchor keeps a
+		// MISMATCH line from ever counting as a MATCH.
+		expect(
+			fs.existsSync(path.join(SPIKE_DIR, 'logs', 'v2-nosetup-ablation.log')),
+			'the v2 no-setup ablation log must exist',
+		).toBe(true);
+		for (const leg of ABLATION_LOGS) {
+			const logPath = path.join(SPIKE_DIR, 'logs', leg);
+			expect(fs.existsSync(logPath), `missing ablation leg ${leg}`).toBe(true);
+			const text = fs.readFileSync(logPath, 'utf8');
+			expect(
+				(text.match(/^ABLATION:[^\n]*— MATCH$/gm) ?? []).length,
+				`${leg} must carry exactly one computed MATCH verdict`,
+			).toBe(1);
+			expect(text).not.toMatch(/— MISMATCH|HARNESS ERROR/);
+		}
+		// The v2 negative leg quotes the host's literal decode error.
 		expect(
 			fs.readFileSync(
 				path.join(SPIKE_DIR, 'logs', 'v2-nosetup-ablation.log'),
@@ -163,22 +206,78 @@ describe('acceptance evidence durability (#2909 closure contract)', () => {
 		);
 	});
 
-	test('ADR-0003 appendices: first-turn window measurement and dated invalidation re-check', () => {
+	test('every committed spike log binds its build via a dist sha256 line (capture-time provenance; see README limitation)', () => {
+		for (const name of ['v1-host.log', 'v2-host.log', ...ABLATION_LOGS]) {
+			const text = fs.readFileSync(path.join(SPIKE_DIR, 'logs', name), 'utf8');
+			expect(text, `${name} must carry a dist sha256 binding line`).toMatch(
+				/dist sha256 [0-9a-f]{64}/,
+			);
+		}
+	});
+
+	test('first-turn-window measurement rows are pinned (the ADR numbers of record)', () => {
+		const logsDir = path.join(SPIKE_DIR, 'logs');
+		const rows = fs
+			.readdirSync(logsDir)
+			.filter((f) => /^first-turn-window-v1-run\d+\.json$/.test(f))
+			.sort();
+		expect(
+			rows.length,
+			'at least three committed v1 measurement rows',
+		).toBeGreaterThanOrEqual(3);
+		for (const name of rows) {
+			const row = JSON.parse(
+				fs.readFileSync(path.join(logsDir, name), 'utf8'),
+			) as {
+				distSha?: string;
+				sessionCreatedToSyncLastMs?: number | null;
+				firstTurnArrivedBeforeSyncDone?: boolean | null;
+				capturedAt?: string;
+			};
+			expect(row.distSha, `${name} distSha`).toMatch(/^[0-9a-f]{64}$/);
+			expect(
+				row.firstTurnArrivedBeforeSyncDone,
+				`${name} firstTurnArrivedBeforeSyncDone`,
+			).toBe(true);
+			expect(
+				typeof row.sessionCreatedToSyncLastMs === 'number' &&
+					row.sessionCreatedToSyncLastMs > 0,
+				`${name} sessionCreatedToSyncLastMs must be a positive ms figure`,
+			).toBe(true);
+			expect(typeof row.capturedAt, `${name} capturedAt`).toBe('string');
+		}
+	});
+
+	test('ADR-0003 status contract, first-turn appendix, and section-scoped invalidation re-check', () => {
 		const adr = fs.readFileSync(ADR, 'utf8');
 		// AC3 durable arm (final-critic finding 3): the ADR's status contract
 		// must not silently flip after the trace-local frozen checks die.
 		expect(adr).toContain('Accepted (2026-09-30)');
 		expect(adr).toMatch(/^\*\*GO\.\*\*/m);
-		const firstTurn =
-			/#[# ]*[^\n]*First-turn window[^\n]*\n([\s\S]*?)(\n#[#] |\n$)/.exec(adr);
-		expect(firstTurn).toBeTruthy();
-		const section = firstTurn?.[1] ?? '';
+		// First-turn appendix: assert the LATEST section, so a future appended
+		// erratum is what gets validated (feedback PRR-012; first-match pinned
+		// the oldest section forever).
+		const firstTurnMatches = [
+			...adr.matchAll(
+				/#[# ]*[^\n]*First-turn window[^\n]*\n([\s\S]*?)(\n#[#] |\n$)/g,
+			),
+		];
+		expect(firstTurnMatches.length).toBeGreaterThanOrEqual(1);
+		const section = firstTurnMatches[firstTurnMatches.length - 1][1];
 		expect(section).toContain('Method');
 		expect(section).toMatch(/\d+\s*ms/);
 		expect(section).toMatch(/\d+\.\d+\.\d+/);
-		expect(adr).toMatch(/no V1 compatibility shim/i);
-		expect(adr).toContain('migrate-v1');
-		expect(adr).toMatch(/2026-\d{2}-\d{2}/);
+		// Invalidation re-check: asserted WITHIN its own section (stripping the
+		// section's date must fail the test), not document-wide.
+		const invalidation =
+			/#[# ]*[^\n]*Invalidation re-check[^\n]*\n([\s\S]*?)(\n#[#] |\n$)/.exec(
+				adr,
+			);
+		expect(invalidation).toBeTruthy();
+		const invalidationSection = invalidation?.[1] ?? '';
+		expect(invalidationSection).toMatch(/Re-checked 2026-\d{2}-\d{2}/);
+		expect(invalidationSection).toContain('migrate-v1');
+		expect(invalidationSection).toMatch(/no V1 compatibility shim/i);
 	});
 
 	test('release fragment for #2909: pending, or consumed with a manifest/body trail', () => {

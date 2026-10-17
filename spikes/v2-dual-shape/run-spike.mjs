@@ -17,10 +17,14 @@
  * Attribution is by ablation: each ablated package is a WRAPPER module
  * (spread-copy the pristine default export, delete exactly one key) that is
  * pre-validated in Node before any host run — a parse failure or a wrong
- * key-set aborts the run as a harness error, never a host verdict.
+ * key-set aborts the run as a harness error, never a host verdict. Every
+ * verdict additionally requires POSITIVE evidence that the host actually ran
+ * (clean exit, no timeout, non-empty captured output) — an absent banner on a
+ * never-spawned or timed-out host is a HARNESS ERROR, never a MATCH.
  *
  * All spawns are array-form with explicit cwd, `stdin: "ignore"`, a hard
- * timeout, bounded captured output, and a best-effort kill in `finally`
+ * timeout with a Windows tree-kill fallback, file-descriptor-backed bounded
+ * capture, home-path redaction, and best-effort kill/cleanup
  * (AGENTS.md invariant 3).
  *
  * Usage: node spikes/v2-dual-shape/run-spike.mjs [--measure]
@@ -81,12 +85,32 @@ function ensureDir(p) {
   fs.mkdirSync(p, { recursive: true });
 }
 
-/** Run a command with bounded file-backed output, a hard timeout, and a kill
- * in finally. Output is captured through file descriptors, not Node pipes:
- * the v2 CLI spawns a nested `serve --stdio` child whose long-form output
- * does not reliably flush through Node pipes on Windows (observed 2026-10-16:
- * 300s hang with zero captured bytes), while the same run redirected to a
- * file completes in ~30s. */
+/** Redact the local user name from captured output before it reaches any
+ * committed artifact. Only the home-directory segment is rewritten; the
+ * surrounding evidence text is untouched. Handles single separators, JSON
+ * escaped doubled separators, and both slash styles; idempotent. Documented
+ * in README (Warnings). */
+function redact(text) {
+  return text.replace(
+    /((?:[\\/]{1,2})Users(?:[\\/]{1,2}))([^\\/"'\s:,}]{1,64})/g,
+    '$1<user>',
+  );
+}
+
+/** Positive evidence that a spawned host actually ran to completion: clean
+ * exit, not killed by the timeout, and something was captured. Averdict on
+ * top of a run that fails this check is a harness error, never a MATCH. */
+function hostRan(r) {
+  return r.code === 0 && !r.timedOut && (r.out + r.err).trim().length > 0;
+}
+
+/** Run a command with bounded file-backed output, a hard timeout with a
+ * Windows tree-kill fallback, and best-effort cleanup. Output is captured
+ * through file descriptors, not Node pipes: the v2 CLI spawns a nested
+ * `serve --stdio` child whose long-form output does not reliably flush
+ * through Node pipes on Windows (observed 2026-10-16: 300s hang with zero
+ * captured bytes), while the same run redirected to a file completes in
+ * ~30s. Captured output is home-path-redacted at capture time. */
 function run(argv, { cwd, env, timeoutMs = RUN_TIMEOUT_MS }) {
   return new Promise((resolve) => {
     const outPath = path.join(os.tmpdir(), `2909-spike-out-${process.pid}-${Math.random().toString(36).slice(2)}`);
@@ -97,7 +121,19 @@ function run(argv, { cwd, env, timeoutMs = RUN_TIMEOUT_MS }) {
       outFd = fs.openSync(outPath, 'a');
       errFd = fs.openSync(errPath, 'a');
     } catch (e) {
-      resolve({ code: -1, out: '', err: String(e), timedOut: false });
+      // Partial-failure cleanup: if the second openSync threw, close the
+      // first fd and remove the first temp file before bailing.
+      try {
+        if (outFd !== undefined) fs.closeSync(outFd);
+      } catch {
+        /* best effort */
+      }
+      try {
+        fs.rmSync(outPath, { force: true });
+      } catch {
+        /* best effort */
+      }
+      resolve({ code: -1, out: '', err: `capture setup failed: ${String(e)}`, timedOut: false, spawnError: String(e) });
       return;
     }
     const childEnv = { ...env };
@@ -107,50 +143,93 @@ function run(argv, { cwd, env, timeoutMs = RUN_TIMEOUT_MS }) {
     // repo and never discovered the temp project's .opencode/plugins shim).
     delete childEnv.OLDPWD;
     childEnv.PWD = cwd;
-    const child = spawn(argv[0], argv.slice(1), {
-      cwd,
-      env: childEnv,
-      stdin: 'ignore',
-      stdio: ['ignore', outFd, errFd],
-      windowsHide: true,
-    });
+    let child;
+    try {
+      child = spawn(argv[0], argv.slice(1), {
+        cwd,
+        env: childEnv,
+        stdin: 'ignore',
+        stdio: ['ignore', outFd, errFd],
+        windowsHide: true,
+      });
+    } catch (e) {
+      closeAndCleanup();
+      resolve({ code: -1, out: '', err: `spawn failed: ${String(e)}`, timedOut: false, spawnError: String(e) });
+      return;
+    }
     let killed = false;
+    let finished = false;
     const timer = setTimeout(() => {
       killed = true;
-      try {
-        child.kill();
-      } catch {
-        /* best effort */
-      }
+      killTree(child);
     }, timeoutMs);
-    const finish = (code) => {
-      clearTimeout(timer);
+    function closeAndCleanup() {
+      // Per-operation guards: a double closeSync must not skip the rmSyncs.
       try {
-        child.kill();
+        fs.closeSync(outFd);
+      } catch {
+        /* already closed */
+      }
+      try {
+        fs.closeSync(errFd);
+      } catch {
+        /* already closed */
+      }
+      try {
+        fs.rmSync(outPath, { force: true, maxRetries: 3, retryDelay: 100 });
       } catch {
         /* best effort */
       }
-      let out = '';
-      let err = '';
       try {
-        out = fs.readFileSync(outPath, 'utf8').slice(0, MAX_CAPTURE);
-        err = fs.readFileSync(errPath, 'utf8').slice(0, MAX_CAPTURE);
+        fs.rmSync(errPath, { force: true, maxRetries: 3, retryDelay: 100 });
+      } catch {
+        /* best effort */
+      }
+    }
+    const finish = (code, errMsg) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      killTree(child);
+      let out = '';
+      let err = errMsg ?? '';
+      try {
+        out = redact(fs.readFileSync(outPath, 'utf8')).slice(0, MAX_CAPTURE);
+        const errText = redact(fs.readFileSync(errPath, 'utf8'));
+        err = errMsg ? `${errMsg}\n${errText}`.slice(0, MAX_CAPTURE) : errText.slice(0, MAX_CAPTURE);
       } catch {
         /* files may be unreadable if nothing was written */
       }
+      closeAndCleanup();
+      resolve({ code, out, err, timedOut: killed });
+    };
+    child.on('error', (e) => finish(-1, `spawn error: ${String(e)}`));
+    child.on('close', (code) => finish(code ?? -1));
+  });
+
+  function killTree(child) {
+    try {
+      child.kill();
+    } catch {
+      /* best effort */
+    }
+    if (process.platform === 'win32' && child.pid) {
+      // The v2 CLI nests a `serve --stdio` grandchild that inherits the
+      // capture fds; TerminateProcess on the parent alone would leave it
+      // holding them. taskkill /T walks the tree.
       try {
-        fs.closeSync(outFd);
-        fs.closeSync(errFd);
-        fs.rmSync(outPath, { force: true });
-        fs.rmSync(errPath, { force: true });
+        // taskkill exits in milliseconds; Node's spawn takes no timeout
+        // option — the leg timer above governs the overall budget.
+        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+          cwd: os.tmpdir(),
+          stdio: 'ignore',
+          windowsHide: true,
+        }).on('error', () => {});
       } catch {
         /* best effort */
       }
-      resolve({ code, out, err, timedOut: killed });
-    };
-    child.on('error', (e) => finish(-1, String(e)));
-    child.on('close', (code) => finish(code ?? -1));
-  });
+    }
+  }
 }
 
 function isolatedEnv(scratchRoot) {
@@ -167,24 +246,45 @@ function isolatedEnv(scratchRoot) {
 
 function writeLog(name, headerLines, body) {
   const file = path.join(LOGS_DIR, name);
-  const text = headerLines.join('\n') + '\n--- verbatim host output (captured in full; lightly excerpted below) ---\n' + body;
+  // Redaction covers the header lines too: HOST:/PLUGIN: embed the host
+  // binary path under the user home.
+  const text = redact(
+    headerLines.join('\n') + '\n--- host output below, filtered to decision-relevant lines and home-path-redacted (not the full stream) ---\n' + body,
+  );
   fs.writeFileSync(file, text);
   log(`wrote ${name} (${text.length} bytes)`);
 }
 
-function excerpt(text, patterns, { maxLines = 60, context = 0 } = {}) {
+function excerpt(text, patterns, { maxLines = 60, perPatternCap = 8 } = {}) {
   const lines = text.split(/\r?\n/);
   const keep = [];
-  let lastKept = -10;
-  for (let i = 0; i < lines.length; i += 1) {
-    const hit = patterns.some((re) => re.test(lines[i]));
-    if (hit || (context > 0 && i - lastKept <= context && keep.length > 0 && i - lastKept <= context)) {
-      if (hit) {
-        keep.push(lines[i]);
-        lastKept = i;
+  let lastPushed;
+  const perPattern = new Map();
+  const keptIndex = new Set();
+  // Round 1 keeps decision-relevant patterns first, each pattern capped, so
+  // no noisy pattern family can starve the decisive markers out of the
+  // budget (feedback regression 1: 39 alternating config-noise lines
+  // consumed the whole budget via a loose /error/i match before the banner
+  // was reached). Round 2 fills any remaining budget with uncapped matches.
+  for (const round of [0, 1]) {
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (keptIndex.has(i) || keep.length >= maxLines) continue;
+      for (let pIdx = 0; pIdx < patterns.length; pIdx += 1) {
+        if (!patterns[pIdx].test(line)) continue;
+        if (round === 0) {
+          const n = perPattern.get(pIdx) ?? 0;
+          if (n >= perPatternCap) break;
+          perPattern.set(pIdx, n + 1);
+        }
+        if (line !== lastPushed) {
+          keep.push(line);
+          keptIndex.add(i);
+          lastPushed = line;
+        }
+        break;
       }
     }
-    if (keep.length >= maxLines) break;
   }
   return keep.join('\n');
 }
@@ -246,8 +346,11 @@ function v2Project(scratchRoot, pluginDistOrPkgUrl) {
   return proj;
 }
 
+/** Host-exclusive v1 config-hook evidence: the HOST `agent list` table (not
+ * plugin-internal debug lines) carries the swarm agents as `(primary)` /
+ * `(subagent)` entries. */
 function hasSwarmAgents(out) {
-  return /architect/.test(out) && /(coder|reviewer|explorer)/.test(out);
+  return /architect \(primary\)/.test(out) && /(coder|reviewer|explorer)[^\n]*\(subagent\)/.test(out);
 }
 
 function sessionStateDir(proj) {
@@ -256,7 +359,11 @@ function sessionStateDir(proj) {
 
 async function hostVersion(bin) {
   const r = await run([bin, '--version'], { cwd: os.tmpdir(), env: process.env, timeoutMs: 30_000 });
-  return (r.out + r.err).trim().split(/\r?\n/)[0];
+  const version = (r.out + r.err).trim().split(/\r?\n/)[0] ?? '';
+  if (r.code !== 0 || !version) {
+    throw new Error(`host version probe failed for ${bin}: exit=${r.code} timedOut=${r.timedOut} err=${r.err.slice(-300)}`);
+  }
+  return version;
 }
 
 async function main() {
@@ -265,7 +372,7 @@ async function main() {
   if (!fs.existsSync(DIST)) {
     log('dist/index.js missing — building (bun run build)');
     const b = await run(['bun', 'run', 'build'], { cwd: REPO_ROOT, env: process.env, timeoutMs: BUILD_TIMEOUT_MS });
-    if (b.code !== 0) throw new Error(`build failed: ${b.err.slice(-2000)}`);
+    if (b.code !== 0) throw new Error(`build failed: exit=${b.code} timedOut=${b.timedOut} err=${(b.out + b.err).slice(-2000)}`);
   }
   const distSha = sha256(DIST);
   const v1Version = await hostVersion(V1_BIN);
@@ -284,25 +391,28 @@ async function main() {
     const r = await run([V1_BIN, 'agent', 'list', '--print-logs'], { cwd: proj, env });
     const full = r.out + r.err;
     const banner = /\[opencode-swarm\] running v\S+/.exec(full);
-    const fired = hasSwarmAgents(full);
+    const ran = hostRan(r);
+    const fired = ran && hasSwarmAgents(full);
     const warnings = [];
     if (/Ignored \d+ invalid/.test(full)) warnings.push('config-advisory: ignored invalid config keys (user-config carry-over absent under isolated XDG; see log)');
     const header = [
       `HOST: opencode ${v1Version} | ${V1_BIN}`,
       `PLUGIN: file:${REPO_ROOT.replaceAll('\\', '/')} | dist sha256 ${distSha}`,
-      `RUN: ${ts()} | args: agent list --print-logs | env: OPENCODE_SWARM_DEBUG=1, isolated XDG_CONFIG_HOME | exit=${r.code}`,
+      `RUN: ${ts()} | args: agent list --print-logs | env: OPENCODE_SWARM_DEBUG=1, isolated XDG_CONFIG_HOME | exit=${r.code} | host-ran=${ran}`,
       `ENTRYPOINT: server() — the v1 host consulted id/server only; see v1-nosetup-ablation.log / v1-noserver-ablation.log for the ablation proof that setup() is inert on v1`,
-      `HOOK-FIRED: config hook — swarm agents registered in the host agent table: ${fired ? 'YES (architect + coder/reviewer/explorer families present)' : 'NO'}`,
+      `HOOK-FIRED: config hook — host agent table lists the swarm agents (host output lines, not plugin debug): ${fired ? 'YES (architect (primary) + subagent entries present)' : 'NO'}`,
       `WARNINGS: ${warnings.length ? warnings.join('; ') : 'none observed'}`,
     ];
-    if (!banner || !fired) failures.push(`v1 main run: banner=${!!banner} agents=${fired} exit=${r.code}`);
+    if (!ran) failures.push(`v1 main run: host did not run cleanly (exit=${r.code} timedOut=${r.timedOut})`);
+    else if (!banner || !fired) failures.push(`v1 main run: banner=${!!banner} agents=${fired} exit=${r.code}`);
     writeLog(
       'v1-host.log',
       header,
       excerpt(full, [
         /loading plugin/i,
         /\[opencode-swarm\] running v/,
-        /architect/,
+        /architect \(primary\)/,
+        /\(subagent\)/,
         /synchronized bundled skill/,
         /Ignored \d+ invalid/,
         /init-path I\/O completed/,
@@ -316,27 +426,44 @@ async function main() {
     { label: 'noserver', removeKey: 'server', expectLoads: false },
   ];
   for (const ab of ablations) {
-    const pkg = makeAblatedPackage(scratch, `v1-${ab.label}`, ab.removeKey);
     try {
+      const pkg = makeAblatedPackage(scratch, `v1-${ab.label}`, ab.removeKey);
       const pre = await prevalidateAblation(pkg, ab.removeKey);
       const proj = v1Project(scratch, pkg);
       const env = isolatedEnv(scratch);
       const r = await run([V1_BIN, 'agent', 'list', '--print-logs'], { cwd: proj, env });
       const full = r.out + r.err;
+      const ran = hostRan(r);
       const banner = /\[opencode-swarm\] running v\S+/.test(full);
-      const loaded = banner;
-      const observed = loaded ? 'plugin loaded (banner present)' : 'plugin dropped (no banner; host continued)';
-      const verdict = loaded === ab.expectLoads ? 'MATCH' : 'MISMATCH';
-      if (verdict === 'MISMATCH') failures.push(`v1 ablation ${ab.label}: expected load=${ab.expectLoads} observed=${observed}`);
+      // Positive-evidence gating: a verdict requires proof the host ran; the
+      // "dropped" leg additionally requires the host's own failed-to-load
+      // record so absence of a banner is never the sole evidence.
+      const dropRecorded = /failed to load plugin|must default export an object with server/i.test(full);
+      const loaded = ran && banner && !dropRecorded;
+      const dropped = ran && !banner && (ab.label === 'noserver' ? dropRecorded : true);
+      const observed = !ran
+        ? `host did not run (exit=${r.code} timedOut=${r.timedOut})`
+        : loaded
+          ? 'plugin loaded (banner present, no drop record)'
+          : dropped
+            ? 'plugin dropped (no banner; host drop record present)'
+            : 'no banner and no drop record';
+      const verdict = !ran
+        ? 'MISMATCH'
+        : ab.expectLoads
+          ? (loaded ? 'MATCH' : 'MISMATCH')
+          : (dropped ? 'MATCH' : 'MISMATCH');
+      if (!ran) failures.push(`v1 ablation ${ab.label}: HARNESS — host did not run cleanly`);
+      else if (verdict === 'MISMATCH') failures.push(`v1 ablation ${ab.label}: expected load=${ab.expectLoads} observed=${observed}`);
       writeLog(
         `v1-${ab.label}-ablation.log`,
         [
           `HOST: opencode ${v1Version} | ${V1_BIN}`,
           `ABLATION: removed export key '${ab.removeKey}' (wrapper module; pre-validated keys=${pre.got})`,
-          `ABLATION: expected=${ab.expectLoads ? 'loads (key is inert on v1)' : 'dropped (v1 requires server)'} observed=${observed} — ${verdict}`,
-          `RUN: ${ts()} | exit=${r.code} | dist sha256 ${distSha}`,
+          `ABLATION: expected=${ab.expectLoads ? 'loads (key is inert on v1)' : 'dropped (v1 requires server; host drop record required)'} observed=${observed} — ${verdict}`,
+          `RUN: ${ts()} | exit=${r.code} | host-ran=${ran} | dist sha256 ${distSha}`,
         ],
-        excerpt(full, [/loading plugin/i, /running v/, /failed to load/i, /error/i, /architect/], { maxLines: 40 }),
+        excerpt(full, [/loading plugin/i, /running v/, /failed to load plugin/i, /must default export/i, /level=ERROR/, /architect \(primary\)/], { maxLines: 40 }),
       );
     } catch (e) {
       failures.push(`v1 ablation ${ab.label}: harness error ${String(e)}`);
@@ -359,18 +486,20 @@ async function main() {
     const sessionDir = sessionStateDir(proj);
     const sessionState = fs.existsSync(sessionDir) && fs.readdirSync(sessionDir).length > 0;
     const replied = /loaded/.test(r.out.trim().split(/\r?\n/).pop() ?? '');
+    const ran = hostRan(r);
     const warnings = [];
     const sqlite = /sqlite-vec extension not available[^\n]*/.exec(full);
     if (sqlite) warnings.push(sqlite[0].slice(0, 200));
     const header = [
       `HOST: ${v2Version} | ${V2_BIN} (npm @opencode/cli platform binary; the .cmd shim's blocked postinstall is bypassed by invoking the platform exe directly)`,
       `PLUGIN: .opencode/plugins/local-spike.js re-export ${pathToFileURL(DIST).href} | dist sha256 ${distSha}`,
-      `RUN: ${ts()} | args: run --standalone --print-logs (tool-free prompt) | env: OPENCODE_SWARM_DEBUG=1, isolated XDG_CONFIG_HOME | exit=${r.code}`,
+      `RUN: ${ts()} | args: run --standalone --print-logs (tool-free prompt) | env: OPENCODE_SWARM_DEBUG=1, isolated XDG_CONFIG_HOME | exit=${r.code} | host-ran=${ran}`,
       `ENTRYPOINT: setup(ctx) — the v2 host decodes the default export against {id, setup|effect}; see v2-noserver-ablation.log / v2-nosetup-ablation.log for the ablation proof that server() is inert on v2`,
-      `HOOK-FIRED: session context hook — ${sessionState ? `.swarm/session state written during the tool-free prompt turn (onV2ContextEvent -> seedV1SessionState; the only seedV1SessionState call site reachable on a tool-free, non-compacting turn is src/host/v2/guidance.ts:108)` : 'NOT OBSERVED (.swarm/session empty)' }; model reply received: ${replied ? 'yes ("loaded")' : 'no'}`,
+      `HOOK-FIRED: session hook family — ${sessionState ? `.swarm/session state written during the tool-free prompt turn; attributable to the registered session hooks on that turn (the context hook via seedV1SessionState and/or the prompt hook via cacheCohortIdAtMessage -> ensureAgentSession — v2 does not relay plugin stdout, so the writer is not disambiguated host-side; both are registrations proved by setup() running)` : 'NOT OBSERVED (.swarm/session empty)'}; model reply received: ${replied ? 'yes ("loaded")' : 'no'}`,
       `WARNINGS: ${warnings.length ? warnings.join('; ') : 'none observed'}`,
     ];
-    if (!banner || !loadedLocalShim || !sessionState) failures.push(`v2 main run: banner=${banner} shimLoad=${loadedLocalShim} sessionState=${sessionState} exit=${r.code}`);
+    if (!ran) failures.push(`v2 main run: host did not run cleanly (exit=${r.code} timedOut=${r.timedOut})`);
+    else if (!banner || !loadedLocalShim || !sessionState) failures.push(`v2 main run: banner=${banner} shimLoad=${loadedLocalShim} sessionState=${sessionState} exit=${r.code}`);
     writeLog(
       'v2-host.log',
       header,
@@ -389,11 +518,6 @@ async function main() {
     // sync timestamps are invisible too). The v2 spike legs above prove the
     // load/attribution/hook-firing behavior; the window itself is measured on
     // v1, which relays both surfaces.
-    if (measure) {
-      for (let i = 1; i <= 3; i += 1) {
-        await measureOnce(V1_BIN, v1Version, distSha, scratch, `v1-run${i}`, failures);
-      }
-    }
   }
 
   // ---------- v2 ablations ----------
@@ -401,8 +525,8 @@ async function main() {
     { label: 'noserver', removeKey: 'server', expectLoads: true },
     { label: 'nosetup', removeKey: 'setup', expectLoads: false },
   ]) {
-    const pkg = makeAblatedPackage(scratch, `v2-${ab.label}`, ab.removeKey);
     try {
+      const pkg = makeAblatedPackage(scratch, `v2-${ab.label}`, ab.removeKey);
       const pre = await prevalidateAblation(pkg, ab.removeKey);
       const proj = v2Project(scratch, pathToFileURL(path.join(pkg, 'dist', 'index.js')).href);
       const env = isolatedEnv(scratch);
@@ -410,23 +534,27 @@ async function main() {
       const full = r.out + r.err;
       const banner = /\[opencode-swarm\] running v\S+/.test(full);
       const decodeError = /Plugin must export a default definition with an id and an effect or setup function\./.test(full);
-      const loaded = banner && !decodeError;
-      const observed = decodeError
-        ? 'host decode error (verbatim literal present)'
-        : loaded
-          ? 'plugin loaded (banner present)'
-          : `no banner and no decode error (exit=${r.code})`;
+      const ran = hostRan(r);
+      const loaded = ran && banner && !decodeError;
+      const observed = !ran
+        ? `host did not run (exit=${r.code} timedOut=${r.timedOut})`
+        : decodeError
+          ? 'host decode error (verbatim literal present)'
+          : loaded
+            ? 'plugin loaded (banner present)'
+            : `no banner and no decode error (exit=${r.code})`;
       const verdict = loaded === ab.expectLoads && (!ab.expectLoads ? decodeError : true) ? 'MATCH' : 'MISMATCH';
-      if (verdict === 'MISMATCH') failures.push(`v2 ablation ${ab.label}: expected load=${ab.expectLoads} observed=${observed}`);
+      if (!ran) failures.push(`v2 ablation ${ab.label}: HARNESS — host did not run cleanly`);
+      else if (verdict === 'MISMATCH') failures.push(`v2 ablation ${ab.label}: expected load=${ab.expectLoads} observed=${observed}`);
       writeLog(
         `v2-${ab.label}-ablation.log`,
         [
           `HOST: ${v2Version} | ${V2_BIN}`,
           `ABLATION: removed export key '${ab.removeKey}' (wrapper module; pre-validated keys=${pre.got})`,
           `ABLATION: expected=${ab.expectLoads ? 'loads (key is inert on v2)' : `dropped with the literal decode error (${ab.removeKey} required by the v2 schema)`} observed=${observed} — ${verdict}`,
-          `RUN: ${ts()} | exit=${r.code} | dist sha256 ${distSha}`,
+          `RUN: ${ts()} | exit=${r.code} | host-ran=${ran} | dist sha256 ${distSha}`,
         ],
-        excerpt(full, [/loading plugin/i, /running v/, /Plugin must export/i, /failed to load/i, /error/i], { maxLines: 40 }),
+        excerpt(full, [/loading plugin/i, /running v/, /Plugin must export/i, /failed to load plugin/i, /level=ERROR/], { maxLines: 40 }),
       );
     } catch (e) {
       failures.push(`v2 ablation ${ab.label}: harness error ${String(e)}`);
@@ -434,9 +562,23 @@ async function main() {
     }
   }
 
-  fs.rmSync(scratch, { recursive: true, force: true });
+  if (measure) {
+    for (let i = 1; i <= 3; i += 1) {
+      await measureOnce(V1_BIN, v1Version, distSha, scratch, `v1-run${i}`, failures);
+    }
+  }
+
+  // Print the failures report BEFORE scratch cleanup: an EBUSY on tree
+  // removal must not hide the per-leg diagnostics.
   if (failures.length) {
     log(`FAILURES:\n  ${failures.join('\n  ')}`);
+  }
+  try {
+    fs.rmSync(scratch, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch (e) {
+    log(`scratch cleanup incomplete (non-fatal): ${String(e)}`);
+  }
+  if (failures.length) {
     process.exit(1);
   }
   log('all spike runs green');
@@ -448,36 +590,31 @@ function parseTs(line) {
 }
 
 async function measureOnce(bin, version, distSha, scratch, label, failures) {
-  const isV1 = label.startsWith('v1');
   let last;
-  // The v2 standalone boot occasionally loses a startup race (observed
-  // 2026-10-16: ~3.9s exit with no .opencode/plugins discovery and no session
-  // events, while the identical command a minute earlier ran green) — retry
-  // once on that shape before recording.
+  // A cold host occasionally loses a startup race (observed 2026-10-16 on
+  // v2: fast exit with no session events while the identical command a
+  // minute earlier ran green) — retry once when the measurement's own
+  // target quantities did not parse before recording.
   for (let attempt = 1; attempt <= 2; attempt += 1) {
-    last = await measureAttempt(bin, version, distSha, scratch, label, isV1, attempt);
-    if (isV1 || last.sessionCreated !== undefined) break;
-    log(`measure ${label}: attempt ${attempt} lost the boot race (no session); ${attempt < 2 ? 'retrying' : 'recording as-is'}`);
+    last = await measureAttempt(bin, version, distSha, scratch, label, attempt);
+    if (last.row.exit === 0 && last.row.syncCompletionVisible && last.sessionCreated !== undefined) break;
+    log(`measure ${label}: attempt ${attempt} incomplete (exit=${last.row.exit}, syncVisible=${last.row.syncCompletionVisible}, session=${last.sessionCreated !== undefined}); ${attempt < 2 ? 'retrying' : 'recording as-is'}`);
   }
-  if (last.row.exit !== 0 || last.sessionCreated === undefined) {
-    failures.push(`measure ${label}: incomplete parse (exit=${last.row.exit}, sessionCreated=${last.sessionCreated})`);
+  if (last.row.exit !== 0 || last.sessionCreated === undefined || !last.row.syncCompletionVisible) {
+    failures.push(`measure ${label}: incomplete parse (exit=${last.row.exit}, sessionCreated=${last.sessionCreated}, syncVisible=${last.row.syncCompletionVisible})`);
   }
   return last.row;
 }
 
-async function measureAttempt(bin, version, distSha, scratch, label, isV1, attemptNo) {
-  const proj = isV1 ? v1Project(scratch, REPO_ROOT) : v2Project(scratch, pathToFileURL(DIST).href);
+async function measureAttempt(bin, version, distSha, scratch, label, attemptNo) {
+  const proj = v1Project(scratch, REPO_ROOT);
   const env = isolatedEnv(scratch);
-  const argv = isV1
-    ? [bin, 'run', '--print-logs', 'hi']
-    : [bin, 'run', '--standalone', '--print-logs', 'hi'];
+  const argv = [bin, 'run', '--print-logs', 'hi'];
   const t0 = Date.now();
   const r = await run(argv, { cwd: proj, env, timeoutMs: 300_000 });
   const wallMs = Date.now() - t0;
   const full = r.out + r.err;
   const lines = full.split(/\r?\n/);
-  let hostStart;
-  let pluginInit;
   let sessionCreated;
   let syncFirst;
   let syncLast;
@@ -485,8 +622,6 @@ async function measureAttempt(bin, version, distSha, scratch, label, isV1, attem
   for (const ln of lines) {
     const t = parseTs(ln);
     if (t === undefined) continue;
-    if (hostStart === undefined && /creating instance|cli starting/.test(ln)) hostStart = t;
-    if (pluginInit === undefined && /\[opencode-swarm\] running v/.test(ln)) pluginInit = t;
     if (sessionCreated === undefined && /(message=created id=ses_|event\.type=session\.created|message=created )/.test(ln)) sessionCreated = t;
     if (/synchronized bundled skill/.test(ln)) {
       if (syncFirst === undefined) syncFirst = t;
@@ -494,19 +629,18 @@ async function measureAttempt(bin, version, distSha, scratch, label, isV1, attem
     }
     if (modelStream === undefined && /message=stream |message="stream/.test(ln)) modelStream = t;
   }
-  // v2 does not relay plugin stdout (OPENCODE_SWARM_DEBUG lines) into the host
-  // log, so per-skill sync timestamps are only observable on v1; a v2 leg is
-  // complete when the first-turn arrival itself parsed.
+  // The plugin-init banner (`[opencode-swarm] running v…`) is an untimed
+  // console.warn, so no plugin-init-derived delta exists; the row records
+  // only the relative windows that parse from timestamped host lines.
   const syncCompletionVisible = syncLast !== undefined;
   const row = {
     label,
     host: version,
     distSha,
     attempt: attemptNo,
+    capturedAt: ts(),
     exit: r.code,
     wallMs,
-    hostStartToPluginInitMs: hostStart !== undefined && pluginInit !== undefined ? pluginInit - hostStart : null,
-    pluginInitToSessionCreatedMs: pluginInit !== undefined && sessionCreated !== undefined ? sessionCreated - pluginInit : null,
     sessionCreatedToSyncLastMs: sessionCreated !== undefined && syncLast !== undefined ? syncLast - sessionCreated : null,
     syncDurationMs: syncFirst !== undefined && syncLast !== undefined ? syncLast - syncFirst : null,
     sessionCreatedToModelStreamMs: sessionCreated !== undefined && modelStream !== undefined ? modelStream - sessionCreated : null,
@@ -514,7 +648,6 @@ async function measureAttempt(bin, version, distSha, scratch, label, isV1, attem
     syncCompletionVisible,
   };
   fs.writeFileSync(path.join(LOGS_DIR, `first-turn-window-${label}.json`), `${JSON.stringify(row, null, 2)}\n`);
-  if (!isV1) fs.writeFileSync(path.join(LOGS_DIR, `first-turn-window-${label}-full.log`), full);
   log(`measure ${label} (attempt ${attemptNo}): ${JSON.stringify(row)}`);
   return { row, sessionCreated };
 }
