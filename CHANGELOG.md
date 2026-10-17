@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.198.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.198.1...v7.198.2) (2026-10-17)
+
+
+### Performance Improvements
+
+* **host/v2:** run v2 registrations concurrently under a bounded registration stage ([1dadb24](https://github.com/ZaxbyHub/opencode-swarm/commit/1dadb24043b37299e6b1d5772d4458080e9510eb))
+
 ## [7.198.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.198.0...v7.198.1) (2026-10-16)
 
 
