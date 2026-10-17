@@ -15,7 +15,10 @@
 // prompt containing a `[REVIEWED] |` or `[CRITIC] |` ROW FORMAT — result.ok
 // === false with an error naming the offending token (e.g. '[REVIEWED] |')
 // and telling the operator to remove the template text. Prose that merely
-// mentions the marker word without the pipe-row shape must NOT be rejected.
+// mentions the marker word mid-sentence — with no marker-pipe row shape
+// anywhere in the text — must NOT be rejected; a line consisting of the bare
+// marker IS rejected, because the parser accepts it as an (arity-1) row
+// (issue #3335).
 import { describe, expect, test } from 'bun:test';
 import { _test_exports } from '../../../src/tools/dispatch-lanes.js';
 
@@ -158,6 +161,14 @@ describe('issue #3335 AC1: guard rejects every parser-accepted marker form', () 
 	rejectCase(
 		'a mid-line lone-carriage-return teaching fragment',
 		`Teach the lane: [REVIEWED]\r| item | classification | severity per row.`,
+	);
+	// The parser decodes the canonical \n escape INSIDE a field and trims it
+	// at the field boundary, so an escape-decoded separator between marker and
+	// pipe parses as a live row; only the parser arm catches this (the
+	// anywhere-shape class excludes the literal characters).
+	rejectCase(
+		'an escape-decoded separator between marker and pipe',
+		'[REVIEWED]\\n| c1 | CONFIRMED | STATIC_TRACE_PROVEN | HIGH | YES | a.ts:1 | rationale long | probe text | notes | UNKNOWN |',
 	);
 
 	test('rejects a parser-accepted marker form in the callerFocus channel', () => {

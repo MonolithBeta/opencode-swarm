@@ -74,12 +74,14 @@ describe('issue #3310 AC25: quarantined short duplicate does not fail the valid 
 		expect(parsed.get('C-1')?.severity).toBe('HIGH');
 	});
 
-	test('#3334 AC3 (parse-level): 16+ stray rows in one lane stay ONE aggregated quarantine surface', () => {
-		// The composition diagnostic is one aggregated bounded entry per lane
-		// regardless of stray-row count (review-fix 6292746f0 shape), so a
-		// stray-row-heavy single lane cannot exhaust the diagnostic budget by
-		// itself. The composition-level cross-lane ordering contract is pinned
-		// by tests/unit/hooks/pr-workflow-gate-quarantine-diagnostic-order-3334.test.ts.
+	test('#3334 AC3 (parse-level): 16+ stray rows stay distinct, bounded, and never disturb the valid row', () => {
+		// Parse-level arm of the 16+ stray rows case this file's issue argv
+		// names: every stray id survives bounded and distinct, and the valid
+		// sibling row still settles. (The composition-level ordering contract
+		// is pinned by
+		// tests/unit/hooks/pr-workflow-gate-quarantine-diagnostic-order-3334.test.ts;
+		// per-lane aggregation versus per-row emission is not distinguished
+		// there — see the PR body's considered-not-filed row.)
 		const artifact = [
 			'[REVIEWED] | C-1 | CONFIRMED | STATIC_TRACE_PROVEN | HIGH | YES | a.ts:1 | rationale long | probe text | notes | UNKNOWN |',
 			...Array.from(

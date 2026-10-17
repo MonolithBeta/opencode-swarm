@@ -450,9 +450,11 @@ function appendCompositionDiagnostic(
  * `(invalid-id)` for control characters (the parser decodes `\n`/`\r` escapes
  * into real control characters) or non-identifier text, `(redacted)` when
  * secret redaction fires (redaction placeholders render `[REDACTED:<type>]`,
- * which is outside the identifier charset). A lane CAN author these sentinel
- * strings as a real id — the collision is diagnostic-ambiguity only; claim
- * keys keep the raw id.
+ * which is outside the identifier charset). The sentinels contain
+ * parentheses — themselves outside the identifier charset — so a lane-authored
+ * sentinel-shaped id normalizes to `(invalid-id)` and can never collide with
+ * `(missing)` or `(redacted)`; the only true collision is a literal
+ * `(invalid-id)` id. Claim keys keep the raw id either way.
  */
 const VERDICT_ROW_IDENTIFIER_CHARSET = /^[A-Za-z0-9._:-]+$/;
 
@@ -1177,12 +1179,19 @@ export function analyzePrReviewVerdictRowContract(
 	const assigned = new Set(itemIds);
 	const { markerRows, parsed, recoveries, quarantined } =
 		parsePrReviewVerdictRows(text, itemIds, phase, reviewerClaims);
-	// #3334 recurrence sweep: observedIds render into the exact-set contract
-	// failure (analysis.actual → formatPrReviewLaneValidationFailure →
-	// lane-failure diagnostics), so this identifier egress is bounded by the
-	// same helper as the quarantine/recovery producers.
+	// #3334 recurrence sweep: observed ids that are NOT assigned are
+	// lane-authored transcript text, so they are bounded by the same helper as
+	// the quarantine/recovery producers before rendering into the exact-set
+	// contract failure (analysis.actual → formatPrReviewLaneValidationFailure
+	// → lane-failure diagnostics). ASSIGNED ids are controller-declared — the
+	// same trust level as `expected`, which renders itemIds raw — and
+	// unexpectedIds compares observed ids against the RAW assigned set, so
+	// bounding an assigned id would compare a sentinel against a raw id and
+	// misreport a legitimate id as "(invalid-id)" (#3375 review, PRR-002).
 	const observedIds = markerRows.map((fields) =>
-		boundVerdictRowIdentifier(fields[1]),
+		assigned.has(fields[1] ?? '')
+			? (fields[1] ?? '')
+			: boundVerdictRowIdentifier(fields[1]),
 	);
 	const unexpectedIds = [
 		...new Set(observedIds.filter((itemId) => !assigned.has(itemId))),

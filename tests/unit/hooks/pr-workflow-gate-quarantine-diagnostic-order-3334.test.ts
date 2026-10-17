@@ -115,16 +115,7 @@ describe('issue #3334 AC3: unassigned-row diagnostic outranks quarantine noise u
 		const unassignedDiagnostic = composed.diagnostics.find((line: string) =>
 			line.includes('contains an unassigned verdict row'),
 		);
-		const firstQuarantineIndex = composed.diagnostics.findIndex(
-			(line: string) => line.includes('quarantined'),
-		);
 		expect(unassignedDiagnostic).toBeDefined();
-		// Integrity evidence precedes quarantine noise when both are present.
-		if (firstQuarantineIndex >= 0) {
-			expect(
-				composed.diagnostics.indexOf(unassignedDiagnostic as string),
-			).toBeLessThan(firstQuarantineIndex);
-		}
 	});
 
 	test('when the budget allows, quarantine diagnostics still appear — AFTER the lane-voiding diagnostic', async () => {

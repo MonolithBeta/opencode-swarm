@@ -142,4 +142,40 @@ describe('issue #3334 AC1: quarantined ids are bounded to identifier-charset tex
 		);
 		expect(quarantined[0]?.itemId).toBe('(missing)');
 	});
+
+	test('a bare arity-1 marker row (undefined id field) also surfaces (missing)', () => {
+		// A line consisting of only the marker parses as an arity-1 row with
+		// fields[1] undefined — the reachable path for the undefined arm of
+		// the (missing) sentinel.
+		const { quarantined } = parsePrReviewVerdictRows(
+			'[REVIEWED]',
+			['c1'],
+			'reviewer',
+		);
+		expect(quarantined).toHaveLength(1);
+		expect(quarantined[0]?.itemId).toBe('(missing)');
+	});
+});
+
+describe('issue #3375 review PRR-002: assigned ids keep their raw form in analysis.actual', () => {
+	test('a legitimately-assigned non-charset id renders raw and never as unexpected', () => {
+		// Assigned ids are controller-declared (same trust level as the
+		// expected string), so the sentinel bounding applies only to ids
+		// absent from the assigned set; bounding a legal assigned id made
+		// actual contradict ok.
+		const artifact =
+			'[REVIEWED] | src/foo.ts:12 | CONFIRMED | STATIC_TRACE_PROVEN | HIGH | YES | a.ts:1 | rationale long | probe text | notes | UNKNOWN |';
+		const analysis = analyzePrReviewVerdictRowContract(
+			artifact,
+			['src/foo.ts:12'],
+			'reviewer',
+		);
+		expect(analysis.ok).toBe(true);
+		const actual = JSON.parse(analysis.actual) as {
+			observedIds: string[];
+			unexpectedIds: string[];
+		};
+		expect(actual.observedIds).toEqual(['src/foo.ts:12']);
+		expect(actual.unexpectedIds).toEqual([]);
+	});
 });

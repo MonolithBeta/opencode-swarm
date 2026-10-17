@@ -6149,8 +6149,10 @@ function applyPrWorkflowPromptContract(
 		// verdict-row template embedded in the operator prompt competes with the
 		// injected contract card (wrong-arity retries, #3275 RC4) — reject it
 		// side-effect-free, before any contract is appended or gate ownership is
-		// published. A prose mention of the marker word without the pipe-row
-		// shape is NOT rejected.
+		// published. A mid-sentence prose mention of the marker word — with no
+		// marker-pipe row shape anywhere in the text — is NOT rejected; a line
+		// consisting of the bare marker IS rejected, because the parser accepts
+		// it as an (arity-1) row (#3335).
 		const prReviewVerdictTemplateToken =
 			normalizedMode.token === 'swarm-pr-review:reviewer'
 				? '[REVIEWED]'
