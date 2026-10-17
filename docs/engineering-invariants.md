@@ -443,8 +443,15 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   chain, role-filtered and combined with the conditional command banner near
   the end, then appended as one fenced user-role carrier. The system hook still
   captures authoritative model/context metadata, but skips the architect
-  enhancer and command banner for that same request; non-architect and
-  sessionless agent-generation calls retain the system path.
+  enhancer and command banner for that same request; non-architect
+  agent-generation calls retain the system path. As of #3320, SESSIONLESS
+  system.transform calls (no `sessionID`) emit no swarm-specific text at all —
+  the sessionless HF-1b emission this entry originally described was
+  superseded by the sessionless early-return (`#3320` review round; the
+  contract is pinned by
+  `tests/integration/system-transform-sessionless-no-swarm-text.test.ts` and
+  the updated ATTACK-7 cases in
+  `tests/unit/hooks/system-enhancer-hf1b-adversarial.test.ts`).
 - **Ordering contract:** after legacy system materialization, guidance carriers
   are stably partitioned to the message-array tail in place, preserving relative
   order and object identity. Final context accounting runs after that partition

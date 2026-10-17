@@ -24,6 +24,14 @@ export const STATE_MOCK_TRANSITIVE_STUBS = {
 	setFinalAccountingWarningBand: () => undefined,
 	getFinalAccountingWarningBand: () => false,
 	clearFinalAccountingWarningBands: () => undefined,
+	// Issue #3320: primary-owner / swarm-ownership exports reached transitively
+	// through delegation-tracker.ts, guardrails/tool-before.ts, and the v2
+	// adapters (all in the chat/tool hook graph the close commands import);
+	// same missing-binding failure class as above.
+	recordPrimaryOwner: () => undefined,
+	getPrimaryOwner: () => undefined,
+	isRegisteredSwarmSubagent: () => false,
+	isSwarmOwnedSession: () => false,
 	// Issue #3036: dispatch-lineage exports reached transitively through the
 	// delegation-gate / delegate-directive-injection / knowledge-receipt-tool
 	// importers; same missing-binding failure class as above.

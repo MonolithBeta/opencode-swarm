@@ -197,6 +197,7 @@ import {
 	recordWorktreeMergeFailure,
 } from './delegation-gate/worktree-merge-status';
 import { deleteStoredInputArgs, getStoredInputArgs } from './guardrails';
+import { resolveMessageTransformContext } from './host-boundary';
 import { isTaskToolId, normalizeToolName } from './normalize-tool-name';
 import {
 	insertGuidanceCarrier,
@@ -7600,8 +7601,21 @@ export function createDelegationGateHook(
 			// Only operate when architect is the active agent
 			// Check if agent is undefined (main session = architect) or is 'architect' (after stripping prefix)
 			// Skip empty string agent names (invalid/uninitialized state)
-			const agent = lastUserMessage.info?.agent;
-			if (agent === '') return; // Skip empty string explicitly
+			// #3320: identity resolves through the shared message-transform context
+			// (session state first, last user message's info.agent fallback), so v2
+			// sessions seeded with a native agent (plan/build) are not treated as
+			// the architect main session.
+			// #3320 review round: the shared resolver's truthiness filter collapses
+			// an empty-string agent to undefined, so the raw last-user-message
+			// value is checked here first — an explicit empty-string identity is
+			// invalid/uninitialized state and must skip injection (pinned by
+			// tests/unit/hooks/delegation-gate-task-1-5.validation.test.ts).
+			const rawLastUserAgent = lastUserMessage.info?.agent;
+			if (rawLastUserAgent === '') return; // Skip empty string explicitly
+			const mctx = resolveMessageTransformContext(
+				output as Parameters<typeof resolveMessageTransformContext>[0],
+			);
+			const agent = mctx.agent;
 			const strippedAgent = agent ? stripKnownSwarmPrefix(agent) : undefined;
 			if (strippedAgent && strippedAgent !== 'architect') return;
 

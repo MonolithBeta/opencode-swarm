@@ -98,7 +98,11 @@ import {
 	VERIFIED_KEYLESS_MODEL_ROSTER,
 } from '../../services/model-preflight';
 import { addDeferredWarning } from '../../services/warning-buffer';
-import { ensureAgentSession, swarmState } from '../../state';
+import {
+	ensureAgentSession,
+	recordPrimaryOwner,
+	swarmState,
+} from '../../state';
 import { log } from '../../utils';
 import { resolveProjectRootDecision } from '../../utils/project-boundary';
 import { withTimeout } from '../../utils/timeout';
@@ -391,6 +395,9 @@ export function seedV1SessionState(
 	if (typeof sessionID !== 'string' || sessionID.length === 0) return undefined;
 	const agentName = normalizeV2AgentRef(agentRef);
 	if (agentName === undefined) return sessionID;
+	// #3320: a v2 seeding event is a PRIMARY-owner observation for the session
+	// (the recorder ignores swarm subagent names on its own).
+	recordPrimaryOwner(sessionID, agentName);
 	try {
 		ensureAgentSession(sessionID, agentName, directory);
 	} catch {
