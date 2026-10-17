@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { execSync } from 'node:child_process';
 import * as fs from 'node:fs/promises';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { checkFileAuthority } from '../../../src/hooks/guardrails/file-authority.js';
+import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 describe('guardrails-worktree-authority - Git Worktree Containment Awareness', () => {
 	let sandboxDir: string;
@@ -11,7 +11,7 @@ describe('guardrails-worktree-authority - Git Worktree Containment Awareness', (
 	let worktreeDir: string;
 
 	beforeEach(async () => {
-		sandboxDir = await fs.mkdtemp(path.join(os.tmpdir(), 'swarm-wt-test-'));
+		sandboxDir = canonicalMkdtemp('swarm-wt-test-');
 		mainRepoDir = path.join(sandboxDir, 'main-repo');
 		worktreeDir = path.join(sandboxDir, 'main-repo-worktree');
 
