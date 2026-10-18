@@ -4,6 +4,7 @@ import * as fsSync from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import {
+	canonicalizeWindowsPathPublic as canonicalize,
 	checkFileAuthority,
 	clearGuardrailsCaches,
 	getLinkedGitWorktrees,
@@ -82,9 +83,7 @@ describe('guardrails worktree containment hardening (issue #3368 review)', () =>
 		git(`worktree add "${linkedDir}" -b feat/linked`, mainRepoDir);
 		clearGuardrailsCaches();
 		const worktrees = getLinkedGitWorktrees(mainRepoDir);
-		expect(worktrees.some((wt) => wt === fsSync.realpathSync(linkedDir))).toBe(
-			true,
-		);
+		expect(worktrees.some((wt) => wt === canonicalize(linkedDir))).toBe(true);
 		const result = checkFileAuthority(
 			'architect',
 			path.join(linkedDir, 'src', 'index.ts'),
@@ -115,9 +114,7 @@ describe('guardrails worktree containment hardening (issue #3368 review)', () =>
 		fsSync.writeFileSync(path.join(evilReg, 'HEAD'), 'ref: main\n');
 		clearGuardrailsCaches();
 		const worktrees = getLinkedGitWorktrees(mainRepoDir);
-		expect(worktrees.some((wt) => wt === fsSync.realpathSync(fakeDir))).toBe(
-			false,
-		);
+		expect(worktrees.some((wt) => wt === canonicalize(fakeDir))).toBe(false);
 	});
 
 	it('skips a bare repository record so its git dir is not a trusted root', () => {
@@ -135,9 +132,7 @@ describe('guardrails worktree containment hardening (issue #3368 review)', () =>
 		git(`worktree add "${linkedFromBare}" -b bare-linked`, bareDir);
 		clearGuardrailsCaches();
 		const worktrees = getLinkedGitWorktrees(linkedFromBare);
-		expect(worktrees.some((wt) => wt === fsSync.realpathSync(bareDir))).toBe(
-			false,
-		);
+		expect(worktrees.some((wt) => wt === canonicalize(bareDir))).toBe(false);
 		const result = checkFileAuthority(
 			'architect',
 			path.join(bareDir, 'hooks', 'pre-commit'),
@@ -224,9 +219,7 @@ describe('guardrails worktree containment hardening (issue #3368 review)', () =>
 		process.env.GIT_INDEX_FILE = path.join(foreignDir, 'index');
 		try {
 			const worktrees = getLinkedGitWorktrees(mainRepoDir);
-			expect(
-				worktrees.some((wt) => wt === fsSync.realpathSync(linkedDir)),
-			).toBe(true);
+			expect(worktrees.some((wt) => wt === canonicalize(linkedDir))).toBe(true);
 		} finally {
 			for (const [key, value] of Object.entries(previous)) {
 				if (value === undefined) delete process.env[key];
