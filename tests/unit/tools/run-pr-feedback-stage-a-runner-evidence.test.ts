@@ -116,7 +116,9 @@ beforeEach(async () => {
 	_internals.resolveExactMergeBaseAsync = async (...a) =>
 		_internals.resolveExactMergeBase(...a);
 	_internals.readGitTextAtRevision = (_directory, sha, contractPath) =>
-		sha === BASE ? (baseContracts.get(contractPath) ?? null) : null;
+		sha === BASE
+			? (baseContracts.get(contractPath.replace(/^\.\//, '')) ?? null)
+			: null;
 	_internals.runExternalTool = mock(async () => ({
 		status: 'completed' as const,
 		exitCode: 0,
