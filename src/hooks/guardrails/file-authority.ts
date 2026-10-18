@@ -191,14 +191,155 @@ const globMatcherCache = new QuickLRU<string, (path: string) => boolean>({
 /**
  * LRU cache for git worktree roots.
  * Maps repository directory -> array of resolved worktree root paths.
+ * Entries expire after 60 s so worktrees created or removed mid-session
+ * (and transient git failures) are re-queried instead of staying frozen for
+ * the process lifetime.
  */
+const GIT_WORKTREE_CACHE_MAX_AGE_MS = 60_000;
 const gitWorktreeCache = new QuickLRU<string, string[]>({
 	maxSize: 50,
+	maxAge: GIT_WORKTREE_CACHE_MAX_AGE_MS,
 });
+
+/**
+ * Environment for git subprocesses with repository-redirecting variables
+ * stripped: an inherited GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE/GIT_COMMON_DIR
+ * would silently retarget `git worktree list` at another repository (PRR-026
+ * precedent in src/services/swarm-residue.ts), and every root that listing
+ * returns becomes a trusted authority root.
+ */
+function gitEnvWithoutRepoRedirectors(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = { ...process.env };
+	delete env.GIT_DIR;
+	delete env.GIT_WORK_TREE;
+	delete env.GIT_INDEX_FILE;
+	delete env.GIT_COMMON_DIR;
+	return env;
+}
+
+/**
+ * One `worktree` record of `git worktree list --porcelain`.
+ */
+interface WorktreeListRecord {
+	path: string;
+	attributes: Set<string>;
+}
+
+/**
+ * Splits porcelain output into per-worktree records. Each record starts at a
+ * `worktree <path>` line; subsequent lines (`bare`, `detached`, `locked`,
+ * `prunable`, `HEAD <sha>`, `branch <ref>`) are that record's attributes.
+ */
+function parseWorktreeListPorcelain(output: string): WorktreeListRecord[] {
+	const records: WorktreeListRecord[] = [];
+	for (const line of output.split('\n')) {
+		if (line.startsWith('worktree ')) {
+			const wtPath = line.slice('worktree '.length).trim();
+			if (wtPath) {
+				records.push({ path: wtPath, attributes: new Set() });
+			}
+			continue;
+		}
+		const record = records[records.length - 1];
+		if (!record) continue;
+		const separator = line.indexOf(' ');
+		const attribute = separator === -1 ? line : line.slice(0, separator);
+		if (attribute) record.attributes.add(attribute);
+	}
+	return records;
+}
+
+/**
+ * Back-anchor validation for a worktree record (issue #3368 review): the
+ * main worktree record is the repository the listing ran in (its `.git` is a
+ * directory, not a redirect file), and every LINKED root must round-trip —
+ * the root's `.git` FILE must point at a registration directory whose own
+ * `gitdir` file names the root's `.git` path back. Without this round-trip,
+ * three attacker-forgeable files under `<repo>/.git/worktrees/<id>/` would
+ * make `git worktree list` report an arbitrary directory as a worktree, and
+ * every directory this function returns is a trusted containment root.
+ */
+function isValidWorktreeRecord(
+	repoRootRecord: WorktreeListRecord | undefined,
+	record: WorktreeListRecord,
+): boolean {
+	if (record === repoRootRecord) {
+		try {
+			return fsSync.statSync(path.join(record.path, '.git')).isDirectory();
+		} catch {
+			return false;
+		}
+	}
+	if (record.attributes.has('bare')) return false;
+	const dotGitPath = path.join(record.path, '.git');
+	let dotGitStat: fsSync.Stats;
+	try {
+		dotGitStat = fsSync.lstatSync(dotGitPath);
+	} catch {
+		return false;
+	}
+	if (!dotGitStat.isFile()) return false;
+	let gitDirLine: string;
+	try {
+		gitDirLine = fsSync.readFileSync(dotGitPath, 'utf8').trim();
+	} catch {
+		return false;
+	}
+	if (!gitDirLine.startsWith('gitdir:')) return false;
+	const gitDirRef = gitDirLine.slice('gitdir:'.length).trim();
+	if (!gitDirRef) return false;
+	const gitDirPath = path.isAbsolute(gitDirRef)
+		? gitDirRef
+		: path.resolve(record.path, gitDirRef);
+	// REPO-ANCHOR leg: the referenced registration must live inside THIS
+	// repository's .git/worktrees/. The round-trip leg below alone would also
+	// accept a DIFFERENT repository's real linked worktree (its .git file
+	// round-trips against its own registration), which would re-root
+	// containment onto an unrelated checkout.
+	let registrationGitdirFile: string;
+	try {
+		registrationGitdirFile = fsSync.realpathSync(
+			path.join(gitDirPath, 'gitdir'),
+		);
+	} catch {
+		return false;
+	}
+	if (repoRootRecord) {
+		const repoGitDir = path.join(repoRootRecord.path, '.git');
+		const worktreesRoot = path.join(repoGitDir, 'worktrees');
+		if (!isPathIdentityWithin(registrationGitdirFile, worktreesRoot)) {
+			return false;
+		}
+	}
+	// ROUND-TRIP leg: the registration's gitdir file must name this root's
+	// .git path back, so the registration cannot launder an unrelated
+	// directory as this repository's worktree.
+	let backReference: string;
+	try {
+		backReference = fsSync.readFileSync(registrationGitdirFile, 'utf8').trim();
+	} catch {
+		return false;
+	}
+	try {
+		return pathIdentitiesEqual(
+			fsSync.realpathSync(dotGitPath),
+			fsSync.realpathSync(backReference),
+		);
+	} catch {
+		return false;
+	}
+}
 
 /**
  * Returns a list of absolute, realpath-normalized worktree roots for the given working directory.
  * Cached in gitWorktreeCache.
+ *
+ * Only roots that pass back-anchor validation are returned: `bare` records
+ * are skipped (their git dir would otherwise become a writable trusted root
+ * whose hooks/config have no `.git` path segment), and a record whose
+ * registration cannot be round-tripped back to this repository is rejected,
+ * so forged `.git/worktrees/<id>/` files cannot widen containment onto an
+ * arbitrary directory.
  */
 export function getLinkedGitWorktrees(dir: string): string[] {
 	const cached = gitWorktreeCache.get(dir);
@@ -216,19 +357,21 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 				encoding: 'utf8',
 				stdio: ['ignore', 'pipe', 'ignore'],
 				timeout: 1500,
+				maxBuffer: 4 * 1024 * 1024,
+				windowsHide: true,
+				env: gitEnvWithoutRepoRedirectors(),
 			},
 		);
 
-		for (const line of output.split('\n')) {
-			if (line.startsWith('worktree ')) {
-				const wtPath = line.slice('worktree '.length).trim();
-				if (wtPath) {
-					try {
-						worktrees.push(fsSync.realpathSync(wtPath));
-					} catch {
-						worktrees.push(path.resolve(wtPath));
-					}
-				}
+		const records = parseWorktreeListPorcelain(output);
+		const repoRootRecord = records[0];
+		for (const record of records) {
+			if (!isValidWorktreeRecord(repoRootRecord, record)) continue;
+			try {
+				worktrees.push(fsSync.realpathSync(record.path));
+			} catch {
+				// A root that cannot be realpath'd is not a verified directory;
+				// failing closed here beats trusting a lexical path.
 			}
 		}
 	} catch {
@@ -887,10 +1030,14 @@ export function checkFileAuthorityWithRules(
 	// systems only have root `/`, so roots only differ when the target is
 	// on a different Windows drive.
 	let effectiveDir = dir;
-	if (isOnDifferentFilesystemRoot(resolvedTarget, dir)) {
-		// Even across roots, check if target resides in a linked Git worktree of dir
+	// Re-root to the LONGEST (most specific) matching worktree root, not the
+	// first: `git worktree list` always lists the main worktree first, so a
+	// first-match loop re-roots targets inside a NESTED linked worktree to the
+	// outer root, and deny rules resolved against the wrong root silently stop
+	// matching (issue #3368 review, F-001).
+	const matchWorktreeRoot = (): string | undefined => {
 		const worktrees = getLinkedGitWorktrees(dir);
-		let matchedWorktree: string | undefined;
+		let best: { wt: string; rel: string } | undefined;
 		for (const wt of worktrees) {
 			const relToWt = path.relative(wt, resolvedTarget).replace(/\\/g, '/');
 			if (
@@ -898,12 +1045,54 @@ export function checkFileAuthorityWithRules(
 				!relToWt.startsWith('../') &&
 				!isOnDifferentFilesystemRoot(resolvedTarget, wt)
 			) {
-				matchedWorktree = wt;
-				effectiveDir = wt;
-				normalizedPath = relToWt;
-				break;
+				if (!best || wt.length > best.wt.length) {
+					best = { wt, rel: relToWt };
+				}
 			}
 		}
+		if (best) {
+			effectiveDir = best.wt;
+			normalizedPath = best.rel;
+		}
+		return best?.wt;
+	};
+	// A re-rooted target whose lexical chain crosses a symlink/junction inside
+	// the matched worktree can redirect a NEW-file write anywhere (the target
+	// itself does not exist yet, so realpath normalization cannot catch it).
+	// Walk the ancestors between the matched root and the target and deny on
+	// the first planted link, mirroring checkWriteTargetForSymlink's walk but
+	// bounded by the re-rooted base instead of the session cwd.
+	const findPlantedLinkBelow = (root: string): string | null => {
+		const ancestors: string[] = [];
+		let current = resolvedTarget;
+		while (true) {
+			const rel = path.relative(root, current);
+			if (
+				rel === '' ||
+				rel === '..' ||
+				rel.startsWith(`..${path.sep}`) ||
+				path.isAbsolute(rel)
+			)
+				break;
+			ancestors.push(current);
+			const parent = path.dirname(current);
+			if (parent === current) break;
+			current = parent;
+		}
+		for (const ancestor of ancestors) {
+			try {
+				if (fsSync.lstatSync(ancestor).isSymbolicLink()) return ancestor;
+			} catch (err: unknown) {
+				const code = (err as NodeJS.ErrnoException).code;
+				if (code === 'ENOENT') continue;
+				return ancestor;
+			}
+		}
+		return null;
+	};
+	if (isOnDifferentFilesystemRoot(resolvedTarget, dir)) {
+		// Even across roots, check if target resides in a linked Git worktree of dir
+		const matchedWorktree = matchWorktreeRoot();
 
 		if (!matchedWorktree) {
 			return denyAuthority(agentName, normalizedPath, {
@@ -913,23 +1102,18 @@ export function checkFileAuthorityWithRules(
 				detail: 'target is on a different drive or filesystem root',
 			});
 		}
+		const plantedLink = findPlantedLinkBelow(matchedWorktree);
+		if (plantedLink) {
+			return denyAuthority(agentName, normalizedPath, {
+				code: 'AUTHORITY_ROOT_ESCAPE',
+				layer: 'containment',
+				rule: 'workspace-containment',
+				detail: `re-rooted target crosses symlink/junction "${plantedLink}" inside the matched worktree`,
+			});
+		}
 	} else if (normalizedPath === '..' || normalizedPath.startsWith('../')) {
 		// Check whether target resides in a linked Git worktree of dir
-		const worktrees = getLinkedGitWorktrees(dir);
-		let matchedWorktree: string | undefined;
-		for (const wt of worktrees) {
-			const relToWt = path.relative(wt, resolvedTarget).replace(/\\/g, '/');
-			if (
-				relToWt !== '..' &&
-				!relToWt.startsWith('../') &&
-				!isOnDifferentFilesystemRoot(resolvedTarget, wt)
-			) {
-				matchedWorktree = wt;
-				effectiveDir = wt;
-				normalizedPath = relToWt;
-				break;
-			}
-		}
+		const matchedWorktree = matchWorktreeRoot();
 
 		if (!matchedWorktree) {
 			return denyAuthority(agentName, normalizedPath, {
@@ -937,6 +1121,15 @@ export function checkFileAuthorityWithRules(
 				layer: 'containment',
 				rule: 'workspace-containment',
 				detail: 'target resolves outside the working directory',
+			});
+		}
+		const plantedLink = findPlantedLinkBelow(matchedWorktree);
+		if (plantedLink) {
+			return denyAuthority(agentName, normalizedPath, {
+				code: 'AUTHORITY_ROOT_ESCAPE',
+				layer: 'containment',
+				rule: 'workspace-containment',
+				detail: `re-rooted target crosses symlink/junction "${plantedLink}" inside the matched worktree`,
 			});
 		}
 	}
@@ -1040,12 +1233,19 @@ export function checkFileAuthorityWithRules(
 		isCoderAgent &&
 		options.declaredScope != null &&
 		options.declaredScope.length > 0 &&
-		(isPathWithinDeclaredScope(
+		// Declared scope is evaluated once, in the same coordinate system as
+		// every other post-containment rule (re-rooted normalizedPath against
+		// effectiveDir). The removed second disjunct tested the RAW caller
+		// string against the ORIGINAL dir — a different coordinate system that
+		// could grant declared-scope allow for a path the containment layer
+		// never matched (issue #3368 review, F-006); the sole production
+		// caller passes declaredScope entries covering the same file the
+		// normalized operands already resolve.
+		isPathWithinDeclaredScope(
 			normalizedPath,
 			options.declaredScope,
 			effectiveDir,
-		) ||
-			isPathWithinDeclaredScope(filePath, options.declaredScope, dir));
+		);
 	if (pathIsInDeclaredScope) {
 		return {
 			allowed: true,
