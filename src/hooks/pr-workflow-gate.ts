@@ -13463,10 +13463,13 @@ export async function enforcePrWorkflowToolBefore(
 		return;
 	}
 	if (isStandaloneGitAddShell) {
-		// Issue #3315 D3: the one sanctioned staging surface. Every path must
-		// sit inside the current changed-path set — the exact set the revision
-		// digest hashes — so untouched or ignored content can never be staged,
-		// and the ladder precondition matches the approved-commit branch.
+		// Issue #3315 D3: the one sanctioned staging surface. Only an exact
+		// `git add -- <paths>` shape whose every path sits inside the
+		// current changed-path set (the set the revision digest hashes) is
+		// admitted, under the same ladder precondition as the approved
+		// commit. Every other form — flags, globs, pathspec magic,
+		// out-of-set paths — falls through to the fail-closed refusal
+		// below, whose message stays byte-identical.
 		const stagedPaths = extractStandaloneGitAddPaths(command);
 		const changedPaths = state.prHeadSha
 			? await _test_exports.resolvePrWorkflowChangedPathSetAsync(
@@ -13476,16 +13479,13 @@ export async function enforcePrWorkflowToolBefore(
 			: null;
 		const normalizePathToken = (token: string): string =>
 			token.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
-		const admitted =
+		if (
 			changedPaths !== null &&
-			stagedPaths.every((token) => changedPaths.has(normalizePathToken(token)));
-		if (!admitted) {
-			throw new Error(
-				'BLOCKED: PR_FEEDBACK git add admits only exact paths inside the current changed-path set (the set the revision digest hashes); use git add -- <exact paths> for files that are already part of the revision',
-			);
+			stagedPaths.every((token) => changedPaths.has(normalizePathToken(token)))
+		) {
+			await assertPrFeedbackReadyToPublish(directory, sessionID);
+			return;
 		}
-		await assertPrFeedbackReadyToPublish(directory, sessionID);
-		return;
 	}
 	if (isPublicationShell || isPublicationTool) {
 		throw new Error(
