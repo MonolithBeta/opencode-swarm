@@ -804,6 +804,49 @@ const SKILL_METADATA_NON_STRING_SCALAR =
 	/^(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?|-?\.[0-9]+|true|false|null|yes|no|on|off|~|\d{4}-\d{2}-\d{2}(?:[T ].*)?)$/i;
 
 /**
+ * Strip a trailing YAML comment from a frontmatter value, quote-aware
+ * (PR #3387 follow-up, FB-027): a `#` inside a quoted scalar is content, so
+ * `[a, "b # c"] # note` strips to `[a, "b # c"]` — the previous
+ * first-char-only check escaped exactly that shape from the flow-collection
+ * and bare-scalar checks. A quote opens ONLY at a value start (after a
+ * flow-element boundary) — an interior apostrophe in a plain scalar
+ * (`[it's, b]`) is content, not a quote opener, so the trailing comment
+ * still strips and the finding still fires (fix-review round 2). A `#` at
+ * value start is a comment-only value (strips to empty), and `#` must
+ * follow whitespace or start the value to count as a comment opener.
+ */
+function stripFrontmatterValueComment(value: string): string {
+	let quote: '"' | "'" | undefined;
+	let atValueStart = true;
+	for (let i = 0; i < value.length; i++) {
+		const ch = value[i] as string;
+		if (quote) {
+			if (quote === '"' && ch === '\\') {
+				i += 1;
+				continue;
+			}
+			if (ch === quote) quote = undefined;
+			atValueStart = false;
+			continue;
+		}
+		if ((ch === '"' || ch === "'") && atValueStart) {
+			quote = ch;
+			atValueStart = false;
+			continue;
+		}
+		if (ch === '#' && (i === 0 || /\s/.test(value[i - 1] as string))) {
+			return value.slice(0, i).trim();
+		}
+		if (ch === '{' || ch === '[' || ch === ',' || ch === ':') {
+			atValueStart = true;
+			continue;
+		}
+		if (!/\s/.test(ch)) atValueStart = false;
+	}
+	return value.trim();
+}
+
+/**
  * Agent-Skills-spec conformance for tracked SKILL.md frontmatter
  * (issue #2907): non-spec keys must live under the `metadata:` string map,
  * `name` must match the parent directory, and metadata children must be
@@ -860,16 +903,15 @@ export function detectSkillFrontmatterSpecDrift(
 						/^(\s+)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/,
 					);
 					if (child) {
-						// Strip a trailing YAML comment (unquoted scalars
-						// only — a quoted string may contain '#') so
-						// `key: true # note` is still judged as a bare
-						// scalar (PRR-011b).
-						let value = child[3].trim();
-						const startsQuoted =
-							value.startsWith('"') || value.startsWith("'");
-						if (!startsQuoted && value.includes(' #')) {
-							value = value.slice(0, value.indexOf(' #')).trim();
-						}
+						// Strip a trailing YAML comment, quote-aware (PR #3387
+						// follow-up, FB-027): a `#` inside a quoted scalar is
+						// content, so `[a, "b # c"] # note` strips to
+						// `[a, "b # c"]` and still triggers the flow-collection
+						// check — the previous first-char-only check escaped
+						// it. A `#` at value start is a comment-only value
+						// (strips to empty), and `key: true # note` is still
+						// judged a bare scalar (PRR-011b).
+						const value = stripFrontmatterValueComment(child[3].trim());
 						const quoted =
 							(value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
 							(value.startsWith("'") && value.endsWith("'") && value.length >= 2);
@@ -926,14 +968,9 @@ export function detectSkillFrontmatterSpecDrift(
 				// pattern) so an empty-value `metadata: # note` is not
 				// treated as carrying an inline value — including the
 				// value-is-entirely-comment form (plan-critic Round 3).
-				let inline = match[2].trim();
-				const quotedStart =
-					inline.startsWith('"') || inline.startsWith("'");
-				if (!quotedStart && inline.startsWith('#')) {
-					inline = '';
-				} else if (!quotedStart && inline.includes(' #')) {
-					inline = inline.slice(0, inline.indexOf(' #')).trim();
-				}
+				// Quote-aware for the same reason as the child-value strip
+				// above (FB-027): a `#` inside a quoted scalar is content.
+				const inline = stripFrontmatterValueComment(match[2].trim());
 				if (inline !== '') {
 					findings.push({
 						category,
@@ -1976,7 +2013,11 @@ export function detectUserGlobalSkillStaleness(
 				file: relativePath,
 				message: `stale ${SKILL_CONTRACT_DIGEST_KEY} stamp for skill '${slug}': frontmatter says ${stampedDigest ?? '<none>'}, body content hashes to ${actualDigest}; run 'bun run scripts/stamp-skill-contracts.ts --write'`,
 			});
-			continue;
+			// NO continue here (PR #3387 follow-up, FB-029): the user-global
+			// shadowing comparison below must run regardless of the repo-side
+			// stamp state — a missing or stale stamp is exactly when the
+			// canonical body is least vouched for, and the old `continue`
+			// let a stale user-global copy escape detection in that case.
 		}
 		for (const userRelative of [
 			`.opencode/skills/${slug}/SKILL.md`,
