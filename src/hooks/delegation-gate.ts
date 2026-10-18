@@ -2882,7 +2882,8 @@ async function enforceCoderRetryEscalation(input: {
 			action: 'user_escalation',
 		});
 		throw new Error(
-			`TASK_RETRY_USER_ESCALATION_REQUIRED: task ${input.taskId} failed its critic-guided simplified retry. Stop and ask the user to change scope, authorize repair, or choose a different approach.`,
+			`TASK_RETRY_USER_ESCALATION_REQUIRED: task ${input.taskId} failed its critic-guided simplified retry. Stop and ask the user to change scope, authorize repair, or choose a different approach. ` +
+				`If the user authorizes repair, the architect calls update_task_status on this task with status "in_progress", force true, expected_state set to the task's current workflow state, expected_generation ${input.generation}, target_state "idle", a reason, and a transition_id — the audited repair reopens the task and clears the retry circuit (issue #3389). The task's plan status must already be in_progress; a task still pending in the plan takes one ordinary in_progress status update first.`,
 		);
 	}
 	if (!input.criticSatisfied) {
