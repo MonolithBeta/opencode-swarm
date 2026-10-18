@@ -79,6 +79,26 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 					/requires an immutable inventory and verification batches/,
 				);
 			}
+			// Reviewer round-2 adversarial floors: attached-quoted spellings are
+			// unambiguous in every shell (quotes glue/stripped), so they must
+			// reach the ladder, never the in-repo refusal.
+			const outsideAdv = join(
+				canonicalMkdtemp('commit-ff-adv-'),
+				'my file.txt',
+			);
+			writeFileSync(outsideAdv, 'adv\n');
+			const outsideAdvPosix = outsideAdv.replaceAll('\\', '/');
+			for (const command of [
+				'git commit -m"docs: mention -F"',
+				`git commit --file="${outsideAdvPosix}"`,
+				`git commit -F"${outsideAdvPosix}"`,
+			]) {
+				await expect(
+					enforcePrWorkflowToolBefore(repo, session, 'shell', { command }),
+				).rejects.toThrow(
+					/requires an immutable inventory and verification batches/,
+				);
+			}
 			// Outside-repo -F keeps today's classifier admission: it reaches the
 			// ladder precondition instead of the in-repo refusal.
 			const outside = join(canonicalMkdtemp('commit-ff-outside-'), 'msg.txt');

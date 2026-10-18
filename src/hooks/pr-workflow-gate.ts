@@ -15686,25 +15686,48 @@ export function extractStandaloneGitAddPaths(command: string): string[] {
 }
 
 /**
- * Quote-aware tokenizer for standalone git commands (issue #3315 D8): splits
- * on whitespace while keeping double-quoted spans (including empty quotes) as
- * single tokens, marking them quoted. Quoted tokens are never option flags —
- * `-F` inside a `-m "…"` message operand stays message text, exactly as git
- * itself would read it.
+ * Quote-aware tokenizer for standalone git commands (issue #3315 D8): a
+ * character scanner that models how cmd.exe/PowerShell/POSIX all treat double
+ * quotes — quote characters are dropped, whitespace inside quotes does not
+ * split, and a quote may OPEN MID-TOKEN (gluing: `-m"docs: -F"` is the single
+ * argv `-mdocs: -F`, an attached -m operand, not a -F flag). A token whose
+ * first character came from inside quotes is marked quoted and is never
+ * treated as an option flag; `-F` inside a `-m "…"` message operand stays
+ * message text, exactly as git itself would read it.
  */
 function tokenizeStandaloneGitCommand(
 	command: string,
 ): Array<{ text: string; quoted: boolean }> {
 	const tokens: Array<{ text: string; quoted: boolean }> = [];
-	const pattern = /"([^"]*)"|(\S+)/g;
-	let match: RegExpExecArray | null;
-	while ((match = pattern.exec(command)) !== null) {
-		if (match[1] !== undefined) {
-			tokens.push({ text: match[1], quoted: true });
-		} else {
-			tokens.push({ text: match[2] ?? '', quoted: false });
+	let current = '';
+	let started = false;
+	let beganQuoted = false;
+	let inQuotes = false;
+	const flush = () => {
+		if (started) {
+			tokens.push({ text: current, quoted: beganQuoted });
 		}
+		current = '';
+		started = false;
+		beganQuoted = false;
+	};
+	for (const ch of command) {
+		if (ch === '"') {
+			if (!started) {
+				started = true;
+				beganQuoted = true;
+			}
+			inQuotes = !inQuotes;
+			continue;
+		}
+		if (!inQuotes && /\s/.test(ch)) {
+			flush();
+			continue;
+		}
+		started = true;
+		current += ch;
 	}
+	flush();
 	return tokens;
 }
 
