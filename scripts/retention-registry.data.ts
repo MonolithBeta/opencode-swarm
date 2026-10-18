@@ -959,7 +959,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		writeLimits: {
 			bound: 'ONE fixed-shape advisory marker per project root — 65 bytes (64-char sha256 hex + newline), atomically overwritten per capture; the write is skipped entirely whenever the digest is unchanged, so footprint is constant regardless of capture frequency',
 			scope: 'global',
-			citation: 'src/background/workspace-snapshot.ts:1967-1978',
+			citation: 'src/background/workspace-snapshot.ts:2106-2117',
 		},
 		readBound: { pattern: 'line-bounded', bound: 'single 65-byte marker read once per capture', sync: true, citation: 'src/background/workspace-snapshot.ts:2131-2144' },
 		lockModel: 'none — advisory marker; atomic temp+rename makes concurrent captures last-writer-wins and a raced stale value costs one redundant capture at worst',
@@ -974,7 +974,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		owner: '#2472',
 		disposition: {
 			kind: 'not-a-defect',
-			proof: 'Single fixed-shape 65-byte advisory marker, atomically overwritten per capture and skipped entirely when the content digest is unchanged; a missing, torn, or stale marker costs exactly one redundant capture because shouldSkipSnapshot fails open — constant footprint, no accumulation vector (src/background/workspace-snapshot.ts:1967-1978,1992-2005).',
+			proof: 'Single fixed-shape 65-byte advisory marker, atomically overwritten per capture and skipped entirely when the content digest is unchanged; a missing, torn, or stale marker costs exactly one redundant capture because shouldSkipSnapshot fails open — constant footprint, no accumulation vector (src/background/workspace-snapshot.ts:2106-2117,2131-2144).',
 		},
 	},
 	{
