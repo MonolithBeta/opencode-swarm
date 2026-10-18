@@ -14,7 +14,7 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
  * log on every platform. Remove before merge.
  */
 describe('DIAG worktree discovery trace (temporary)', () => {
-	it('dumps discovery trace', () => {
+	it.skipIf(process.platform !== 'win32')('dumps discovery trace', () => {
 		const sandboxDir = canonicalMkdtemp('w3368-diag-');
 		const mainRepoDir = path.join(sandboxDir, 'main-repo');
 		fsSync.mkdirSync(mainRepoDir, { recursive: true });
