@@ -75,5 +75,10 @@ non-matching scripts unchanged, the `.pr-validation.json` contract path
 unchanged). Round-2 additions, each mutation-proven: a base manifest that parses
 but omits the script key stays BLOCKED (the `baseScript === undefined` mutant is
 killed); a subdirectory-rooted session consults only cwd-relative base paths
-(dropping the `./` prefix fails the nested and subdirectory suites). Full
-stage-a suite battery green.
+(dropping the `./` prefix fails the nested and subdirectory suites). The
+git-snapshot reader's path guard admits the `./` prefix so the cwd-relative
+reads execute against real git, pinned by an UNMOCKED integration suite that
+runs the real reader and the real merge-base resolution over a real repository
+fixture (admits `./` and bare paths, still rejects `../` and unknown
+revisions). The Stage A receipt accepts 40- and 64-hex object ids, matching the
+repository's OID convention. Full stage-a suite battery green.

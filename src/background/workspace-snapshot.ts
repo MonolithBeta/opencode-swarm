@@ -358,6 +358,17 @@ async function runGitAsyncDetailed(
  * the mutable checkout. Callers compare this text with the checkout copy before
  * treating a PR-provided contract as authority.
  */
+/**
+ * Manifest-path allowlist for `git show <rev>:<path>` reads. `./` is admitted
+ * so callers can opt into cwd-relative resolution (git resolves a bare <path>
+ * from the repository toplevel); a bare leading dot before a name char
+ * (`.foo/bar`) stays admitted as before. `../` never passes: the optional
+ * prefix matches only a dot followed by a slash (or a dot before a name
+ * char), and the caller's segment split still rejects any `..` component.
+ */
+const gitSnapshotRelativePathPattern =
+	/^(?:\.\/|\.?(?=[A-Za-z0-9]))(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
 export function readGitTextAtRevision(
 	directory: string,
 	revision: string,
@@ -365,9 +376,13 @@ export function readGitTextAtRevision(
 ): string | null {
 	if (
 		!isSafeGitRevisionToken(revision) ||
-		!/^\.?(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*$/.test(
-			relativePath,
-		) ||
+		// `./` is admitted so callers can opt into cwd-relative resolution
+		// (git resolves a bare <path> from the repository toplevel); a bare
+		// leading dot before a name char (`.foo/bar`) stays admitted as
+		// before. `../` never passes: the optional prefix only matches a
+		// dot followed by a slash, and the segment split below still rejects
+		// any `..` component.
+		!gitSnapshotRelativePathPattern.test(relativePath) ||
 		relativePath.split('/').includes('..')
 	) {
 		return null;

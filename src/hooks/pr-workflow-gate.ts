@@ -1367,7 +1367,10 @@ const PrFeedbackStageARecordSchema = z
 		baseRef: z.string().min(1).max(256).optional(),
 		baseSha: z
 			.string()
-			.regex(/^[0-9a-f]{40}$/)
+			// Repo OID convention (GIT_OBJECT_ID_PATTERN): SHA-1 and SHA-256
+			// object formats are both first-class; the merge-base resolver and
+			// the tool's base_sha arg already admit 64-hex.
+			.regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
 			.optional(),
 		baseVerification: z.enum(['caller-asserted', 'none']).optional(),
 		validatedAt: z.string().min(1),
