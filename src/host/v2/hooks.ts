@@ -378,6 +378,15 @@ async function onV2Prompt(
 		sessionID: event.sessionID,
 	};
 	const parts = [{ type: 'text', text }];
+	// #3320 review round (PRR-006/010/016): the v1 chat.message chain's
+	// agent-less branch already restores the session's PRIMARY owner (the
+	// delegation tracker reads the record directly), so the prompt event must
+	// NOT synthesize an `agent` field — doing so routed v2 prompts through the
+	// tracker's NAMED branch, which flipped `delegationActive` to true for
+	// native build/plan sessions and armed the PRM detector, the trajectory
+	// logger, and the chat-visible non-architect advisory on surfaces this PR
+	// exists to leave alone. An agent-less prompt keeps the named-branch side
+	// effects off while the owner restore preserves the native identity.
 	const input = {
 		sessionID: event.sessionID,
 		message: { ...message },

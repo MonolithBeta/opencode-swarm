@@ -534,6 +534,24 @@ Runs a type-checking or linting command after the coder agent completes.
 }
 ```
 
+### hooks.auto_inject_acceptance
+
+Opt-in relaxation of the coder/reviewer `ACCEPTANCE:` delegation gate.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto_inject_acceptance` | boolean | `false` | When `true`, a `coder` or `reviewer` Task dispatch whose prompt has no `ACCEPTANCE:` line (or only an empty one) is not rejected with `ACCEPTANCE_FIELD_REQUIRED`. The gate instead writes a generic default requirement, marked `(auto-injected default: ...)`, into the dispatch and queues an `ACCEPTANCE AUTO-INJECTED` advisory for the dispatching session when that session is registered. |
+
+**Trade-off**: the default requirement is generic, not task-derived, so a dispatch that would have been rejected now reaches the coder/reviewer with a weak criterion. For a single task that maps to spec requirements, the verbatim `FR-###`/`SC-###` text is still appended and coverage-checked as usual. An explicit non-empty `ACCEPTANCE:` block is never modified, and when no field of the dispatch can carry the block the strict rejection stands. Because project config can set this key, treat a repository that enables it like any other repository-committed gate relaxation (compare `hooks.delegation_gate`).
+
+```json
+{
+  "hooks": {
+    "auto_inject_acceptance": true
+  }
+}
+```
+
 ### full_auto
 
 Full-Auto v2 — opencode-swarm's autonomy control plane. Reduces approval friction by deterministically allowing safe operations and routing ambiguous or high-risk operations through a `critic_oversight` review pass before they execute. As of the first-class toggle, runtime activation is decoupled from config enablement: a user activates Full-Auto per session via `/swarm full-auto on [mode]`, and `/swarm full-auto off` disarms (returns to normal interactive operation).
