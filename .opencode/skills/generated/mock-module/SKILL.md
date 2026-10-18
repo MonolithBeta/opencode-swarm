@@ -1,9 +1,8 @@
 ---
 name: mock-module
 description: mock.module
-triggers:
-  - mock.module
 metadata:
+  triggers: '["mock.module"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.881Z"

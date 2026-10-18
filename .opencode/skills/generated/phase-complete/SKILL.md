@@ -1,11 +1,8 @@
 ---
 name: phase-complete
 description: phase_complete
-triggers:
-  - phase gate
-  - phase complete directive
-  - multi-phase plan
 metadata:
+  triggers: '["phase gate","phase complete directive","multi-phase plan"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:11:00.605Z"

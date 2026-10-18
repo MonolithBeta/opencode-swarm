@@ -1,10 +1,8 @@
 ---
 name: spread-real-module-exports-as-base-of-every-mock-module-return-o
 description: spread real module exports as base of every mock.module return object
-triggers:
-  - mock.module spread pattern
-  - node: built-in mock
 metadata:
+  triggers: '["mock.module spread pattern","node: built-in mock"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.913Z"
