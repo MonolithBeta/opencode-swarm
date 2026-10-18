@@ -1,11 +1,8 @@
 ---
 name: add-path-type-assertions-or-realpath-resolve-calls-in-path-joini
 description: Add path-type assertions or realpath/resolve calls in path-joining utility functions
-triggers:
-  - path.join
-  - realpath
-  - fs path
 metadata:
+  triggers: '["path.join","realpath","fs path"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.870Z"

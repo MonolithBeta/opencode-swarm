@@ -110,6 +110,7 @@ import {
 	recordPrReviewMicroFamilyDispatch,
 	recordPrReviewValidationBatch,
 	rollbackPrReviewBaseAdmissionIfUnlaunched,
+	rollbackPrReviewValidationBatchIfUnlaunched,
 	validatePrReviewDiscoveryLaneCompletion,
 	validatePrWorkflowTransportRecovery,
 } from '../hooks/pr-workflow-gate.js';
@@ -1992,6 +1993,18 @@ export async function executeDispatchLanesAsync(
 								`BLOCKED: PR_REVIEW ${phase} lane "${lane.id}" uses invalid role "${role || lane.agent}"${phase === 'critic' ? ' — PR critic lanes must use the critic agent (critic_finding_validator and other critic-family roles cannot emit [CRITIC] rows)' : ''}`,
 							);
 						}
+						// Issue #3311 (ghost owners): validate the agent BEFORE the
+						// validation batch is recorded. launchAsyncLane would reject
+						// this agent after the record exists, leaving an owner lane
+						// with no delegation record that N-of-M admission correctly
+						// refuses (the #3101 silence constraint) but that should
+						// never have been declared an owner at all.
+						const agentValidation = validateLaneAgent(lane.agent, context);
+						if (!agentValidation.ok) {
+							throw new Error(
+								`BLOCKED: PR_REVIEW ${phase} lane "${lane.id}" agent "${lane.agent}" is not launchable on this host: ${agentValidation.error}`,
+							);
+						}
 					}
 					await recordPrReviewValidationBatch(
 						directory,
@@ -2174,6 +2187,34 @@ export async function executeDispatchLanesAsync(
 					error: error instanceof Error ? error.message : String(error),
 				});
 				throw error;
+			}
+		}
+		// Issue #3311 (ghost owners): a reviewer/critic dispatch that launched
+		// ZERO lanes must not leave its validation batch recorded — the declared
+		// owner lanes would have no delegation record and block N-of-M
+		// settlement forever (the silence constraint keeps that fail-closed, so
+		// the batch is rolled back instead). Unlike the base rollback above this
+		// does not rethrow: the structured lane_results below already report
+		// every rejected/failed lane, and replacing them with a raw error would
+		// hide which agents failed.
+		if (
+			(parsed.data.mode === 'swarm-pr-review:reviewer' ||
+				parsed.data.mode === 'swarm-pr-review:critic') &&
+			context.sessionID?.trim() &&
+			!laneResults.some((lane) => lane.status === 'pending')
+		) {
+			try {
+				await rollbackPrReviewValidationBatchIfUnlaunched(
+					directory,
+					context.sessionID,
+					batchId,
+				);
+			} catch (error) {
+				logger.log('pr-review validation-batch rollback failed', {
+					batchId,
+					sessionID: context.sessionID,
+					error: error instanceof Error ? error.message : String(error),
+				});
 			}
 		}
 		const failed = laneResults.filter((lane) => lane.status === 'failed');
@@ -3167,6 +3208,19 @@ async function collectOnce(
 						terminalErrorClass: terminalErrorClassFromLaneTerminalError(
 							transcript.terminalError,
 						),
+						// Issue #3311: a provider terminal that settles ERROR (never
+						// the aborted -> cancelled arm) is typed 'resource' so
+						// class-keyed consumers (base-dimension disclosure, N-of-M
+						// admission, micro dead-family) can represent it. Same rule
+						// and same scope as the #2615 launch-rejection stamp: every
+						// lane, not only PR modes — the circuit keys on status, and
+						// an aborted (cancelled) terminal must stay unclassed so a
+						// host abort can never launder into typed-dead evidence.
+						...(settledStatus === 'error'
+							? {
+									workflowLaneFailureClass: 'resource' as const,
+								}
+							: {}),
 					},
 				},
 				// No transcript observation: this branch requires !transcript.text,
@@ -3717,6 +3771,13 @@ async function settleCollectedLane(args: {
 				`PR_WORKFLOW_CONTRACT_INVALID: batch=${record.batchId ?? '(missing)'} lane=${record.laneId ?? '(missing)'} workflow_lane=${record.workflowLane ?? '(missing)'} ` +
 				formatError(error);
 			prospectiveResult.error = prospectiveResult.error.slice(0, 1_024);
+			// Issue #3311: a verdict lane whose transport-validation step threw
+			// carries its own typed class so widened N-of-M admission can settle
+			// it once the retry budget is exhausted. PR-feedback modes sharing
+			// this catch keep their classless terminal (AC3 floor).
+			if (isPrReviewVerdictLane) {
+				prospectiveResult.workflowLaneFailureClass = 'verdict_contract';
+			}
 			await settleDelegationTerminal(
 				directory,
 				record,
@@ -3777,6 +3838,16 @@ async function settleCollectedLane(args: {
 					: 'PR_WORKFLOW_CONTRACT_INVALID';
 			prospectiveResult.error = `${errorCode}: batch=${record.batchId ?? '(missing)'} lane=${record.laneId ?? '(missing)'} workflow_lane=${record.workflowLane ?? '(missing)'} ${validation.reason}`;
 			prospectiveResult.error = prospectiveResult.error.slice(0, 1_024);
+			// Issue #3311: EVERY failed validation of a verdict lane (whatever the
+			// predicate — verdict-row contract, transcript_incomplete, or any
+			// other) carries the typed class, so a persistently failing
+			// reviewer/critic lane can settle through N-of-M admission once the
+			// retry budget is exhausted instead of wedging the run. Scoped to
+			// swarm-pr-review:reviewer|critic only; PR-feedback modes keep their
+			// classless terminal (AC3 floor).
+			if (isPrReviewVerdictLane) {
+				prospectiveResult.workflowLaneFailureClass = 'verdict_contract';
+			}
 		} else if (validation.recoveries?.length) {
 			const workflowLane = record.workflowLane?.trim();
 			if (workflowLane) {

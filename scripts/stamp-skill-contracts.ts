@@ -21,6 +21,7 @@ import {
 	SKILL_CONTRACT_DIGEST_KEY,
 	skillContractDigest,
 	splitSkillFrontmatter,
+	writeSkillContractStamp,
 } from '../src/config/skill-contract-digest.js';
 import { STAMPED_PR_WORKFLOW_SKILLS } from './drift-check';
 
@@ -46,26 +47,24 @@ for (const slug of STAMPED_PR_WORKFLOW_SKILLS) {
 		drift += 1;
 		continue;
 	}
+	// Re-stamp through the shared structural walk (writeSkillContractStamp)
+	// so the writer's match set is exactly the reader's — a stamp the reader
+	// resolves can always be rewritten, and a stamp-shaped decoy inside a
+	// block scalar is never touched (PR #3387 review). Insertion is the only
+	// fallback, and only when no stamp line exists at all.
 	const { frontmatter: fmSlice, body: bodySlice } =
 		splitSkillFrontmatter(normalized);
-	const next = existing
-		? // Re-stamp in place: bound the replace to the frontmatter slice so a
-		  // body line shaped like the stamp can never be rewritten (PRR-006).
-			fmSlice.replace(
-				new RegExp(
-					`^(\\s*)${SKILL_CONTRACT_DIGEST_KEY}: ?"?[0-9a-f]{12}"?[ \\t]*$`,
-					'm',
-				),
-				`$1${SKILL_CONTRACT_DIGEST_KEY}: "${digest}"`,
-			) + bodySlice
+	const written = writeSkillContractStamp(fmSlice, digest);
+	const next = written.replaced
+		? written.next + bodySlice
 		: insertStamp(normalized, digest);
 	// N-3 (PR #2863 review): a skill without a frontmatter fence made the
 	// helper return the input unchanged and the loop still wrote it and
 	// reported `stamped` — a false success. Fail closed instead so the next
 	// check run keeps flagging the slug instead of silently "fixing" it.
-	if (!existing && next === normalized) {
+	if ((!existing && next === normalized) || (!written.replaced && next === normalized)) {
 		console.error(
-			`skipped ${slug}: no frontmatter fence; stamp not inserted (fix the SKILL.md frontmatter)`,
+			`skipped ${slug}: no rewritable stamp line and no insertion point; fix the SKILL.md frontmatter`,
 		);
 		drift += 1;
 		continue;
@@ -86,7 +85,9 @@ function insertStamp(content: string, digest: string): string {
 	// match produced a self-invalidating stamp inside body text.
 	const { frontmatter: fmSlice, body: bodySlice } =
 		splitSkillFrontmatter(content);
-	const metadataLabel = /^metadata:[ \t]*$/m.exec(fmSlice);
+	// Same opener the reader accepts (comment-tolerant, case-insensitive) so
+	// an insertion point always implies the reader will resolve the child.
+	const metadataLabel = /^metadata:[ \t]*(?:#[^\n]*)?[ \t]*$/im.exec(fmSlice);
 	if (metadataLabel?.index !== undefined) {
 		// +1 skips the line terminator (content is LF-normalized above).
 		const afterLabel = metadataLabel.index + metadataLabel[0].length + 1;

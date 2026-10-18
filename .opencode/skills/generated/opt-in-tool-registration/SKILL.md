@@ -1,11 +1,8 @@
 ---
 name: opt-in-tool-registration
 description: opt-in-tool-registration
-triggers:
-  - opt-in tool map
-  - feature flag gating
-  - tool registration
 metadata:
+  triggers: '["opt-in tool map","feature flag gating","tool registration"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:50.021Z"

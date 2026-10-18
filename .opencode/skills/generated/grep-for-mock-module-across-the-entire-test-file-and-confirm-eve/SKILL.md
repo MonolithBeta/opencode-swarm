@@ -1,10 +1,8 @@
 ---
 name: grep-for-mock-module-across-the-entire-test-file-and-confirm-eve
 description: "grep for 'mock.module' across the entire test file and confirm every occurrence uses spread-real-exports before marking the file as converted"
-triggers:
-  - mock.module conversion
-  - vitest to bun migration
 metadata:
+  triggers: '["mock.module conversion","vitest to bun migration"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.878Z"

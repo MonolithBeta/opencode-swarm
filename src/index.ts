@@ -327,7 +327,9 @@ import {
 	getFinalPromptPressure,
 	getLiveContextModelIdentity,
 	getLiveContextWindow,
+	getPrimaryOwner,
 	getSessionBudgetPct,
+	isRegisteredSwarmSubagent,
 	setLiveContextWindow,
 	swarmState,
 } from './state';
@@ -649,6 +651,16 @@ function createSwarmCommandSystemRuleHook(
 			agent?: string;
 			expectedGeneration?: number;
 		};
+		// #3320: a SESSIONLESS system-surface call (title/summary/agent-generation
+		// surfaces) has no delivery owner — append no swarm-specific system text.
+		// Without this guard the agentHasSwarmCommandTool fallback below resolves
+		// the orchestrator and the command-rule banner is pushed onto surfaces no
+		// swarm session will ever read. Scope discipline matches the
+		// system-enhancer guard: the messages surface resolves identity from
+		// output.messages, so only the system surface keys on input.sessionID.
+		if (surface === 'system' && !sessionID) {
+			return;
+		}
 		const activeAgentName = sessionID
 			? surface === 'messages'
 				? (agent ??
@@ -5049,14 +5061,30 @@ async function initializeOpenCodeSwarm(
 				console.error(
 					`[DIAG] toolBefore tool=${normalizeToolName(input.tool) ?? input.tool} session=${input.sessionID}`,
 				);
-			// If no active agent is mapped for this session, it's the primary agent (architect)
-			// Subagent delegations always set activeAgent via chat.message before tool calls
-			if (!swarmState.activeAgent.has(input.sessionID)) {
-				swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
+			const hostProvidedAgent = readHostAgent(input);
+			// If no active agent is mapped for this session, seed it with the
+			// host-provided agent when the host supplied one (OpenCode v2), else the
+			// primary agent (architect). Subagent delegations always set activeAgent
+			// via chat.message before tool calls.
+			// #3320 review round: an existing 'unknown' entry is the ensureAgentSession
+			// placeholder (session created without an agent name), not an identity —
+			// treat it as unmapped so the architect default (and the swarm-only
+			// enforcement keyed on identity downstream) still applies to it.
+			if (
+				!swarmState.activeAgent.has(input.sessionID) ||
+				swarmState.activeAgent.get(input.sessionID) === 'unknown'
+			) {
+				swarmState.activeAgent.set(
+					input.sessionID,
+					hostProvidedAgent || ORCHESTRATOR_NAME,
+				);
 			}
 
-			// Revert to primary agent if delegation appears stale.
-			// Delegation is stale when BOTH conditions are met:
+			// Revert to primary agent if delegation appears stale. Skipped whenever
+			// the host supplied input.agent (OpenCode v2 passes the authoritative
+			// agent on every tool hook); hosts that do not send it keep this revert.
+			// Delegation is stale when ALL of these conditions are met:
+			// 0. The host did NOT provide input.agent (!hostProvidedAgent), AND
 			// 1. delegationActive is explicitly false (set by chat.message or Task toolAfter), AND
 			// 2. The session's lastAgentEventTime is >10s old (subagent completed, no chat.message reset)
 			// Using AND (&&) ensures active delegations are never interrupted — the
@@ -5065,21 +5093,32 @@ async function initializeOpenCodeSwarm(
 			// after Task tool completion sets delegationActive=false.
 			// NOTE: Uses lastAgentEventTime (not lastToolCallTime) to ensure tool activity
 			// does not prevent stale subagent identity from being detected
+			// #3320: the revert exists to rescue a parent stuck on a swarm SUBAGENT
+			// identity, so it applies only to registered swarm subagents. Native
+			// agent identities (plan/build/general on the v2 pump, where the
+			// re-seed precedes this hook and nothing sets delegationActive) must
+			// survive it. The restore target is the session's PRIMARY owner.
 			const session = swarmState.agentSessions.get(input.sessionID);
 			const activeAgent = swarmState.activeAgent.get(input.sessionID);
-			if (session && activeAgent && activeAgent !== ORCHESTRATOR_NAME) {
+			if (
+				!hostProvidedAgent &&
+				session &&
+				activeAgent &&
+				activeAgent !== ORCHESTRATOR_NAME
+			) {
 				const stripActive = stripKnownSwarmPrefix(activeAgent);
-				if (stripActive !== ORCHESTRATOR_NAME) {
+				if (
+					stripActive !== ORCHESTRATOR_NAME &&
+					isRegisteredSwarmSubagent(stripActive)
+				) {
 					const staleDelegation =
 						!session.delegationActive &&
 						Date.now() - session.lastAgentEventTime > 10000;
 					if (staleDelegation) {
-						swarmState.activeAgent.set(input.sessionID, ORCHESTRATOR_NAME);
-						ensureAgentSession(
-							input.sessionID,
-							ORCHESTRATOR_NAME,
-							bootstrapRoot,
-						);
+						const revertOwner =
+							getPrimaryOwner(input.sessionID) ?? ORCHESTRATOR_NAME;
+						swarmState.activeAgent.set(input.sessionID, revertOwner);
+						ensureAgentSession(input.sessionID, revertOwner, bootstrapRoot);
 					}
 				}
 			}
@@ -6103,8 +6142,19 @@ async function initializeOpenCodeSwarm(
 						.digest('hex')
 						.slice(0, 32);
 				}
-				swarmState.activeAgent.set(sessionId, ORCHESTRATOR_NAME);
-				ensureAgentSession(sessionId, ORCHESTRATOR_NAME, bootstrapRoot);
+				// #3320: the parent's identity after a Task handoff is the session's
+				// PRIMARY owner — the architect for swarm sessions (unchanged
+				// behavior), the recorded native agent (build/plan/general) for
+				// non-swarm sessions, so the native-agent exemptions keyed on
+				// identity survive the handoff. Absent a recorded owner, a host-provided
+				// parent agent (OpenCode v2 custom orchestrators) is preserved, else the
+				// architect.
+				const handoffOwner =
+					getPrimaryOwner(sessionId) ??
+					readHostAgent(input) ??
+					ORCHESTRATOR_NAME;
+				swarmState.activeAgent.set(sessionId, handoffOwner);
+				ensureAgentSession(sessionId, handoffOwner, bootstrapRoot);
 				const taskSession = swarmState.agentSessions.get(sessionId);
 				if (taskSession) {
 					taskSession.delegationActive = false;
@@ -6438,6 +6488,16 @@ async function initializeOpenCodeSwarm(
 		// Exposed for future Task 5.x business feature integration
 		automation: automationManager,
 	};
+}
+
+/**
+ * Read the host-provided agent name off a tool hook input (OpenCode v2 sends
+ * it on every tool hook; v1 does not). Returns the trimmed name, or undefined
+ * when absent / empty / not a string, so a malformed value can never throw.
+ */
+function readHostAgent(input: unknown): string | undefined {
+	const agent = (input as { agent?: unknown } | undefined)?.agent;
+	return typeof agent === 'string' ? agent.trim() || undefined : undefined;
 }
 
 // Dual-shape plugin entrypoint (issue #3004 / ADR-0003):
