@@ -262,7 +262,14 @@ transition ID. Under plan-lock then task-evidence-lock ordering it writes a
 PREPARED task-repair record before moving the ledger projection, clears only
 that task's QA proof, appends one audited event, and commits. Retrying the same
 transition lazily resumes that exact task; plugin initialization never scans
-repair records.
+repair records. One `in_progress` case shares this exact transaction (issue
+#3389): a task whose coder retry ladder reached its durable `user_escalation`
+rung for the current retry epoch is repairable in one audited step — the same
+CAS fields, WAL, and audit event, and `repair_idle` additionally clears the
+retry circuit (`retryCount`/`retryHistory`/`retryEpoch` reset, generation
+rotated). Every other `in_progress` repair still fails closed with
+`TASK_REPAIR_NOT_BACKWARD`; see the
+[recovery runbook](troubleshooting/recovery-runbook.md).
 
 Close-specific terminal reconciliation is similarly exact-task transactional.
 New ledgers persist a `plan_epoch` in the `plan_created` root payload. When a

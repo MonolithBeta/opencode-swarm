@@ -1,6 +1,7 @@
 import {
 	appendCoreEventSync,
 	CORE_EVENT_LOCKED,
+	getCoderRetryEscalationActions,
 	hasTaskRepairAuditEvent,
 } from '../events/core-events.js';
 import {
@@ -286,11 +287,52 @@ export async function repairTaskWorkflowUnderPlanLock<TPlan>(options: {
 				existingWal === null &&
 				options.currentPlanStatus !== 'completed' &&
 				options.currentPlanStatus !== 'blocked' &&
-				options.currentPlanStatus !== 'closed'
+				options.currentPlanStatus !== 'closed' &&
+				options.currentPlanStatus !== 'in_progress'
 			) {
 				throw new Error(
 					`TASK_REPAIR_NOT_BACKWARD: cannot create a repair from plan status ${options.currentPlanStatus}`,
 				);
+			}
+			if (existingWal === null && options.currentPlanStatus === 'in_progress') {
+				// Issue #3389: an in_progress task is repairable only from the coder
+				// retry ladder's user-decision rung — a durable `user_escalation`
+				// recorded for the task's CURRENT retry epoch. That is exactly the
+				// state the TASK_RETRY_USER_ESCALATION_REQUIRED refusal offers
+				// "authorize repair" for; every other in_progress repair stays
+				// fail-closed. Escalation records are epoch-keyed
+				// (`retry|taskId|retryEpoch|action`), so a ladder from an older
+				// epoch never admits. The retryEpoch is assumed monotonic per task
+				// (repair_idle resets it to 0 together with the retry counters), so
+				// a stale escalation from a pre-reset epoch at a colliding epoch
+				// number is indistinguishable; the retryCount conjunct below bounds
+				// that residual.
+				let wedgeEscalated = false;
+				try {
+					wedgeEscalated =
+						getCoderRetryEscalationActions(
+							options.directory,
+							options.taskId,
+							snapshot.retryEpoch,
+						).has('user_escalation') && snapshot.retryCount >= 3;
+				} catch (error) {
+					if (
+						error instanceof Error &&
+						error.message === 'CORE_EVENT_AUTHORITY_INDEX_UNREADABLE'
+					) {
+						throw new Error(
+							'TASK_REPAIR_ESCALATION_INDEX_UNREADABLE: cannot verify the retry-escalation wedge evidence for an in_progress repair ' +
+								'(the core-event authority index is unreadable). The index is rebuilt by the next authority-event write, or /swarm reset clears it; ' +
+								'the escalation ladder is then re-derived from the retained events window. Retry the audited repair afterwards; admission refuses to guess.',
+						);
+					}
+					throw error;
+				}
+				if (!wedgeEscalated) {
+					throw new Error(
+						`TASK_REPAIR_NOT_BACKWARD: cannot create a repair from plan status ${options.currentPlanStatus}`,
+					);
+				}
 			}
 
 			const wal =

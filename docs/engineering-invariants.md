@@ -932,7 +932,7 @@ appendLedgerEvent({ type: 'plan-updated', payload: { ... } });
 - `tests/unit/plan/*.test.ts` — replay round-trip + projection tests.
 - `docs/plan-durability.md` is updated when the schema changes.
 
-**Settled-task re-open guard (FR-005):** `update_task_status` must not silently re-open a settled task (`completed` / `blocked` / `closed`) to `in_progress`. The tool and manager layers reject ordinary backward transitions; the only exception is the exact-task audited repair transaction with explicit force, reason, transition identity, expected state, and expected generation. The legacy `advanceTaskStateAndPersist` wrapper refuses coder and terminal boundaries so it cannot bypass that transaction.
+**Settled-task re-open guard (FR-005):** `update_task_status` must not silently re-open a settled task (`completed` / `blocked` / `closed`) to `in_progress`. The tool and manager layers reject ordinary backward transitions; the only exception is the exact-task audited repair transaction with explicit force, reason, transition identity, expected state, and expected generation. The legacy `advanceTaskStateAndPersist` wrapper refuses coder and terminal boundaries so it cannot bypass that transaction. One wedge-scoped `in_progress` admission shares that same audited transaction (issue #3389): when the durable coder-retry escalation record for the task's current retry epoch contains `user_escalation` (with `retryCount` at the threshold), the force repair is admitted; every other `in_progress` repair fails closed with `TASK_REPAIR_NOT_BACKWARD`, and an unreadable escalation index fails closed with `TASK_REPAIR_ESCALATION_INDEX_UNREADABLE` rather than guessing admission.
 
 ### 6. test_runner safety
 

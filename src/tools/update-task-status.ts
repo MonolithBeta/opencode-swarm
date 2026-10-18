@@ -1901,7 +1901,7 @@ export async function executeUpdateTaskStatus(
 			};
 		}
 		logger.log(
-			`[update-task-status] Force-override: re-opening settled task ${args.task_id} to in_progress`,
+			`[update-task-status] Force-override: audited repair re-opening task ${args.task_id} (settled task, or in_progress at the retry-escalation user_escalation rung per issue #3389) to in_progress`,
 		);
 	}
 
@@ -2377,7 +2377,7 @@ export const update_task_status: ToolDefinition = createSwarmTool({
 			.optional()
 			.default(false)
 			.describe(
-				'Enable the audited backward-only repair contract. Requires expected_state, expected_generation, target_state="idle", reason, and transition_id.',
+				'Enable the audited repair contract: re-open a settled task, or an in_progress task that reached the retry ladder user_escalation rung (issue #3389). Requires expected_state, expected_generation, target_state="idle", reason, and transition_id.',
 			),
 		expected_state: z
 			.string()
@@ -2392,7 +2392,9 @@ export const update_task_status: ToolDefinition = createSwarmTool({
 		target_state: z
 			.literal('idle')
 			.optional()
-			.describe('Backward-only repair target. The only valid target is idle.'),
+			.describe(
+				'Repair target state. The only valid target is idle (re-opens the task for new work).',
+			),
 		reason: z
 			.string()
 			.min(1)
