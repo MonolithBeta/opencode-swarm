@@ -210,6 +210,7 @@ import type {
 } from '../pr-review/types.js';
 import {
 	buildVerdictSettlementReceipt,
+	deriveVerdictAttemptCounts,
 	deriveVerdictSettlementAdmission,
 	effectiveVerdictSettlementItems,
 	type PrReviewVerdictSettlementPhase,
@@ -6836,6 +6837,58 @@ export async function rollbackPrReviewBaseAdmissionIfUnlaunched(
 }
 
 /**
+ * Issue #3311 (ghost owners): remove a reviewer/critic validation batch whose
+ * dispatch launched ZERO lanes. A recorded-but-unlaunched batch would leave
+ * owner lanes with no delegation record, which N-of-M admission correctly
+ * treats as blocking (the #3101 silence constraint) — but the batch should
+ * never have been recorded. Mirrors `rollbackPrReviewBaseAdmissionIfUnlaunched`
+ * (fail-closed on an unreadable store: the rollback must PROVE the batch has
+ * no delegation records before removing the validation batch).
+ */
+export async function rollbackPrReviewValidationBatchIfUnlaunched(
+	directory: string,
+	sessionID: string,
+	batchId: string,
+): Promise<boolean> {
+	const normalizedSessionID = normalizeSessionID(sessionID);
+	const normalizedBatchId = normalizeBatchId(batchId);
+	return withPrWorkflowCheckoutMutationLock(directory, async () =>
+		withSessionStateMutation(directory, normalizedSessionID, async () => {
+			const state = await readPrWorkflowGateState(
+				directory,
+				normalizedSessionID,
+			);
+			if (!state || state.mode !== 'PR_REVIEW') return false;
+			const previous = state.prReviewValidationBatches ?? [];
+			if (!previous.some((batch) => batch.batchId === normalizedBatchId)) {
+				return false;
+			}
+			const batchRead = findByBatchIdDetailed(directory, normalizedBatchId, {
+				parentSessionId: normalizedSessionID,
+			});
+			if (batchRead.status === 'uncertain') {
+				// Issue #2511 fail-closed: without a readable store the batch's
+				// unlaunched-ness cannot be proven, so the batch stays recorded.
+				warnDelegationReadUncertainOnce(
+					'validation batch rollback existence guard',
+					batchRead,
+				);
+				return false;
+			}
+			if (batchRead.value.length > 0) return false;
+			await writeStateWhileLocked(directory, {
+				...state,
+				updatedAt: isoNow(),
+				prReviewValidationBatches: previous.filter(
+					(batch) => batch.batchId !== normalizedBatchId,
+				),
+			});
+			return true;
+		}),
+	);
+}
+
+/**
  * Delegation statuses that prove a lane will produce nothing further.
  *
  * Enumerated here rather than reusing `isTerminal`
@@ -7886,13 +7939,27 @@ export async function assertPrReviewValidationSettled(
 					MAX_UNCLAIMED_ITEMS_IN_MESSAGE,
 				);
 				const overflow = composed.unclaimed.length - named.length;
+				// Issue #3311: per-item attempt counts from the SAME window the
+				// admission reads (single derivation shared with the status
+				// projection), so the operator sees how close each item is to
+				// admissibility instead of re-deriving it from free text.
+				const attemptCounts = deriveVerdictAttemptCounts({
+					window: prReviewPhaseWindow(state, requiredPhase),
+					unclaimed: composed.unclaimed,
+				});
+				const attemptText = attemptCounts
+					.map(
+						(count) =>
+							`${count.itemId}: attempts: ${count.attemptsUsed} of ${count.attemptsRequired} (remaining: ${count.remaining})`,
+					)
+					.join('; ');
 				throw new Error(
 					`BLOCKED: PR_REVIEW ${requiredPhase} items lack an authenticated verdict from any successful lane: ${named.join(', ')}` +
 						(overflow > 0 ? ` (+${overflow} more)` : '') +
 						(composed.diagnostics.length > 0
 							? `; diagnostics: ${composed.diagnostics.join(' | ')}`
 							: '') +
-						`; N-of-M settlement not admissible (${admission.reason}); re-dispatch the unclaimed items to exhaust the retry budget with controller-observed liveness evidence, or complete downgrade-only once admissible`,
+						`; N-of-M settlement not admissible (${admission.reason}); per-item attempts: ${attemptText}; settle or re-dispatch the unclaimed items to exhaust the retry budget, or complete downgrade-only once admissible`,
 				);
 			}
 			const runId = state.prReviewArtifactRunId ?? state.prReviewReservedRunId;
@@ -16544,6 +16611,19 @@ function prReviewPhaseWindow(
 	return (
 		latestCouncilIndex >= 0 ? all.slice(latestCouncilIndex + 1) : all
 	).filter((batch) => batch.phase === 'reviewer');
+}
+
+/**
+ * Issue #3311: exported wrapper so the `pr_workflow_status` projection derives
+ * per-item verdict attempt counts over EXACTLY the window the N-of-M admission
+ * reads (the post-latest-council reviewer slice included), instead of
+ * hand-rolling a filter that can drift from settlement semantics.
+ */
+export function prReviewPhaseWindowForStatus(
+	state: PrWorkflowGateState,
+	phase: PrReviewComposablePhase,
+): PrReviewValidationBatchRecord[] {
+	return prReviewPhaseWindow(state, phase);
 }
 
 /**
