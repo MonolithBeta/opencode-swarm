@@ -15686,48 +15686,104 @@ export function extractStandaloneGitAddPaths(command: string): string[] {
 }
 
 /**
+ * Quote-aware tokenizer for standalone git commands (issue #3315 D8): splits
+ * on whitespace while keeping double-quoted spans (including empty quotes) as
+ * single tokens, marking them quoted. Quoted tokens are never option flags —
+ * `-F` inside a `-m "…"` message operand stays message text, exactly as git
+ * itself would read it.
+ */
+function tokenizeStandaloneGitCommand(
+	command: string,
+): Array<{ text: string; quoted: boolean }> {
+	const tokens: Array<{ text: string; quoted: boolean }> = [];
+	const pattern = /"([^"]*)"|(\S+)/g;
+	let match: RegExpExecArray | null;
+	while ((match = pattern.exec(command)) !== null) {
+		if (match[1] !== undefined) {
+			tokens.push({ text: match[1], quoted: true });
+		} else {
+			tokens.push({ text: match[2] ?? '', quoted: false });
+		}
+	}
+	return tokens;
+}
+
+/**
+ * Index of the `commit` subcommand token, or -1. Only tokens BEFORE this
+ * index are global git options (where `-C <dir>` relocates the working
+ * directory); after it, `-C` is git-commit's --reuse-message, never a cwd.
+ */
+function standaloneGitCommitSubcommandIndex(
+	tokens: Array<{ text: string; quoted: boolean }>,
+): number {
+	for (let i = 0; i < tokens.length; i += 1) {
+		if (!tokens[i].quoted && tokens[i].text === 'commit') return i;
+	}
+	return -1;
+}
+
+/**
  * Issue #3315 D8/AC25: extract the message-file argument of a standalone
  * `git commit` for every spelling the classifier grammar admits — `-F <p>`,
- * `-F<p>`, `--file=<p>`, `--file <p>` — unquoting a double-quoted value (the
- * sanctioned authoring tool's remediation text shows the quoted form). Null
- * when the commit carries no message-file argument.
+ * `-F<p>`, `--file=<p>`, `--file <p>` — reading option positions correctly:
+ * operands of `-m`/`--message`/`-c`/`-C`/`--reuse-message`/`--fixup` are
+ * consumed as values (a `-F` inside a commit message is message text, not a
+ * flag). Null when the commit carries no message-file argument.
  */
 export function extractStandaloneGitCommitMessageFile(
 	command: string,
 ): string | null {
-	const tokens = command.trim().split(/\s+/);
-	for (let i = 0; i < tokens.length; i += 1) {
+	const tokens = tokenizeStandaloneGitCommand(command);
+	const subcommand = standaloneGitCommitSubcommandIndex(tokens);
+	if (subcommand < 0) return null;
+	for (let i = subcommand + 1; i < tokens.length; i += 1) {
 		const token = tokens[i];
-		if (token === '-F' || token === '--file') {
+		if (token.quoted) continue;
+		if (token.text === '-F' || token.text === '--file') {
 			const value = tokens[i + 1];
-			return value === undefined ? null : unquoteGitArg(value);
+			return value === undefined ? null : value.text;
 		}
-		const attached = /^(?:-F|--file=)(.+)$/i.exec(token);
-		if (attached) return unquoteGitArg(attached[1]);
+		if (token.text === '-m' || token.text === '--message') {
+			i += 1; // the next token is the message operand, never a flag
+			continue;
+		}
+		if (
+			token.text === '-c' ||
+			token.text === '-C' ||
+			token.text === '--reuse-message' ||
+			token.text === '--fixup'
+		) {
+			i += 1; // commit-ish operand
+			continue;
+		}
+		if (token.text.startsWith('--message=')) continue;
+		if (token.text.startsWith('--file=')) {
+			return token.text.slice('--file='.length);
+		}
+		const attached = /^-F(.+)$/i.exec(token.text);
+		if (attached) return attached[1];
+		const attachedMessage = /^-m(.+)$/i.exec(token.text);
+		if (attachedMessage) continue;
 	}
 	return null;
 }
 
-function unquoteGitArg(value: string): string {
-	if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
-		return value.slice(1, -1);
-	}
-	return value;
-}
-
 /**
  * Issue #3315 D8/AC25: the working base a standalone git command resolves
- * paths against — the `-C <dir>` relocation when present, else the gate
+ * paths against — the GLOBAL `-C <dir>` relocation (which only appears before
+ * the subcommand; `git commit -C <x>` is --reuse-message), else the gate
  * directory.
  */
 function resolveStandaloneGitCommandCwd(
 	command: string,
 	directory: string,
 ): string {
-	const tokens = command.trim().split(/\s+/);
-	for (let i = 0; i < tokens.length; i += 1) {
-		if (tokens[i] === '-C' && tokens[i + 1]) {
-			return path.resolve(directory, tokens[i + 1]);
+	const tokens = tokenizeStandaloneGitCommand(command);
+	const subcommand = standaloneGitCommitSubcommandIndex(tokens);
+	const limit = subcommand >= 0 ? subcommand : tokens.length;
+	for (let i = 0; i < limit; i += 1) {
+		if (!tokens[i].quoted && tokens[i].text === '-C' && tokens[i + 1]) {
+			return path.resolve(directory, tokens[i + 1].text);
 		}
 	}
 	return directory;

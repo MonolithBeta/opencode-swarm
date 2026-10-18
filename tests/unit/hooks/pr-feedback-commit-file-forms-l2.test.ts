@@ -62,6 +62,23 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 					enforcePrWorkflowToolBefore(repo, session, 'shell', { command }),
 				).rejects.toThrow(inRepoRefusal);
 			}
+			// Reviewer round-1 regression floor: a plain `-m` message that merely
+			// CONTAINS a `-F`/`--file`-looking token is message text, not a
+			// message-file argument — the commit keeps reaching the ladder
+			// precondition exactly as at base (option-position-aware parsing).
+			for (const command of [
+				'git commit -m "docs: document the -F flag"',
+				'git commit -m "add -fast path"',
+				'git commit -m "support --file upload"',
+				'git commit -m "fix" -m "reuse -C abc123 shape"',
+				'git commit -C 0123456789abcdef0123456789abcdef01234567 -m "fix: thing"',
+			]) {
+				await expect(
+					enforcePrWorkflowToolBefore(repo, session, 'shell', { command }),
+				).rejects.toThrow(
+					/requires an immutable inventory and verification batches/,
+				);
+			}
 			// Outside-repo -F keeps today's classifier admission: it reaches the
 			// ladder precondition instead of the in-repo refusal.
 			const outside = join(canonicalMkdtemp('commit-ff-outside-'), 'msg.txt');

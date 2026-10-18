@@ -101,9 +101,7 @@ import { plan_conflict_check } from './plan-conflict-check';
 import { pr_review_submission } from './pr-review-submission';
 import { pr_workflow_status } from './pr-workflow-status';
 import { pre_check_batch } from './pre-check-batch';
-import {
-	prepare_pr_feedback_commit_message,
-} from './prepare-pr-feedback-commit-message';
+import { prepare_pr_feedback_commit_message } from './prepare-pr-feedback-commit-message';
 import { prepare_pr_feedback_scope } from './prepare-pr-feedback-scope';
 import { prepare_pr_workflow_checkout } from './prepare-pr-workflow-checkout';
 import { quality_budget } from './quality-budget';
