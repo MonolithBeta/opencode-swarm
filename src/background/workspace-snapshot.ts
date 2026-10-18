@@ -924,6 +924,145 @@ export async function resolveIsWorkingTreeCleanAsync(
 	return status === null ? null : status.length === 0;
 }
 
+/**
+ * Sibling of {@link resolveIsWorkingTreeCleanAsync} (issue #3315 E1/AC22): the
+ * same `--porcelain=v1 --untracked-files=all` enumeration, but returning the
+ * dirty PATHS instead of collapsing to a boolean, so refusal messages can name
+ * the offending files (first N plus a count of the rest) instead of leaving the
+ * operator to hunt for them. Never changes the cleanliness verdict itself.
+ */
+export async function resolveWorkingTreeDirtyPathsAsync(
+	directory: string,
+): Promise<string[] | null> {
+	const status = await runGitAsync(directory, [
+		'status',
+		'--porcelain=v1',
+		'-z',
+		'--untracked-files=all',
+	]);
+	if (status === null) return null;
+	const paths: string[] = [];
+	// With -z, a rename/copy record is `XY NEWPATH\0ORIGPATH\0` — the orig
+	// path arrives as a bare record with no status prefix and must be skipped.
+	let skipNextRecord = false;
+	for (const entry of status.split('\0')) {
+		if (entry.length === 0) continue;
+		if (skipNextRecord) {
+			skipNextRecord = false;
+			continue;
+		}
+		if (entry.length < 4) continue;
+		const statusCode = entry.slice(0, 2);
+		if (statusCode.startsWith('R') || statusCode.startsWith('C')) {
+			skipNextRecord = true;
+		}
+		const rawPath = entry.slice(3);
+		if (rawPath.length === 0) continue;
+		paths.push(rawPath);
+	}
+	return paths;
+}
+
+/**
+ * The changed-path set a PR_FEEDBACK revision digest hashes (issue #3315 D3):
+ * tracked changes vs the bound base (`diff --name-only`) plus every untracked
+ * non-ignored file (`status --porcelain --untracked-files=all`). Staging
+ * admission compares `git add --` pathspecs against exactly this set, so
+ * content the digest never hashed (untouched paths, ignored files) can never
+ * be staged through the sanctioned surface. Paths are normalized to
+ * posix-relative lowercase for cross-platform comparison.
+ */
+export async function resolvePrWorkflowChangedPathSetAsync(
+	directory: string,
+	baseHeadSha: string,
+): Promise<Set<string> | null> {
+	if (!/^[0-9a-f]{40}$/i.test(baseHeadSha)) return null;
+	const diff = await runGitAsync(directory, [
+		'diff',
+		'--no-ext-diff',
+		'--name-only',
+		'-z',
+		baseHeadSha,
+	]);
+	if (diff === null) return null;
+	const status = await runGitAsync(directory, [
+		'status',
+		'--porcelain=v1',
+		'-z',
+		'--untracked-files=all',
+	]);
+	if (status === null) return null;
+	const set = new Set<string>();
+	const normalize = (value: string): string =>
+		value.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+	for (const name of diff.split('\0')) {
+		if (name.length > 0) set.add(normalize(name));
+	}
+	for (const entry of status.split('\0')) {
+		if (entry.length < 4) continue;
+		const rawPath = entry.slice(3);
+		if (rawPath.length === 0) continue;
+		set.add(normalize(rawPath));
+	}
+	return set;
+}
+
+/**
+ * Resolve a local ref (e.g. a `refs/remotes/origin/<branch>` tracking ref) to
+ * its commit SHA (issue #3315 D1). Null on any failure — callers treat null as
+ * "no positive fast-forward opportunity" and fall through to their own
+ * assertions, so a missing ref or a broken probe never moves HEAD.
+ */
+export async function resolveLocalRefHeadAsync(
+	directory: string,
+	ref: string,
+): Promise<string | null> {
+	if (!/^[A-Za-z0-9._/-]+$/.test(ref)) return null;
+	const sha = await runGitAsync(directory, [
+		'rev-parse',
+		'--verify',
+		`${ref}^{commit}`,
+	]);
+	return sha && /^[0-9a-f]{40}$/i.test(sha) ? sha.toLowerCase() : null;
+}
+
+/**
+ * `git merge-base --is-ancestor` wrapper (issue #3315 D1). True only on the
+ * POSITIVE ancestry answer (exit 0); false covers both the definitive no and
+ * an unverifiable probe — callers refuse the fast-forward on false, which is
+ * the fail-closed direction (HEAD stays put).
+ */
+export async function resolveIsAncestorAsync(
+	directory: string,
+	ancestor: string,
+	descendant: string,
+): Promise<boolean> {
+	if (!/^[0-9a-f]{40}$/i.test(ancestor) || !/^[0-9a-f]{40}$/i.test(descendant))
+		return false;
+	const out = await runGitAsync(directory, [
+		'merge-base',
+		'--is-ancestor',
+		ancestor,
+		descendant,
+	]);
+	return out !== null;
+}
+
+/**
+ * Fast-forward the current branch to a local ref with `git merge --ff-only`
+ * (issue #3315 D1). Returns false on any failure; the caller only invokes this
+ * after verifying HEAD is an ancestor of the ref, so a false here leaves HEAD
+ * where it was (git --ff-only never creates a merge commit).
+ */
+export async function fastForwardToRefAsync(
+	directory: string,
+	ref: string,
+): Promise<boolean> {
+	if (!/^[A-Za-z0-9._/-]+$/.test(ref)) return false;
+	const out = await runGitAsync(directory, ['merge', '--ff-only', ref]);
+	return out !== null;
+}
+
 /** Count commits on the ancestry path from the immutable intake head to HEAD. */
 export function resolveCommitCountSince(
 	directory: string,
