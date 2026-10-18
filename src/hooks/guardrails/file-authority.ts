@@ -344,9 +344,12 @@ function isValidWorktreeRecord(
  * Only roots that pass back-anchor validation are returned: `bare` records
  * are skipped (their git dir would otherwise become a writable trusted root
  * whose hooks/config have no `.git` path segment), and a record whose
- * registration cannot be round-tripped back to this repository is rejected,
- * so forged `.git/worktrees/<id>/` files cannot widen containment onto an
- * arbitrary directory.
+ * registration cannot be round-tripped back to this repository is rejected —
+ * closing registrations whose target has no cooperating `.git` pointer and
+ * registrations naming other repositories. Residual (git-native): a target
+ * directory that already holds a `.git` pointer from earlier git history
+ * (moved/copied/pruned worktree folders) still validates, because git
+ * itself cannot distinguish that from a real `git worktree add`.
  */
 export function getLinkedGitWorktrees(dir: string): string[] {
 	const cached = gitWorktreeCache.get(dir);
