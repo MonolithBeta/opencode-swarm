@@ -1,5 +1,5 @@
 ---
-issue: 3215
+issue: 3215, 3216, 3217
 ---
 
 # Skill frontmatter hardening: stamp anchoring, flow-map handling, generated-tree convergence (#3215, #3216, #3217)
@@ -22,7 +22,10 @@ issue: 3215
 - The 13 generated skills that still carried a legacy top-level `triggers:` list are
   migrated to the generator's own emission shape (`triggers` as the first
   `metadata:` child, a single-quoted JSON array string), and one generated skill whose
-  directory name did not match its `name:` field is renamed to match (#3216).
+  directory name did not match its `name:` field is renamed to match — the directory
+  now carries the generator's `sanitizeSlug` output including its trailing hyphen
+  (64 characters; the pre-existing `name:` field and body self-reference already used
+  that form) (#3216).
 - The drift-check `skill-frontmatter` detector now enforces the generated tree
   (`.opencode/skills/generated/`) — hand-edits reintroducing non-spec top-level keys or
   name mismatches there fail `bun run drift:check --enforce` — and flags non-empty
@@ -39,11 +42,15 @@ exempt from the conformance detector).
 
 ## Verification
 
-- New regression suites: `skill-contract-digest-block-scalar-3215.test.ts`,
-  `skill-frontmatter-flow-forms-3217.test.ts`,
-  `generated-triggers-convergence-3216.test.ts` (also pins name === directory), and
-  `generated-triggers-migration-shape-3216.test.ts` (migration shape parity with the
-  generator's `yamlJsonString` emission) — all RED at base, GREEN after the fix.
+- New regression suites: `skill-contract-digest-block-scalar-3215.test.ts` (its
+  block-scalar spoof assertions are RED at base), `skill-frontmatter-flow-forms-3217.test.ts`
+  (flow-map and reviser assertions RED at base, block-form controls green),
+  `generated-triggers-convergence-3216.test.ts` (RED at base: 13 legacy files; also pins
+  name === directory), and `generated-triggers-migration-shape-3216.test.ts` (migration
+  shape parity with the generator's `yamlJsonString` emission — its shape oracle is green
+  at base by construction; the companion 13-file declaration test carries the RED leg).
+  The feedback round adds a battery for the multi-line flow, quoting, and stamp-writer
+  surfaces in `skill-frontmatter-feedback-3387.test.ts`.
 - Preserving floors green: the #2907 transition matrix, skill-audience suite,
   skill-generator suites, skill-reviser suite, and the stamp script (all four shipped
   stamp forms still verify).

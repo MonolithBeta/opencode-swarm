@@ -56,7 +56,9 @@ function readFrontmatter(slug: string): string {
 describe('generated triggers migration shape (issue #3216)', () => {
 	test('every generated triggers metadata child is a canonical JSON-array string', () => {
 		expect(existsSync(GENERATED_ROOT)).toBe(true);
-		for (const slug of readdirSync(GENERATED_ROOT)) {
+		for (const slug of readdirSync(GENERATED_ROOT, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => entry.name)) {
 			const frontmatter = readFrontmatter(slug);
 			if (!frontmatter) continue;
 			const child = metadataTriggersChild(frontmatter);

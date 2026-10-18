@@ -89,11 +89,14 @@ values**:
 - The reader (`parseSkillFrontmatter` in `src/hooks/skill-scoring.ts`)
   accepts the spec shape and the legacy top-level shape during the
   transition; `metadata.<key>` is preferred, and a metadata-vs-top-level
-  audience conflict fails closed. An inline flow-map value
-  (`metadata: {audience: x}`) is resolved like the block form (single-level;
-  malformed values fail closed — never absent/match-all), but it is
-  non-canonical for this repo's writer: `drift:check` flags it, and the
-  reviser rewrites it to the block form (issue #3217).
+  audience conflict fails closed. An inline value on the `metadata:` key —
+  a flow map (`metadata: {audience: x}`, single- or multi-line), a
+  sequence, or a bare scalar — is resolved when it parses as a flow map and
+  fails closed otherwise (audience invalid — never absent/match-all), but
+  every non-empty inline value is non-canonical for this repo's writer:
+  `drift:check` flags it, and the reviser rewrites it to the block form
+  (issue #3217). A comment-only value (`metadata: # note`) counts as an
+  empty value and takes the block form.
 - The generator (`renderSkillMarkdown`), reviser, and the
   `swarm-contract-digest` stamp writer all emit the spec shape.
 
@@ -315,23 +318,20 @@ Agent task / curator review
 
 #### Frontmatter Example
 
-Generated skills inherit trigger phrases and metadata from source knowledge:
+Generated skills inherit trigger phrases and metadata from source knowledge.
+Every non-spec key lives under the `metadata:` map as a quoted string (the
+shape the generator emits and the drift-check detector enforces — including
+in the generated tree):
 
 ```yaml
 ---
 name: declare-scope-before-delegation
 description: Enforce scope declaration before coder/reviewer delegation
-triggers:
-  - coder delegation
-  - scope declaration
-  - declare_scope
-applies_to_agents:
-  - coder
-  - reviewer
-applies_to_tools:
-  - task
-  - Task
-directive_priority: high
+metadata:
+  triggers: '["coder delegation", "scope declaration", "declare_scope"]'
+  applies_to_agents: '["coder", "reviewer"]'
+  applies_to_tools: '["task", "Task"]'
+  directive_priority: "high"
 ---
 
 # Declare Scope Before Delegation

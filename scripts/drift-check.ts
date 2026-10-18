@@ -939,8 +939,7 @@ export function detectSkillFrontmatterSpecDrift(
 						category,
 						severity: 'error',
 						file: skillPath,
-						message:
-							'metadata key carries an inline value — use the block form (issue #3217; inline flow maps are non-canonical for this repo\'s writer)',
+						message: `metadata key "${match[1]}" carries an inline value — use the block form (issue #3217; any non-empty inline value is non-canonical for this repo's writer)`,
 					});
 				}
 				inMetadata = true;

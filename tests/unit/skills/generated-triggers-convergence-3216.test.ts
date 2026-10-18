@@ -55,8 +55,11 @@ describe('generated skill frontmatter convergence (issue #3216)', () => {
 			);
 			if (/^triggers:/m.test(frontmatter.join('\n'))) offenders.push(slug);
 		}
-		// Frozen RED marker — prints 13 at the unfixed base tree.
-		console.log(`top-level triggers files: ${offenders.length}`);
+		// Frozen RED marker — prints the offender list when the tree regresses
+		// (13 at the unfixed base tree); the green path stays silent.
+		if (offenders.length > 0) {
+			console.log(`top-level triggers files: ${offenders.length}`);
+		}
 		expect(offenders).toEqual([]);
 	});
 
