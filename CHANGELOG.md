@@ -1,5 +1,16 @@
 # Changelog
 
+## [7.199.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.0...v7.199.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **guardrails:** allow file authority within linked git worktrees ([757518d](https://github.com/ZaxbyHub/opencode-swarm/commit/757518dfe664313b5a4cd6d3c9e2e32a5fb31926))
+* **guardrails:** canonicalize 8.3 short-name paths in worktree containment (windows CI) ([473df7e](https://github.com/ZaxbyHub/opencode-swarm/commit/473df7e077e702ed5d6bef88d10ae2e75543b4c3))
+* **guardrails:** canonicalize not-yet-existing write targets via existing ancestor (windows CI) ([6216a59](https://github.com/ZaxbyHub/opencode-swarm/commit/6216a598692aadf644f8472c6438e59217feacff))
+* **workflow:** admit the audited repair from the retry-escalation user_escalation wedge ([#3389](https://github.com/ZaxbyHub/opencode-swarm/issues/3389)) ([2a96e9a](https://github.com/ZaxbyHub/opencode-swarm/commit/2a96e9a7f65f49f5193d7be8746c36884f7b40fb))
+* **workflow:** close the [#3390](https://github.com/ZaxbyHub/opencode-swarm/issues/3390) review round — honest remediation text, discriminating pins, plan-status precondition ([0f05bef](https://github.com/ZaxbyHub/opencode-swarm/commit/0f05bef19015e48db0fa88e6a6222e830c7221f9))
+
 ## [7.199.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.198.2...v7.199.0) (2026-10-18)
 
 
