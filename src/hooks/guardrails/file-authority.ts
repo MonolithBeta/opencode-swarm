@@ -260,7 +260,15 @@ function parseWorktreeListPorcelain(output: string): WorktreeListRecord[] {
  * every directory this function returns is a trusted containment root.
  */
 
-function canonicalizeWindowsPath(p: string): string {
+/**
+ * Native-realpath canonicalization for Windows paths. Expands 8.3 short-name
+ * segments (C:\Users\RUNNER~1\... -> C:\Users\runneradmin\...) that the plain
+ * JS realpath leaves untouched, and strips the \\?\ device prefix. Returns
+ * undefined when the path does not exist (or cannot be opened) — callers
+ * decide whether that means "skip" (a trusted root must exist) or
+ * "keep lexical form" (see canonicalizeWindowsPathTailTolerant).
+ */
+function canonicalizeWindowsPathNative(p: string): string | undefined {
 	if (process.platform !== 'win32') return p;
 	try {
 		const native = fsSync.realpathSync.native(p);
@@ -268,7 +276,38 @@ function canonicalizeWindowsPath(p: string): string {
 			? native.slice(4)
 			: native;
 	} catch {
-		return p;
+		return undefined;
+	}
+}
+
+function canonicalizeWindowsPath(p: string): string {
+	return canonicalizeWindowsPathNative(p) ?? p;
+}
+
+/**
+ * Windows: canonicalize a WRITE TARGET that may not exist yet — the common
+ * case for a write-authority check. realpathSync.native fails on a missing
+ * leaf, which would leave an 8.3 short-form target unexpanded while the
+ * (existing) worktree roots are canonicalized long-form, so the two sides
+ * can never lexically match and every not-yet-existing in-worktree write is
+ * denied (windows CI, guardrails-worktree-authority). Canonicalize the
+ * nearest EXISTING ancestor instead and re-append the missing tail. A
+ * symlink/junction ancestor is resolved through, so a target chained out of
+ * every trusted root still fails to match and is denied as before.
+ */
+function canonicalizeWindowsPathTailTolerant(p: string): string {
+	if (process.platform !== 'win32') return p;
+	const tail: string[] = [];
+	let probe = p;
+	for (;;) {
+		const native = canonicalizeWindowsPathNative(probe);
+		if (native !== undefined) {
+			return tail.length === 0 ? native : path.join(native, ...tail.reverse());
+		}
+		const parent = path.dirname(probe);
+		if (parent === probe) return p;
+		tail.push(path.basename(probe));
+		probe = parent;
 	}
 }
 
@@ -379,6 +418,10 @@ export function canonicalizeWindowsPathPublic(p: string): string {
 	return canonicalizeWindowsPath(p);
 }
 
+export function canonicalizeWindowsPathTailTolerantPublic(p: string): string {
+	return canonicalizeWindowsPathTailTolerant(p);
+}
+
 export function getLinkedGitWorktrees(dir: string): string[] {
 	const cached = gitWorktreeCache.get(dir);
 	if (cached !== undefined) {
@@ -407,14 +450,15 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 			if (!isValidWorktreeRecord(repoRootRecord, record)) {
 				continue;
 			}
-			try {
-				worktrees.push(canonicalizeWindowsPath(record.path));
-			} catch {
-				// A root that cannot be realpath'd is not a verified directory;
-				// failing closed here beats trusting a lexical path.
+			const native = canonicalizeWindowsPathNative(record.path);
+			if (native === undefined) {
+				// A root that cannot be natively realpath'd is not a verified
+				// directory; failing closed here beats trusting a lexical path.
+				continue;
 			}
+			worktrees.push(native);
 		}
-	} catch (error) {
+	} catch {
 		// Not a git repository or git command failed
 	}
 
@@ -1070,11 +1114,12 @@ export function checkFileAuthorityWithRules(
 	// systems only have root `/`, so roots only differ when the target is
 	// on a different Windows drive.
 	let effectiveDir = dir;
-	// The caller cwd/target may be in 8.3 short-name form (GitHub
-	// Windows runners report TEMP as C:\UsersRUNNER~1 + ...) while git
-	// reports long-form roots; canonicalize before every lexical
-	// comparison.
-	const nativeTarget2 = canonicalizeWindowsPath(resolvedTarget);
+	// The caller cwd/target may be in 8.3 short-name form (GitHub Windows
+	// runners report TEMP as C:\Users\RUNNER~1\...) while git reports
+	// long-form roots; canonicalize before every lexical comparison. The
+	// target may not exist yet (write check), so canonicalization walks to
+	// the nearest existing ancestor instead of giving up on the leaf.
+	const nativeTarget2 = canonicalizeWindowsPathTailTolerant(resolvedTarget);
 	// Re-root to the LONGEST (most specific) matching worktree root, not the
 	// first: `git worktree list` always lists the main worktree first, so a
 	// first-match loop re-roots targets inside a NESTED linked worktree to the
@@ -1084,7 +1129,7 @@ export function checkFileAuthorityWithRules(
 		const worktrees = getLinkedGitWorktrees(dir);
 		let best: { wt: string; rel: string } | undefined;
 		for (const wt of worktrees) {
-				const relToWt = path.relative(wt, nativeTarget2).replace(/\\/g, '/');
+			const relToWt = path.relative(wt, nativeTarget2).replace(/\\/g, '/');
 			if (
 				relToWt !== '..' &&
 				!relToWt.startsWith('../') &&

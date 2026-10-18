@@ -4,10 +4,23 @@ import * as fsSync from 'node:fs';
 import * as path from 'node:path';
 import {
 	canonicalizeWindowsPathPublic as canonicalize,
+	canonicalizeWindowsPathTailTolerantPublic as canonicalizeTailTolerant,
+	checkFileAuthority,
 	clearGuardrailsCaches,
 	getLinkedGitWorktrees,
 } from '../../../src/hooks/guardrails/file-authority.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
+
+const shortFormOf = (longDir: string): string | null => {
+	try {
+		const out = execSync(`cmd /c for %A in ("${longDir}") do @echo %~sA`, {
+			encoding: 'utf8',
+		}).trim();
+		return out && out !== longDir && out.includes('~') ? out : null;
+	} catch {
+		return null;
+	}
+};
 
 /**
  * Windows-CI regression pins for the worktree-containment fix (issue #3368
@@ -67,6 +80,58 @@ describe('guardrails worktree short-name canonicalization (win32)', () => {
 				root.split(path.sep).some((segment) => segment.includes('~')),
 			).toBe(false);
 		}
+		fsSync.rmSync(sandboxDir, { recursive: true, force: true });
+	});
+
+	it('canonicalizes a NOT-YET-EXISTING target via its existing ancestor', () => {
+		if (process.platform !== 'win32') return;
+		const longDir = canonicalMkdtemp('w3368-tail-pin-');
+		const shortDir = shortFormOf(longDir);
+		if (!shortDir) {
+			fsSync.rmSync(longDir, { recursive: true, force: true });
+			return;
+		}
+		// The write-target does not exist yet (the common case for a write
+		// authority check), so plain native realpath fails and previously left
+		// the 8.3 form in place while existing worktree roots were expanded —
+		// the two sides could never lexically match (windows CI).
+		const missingTarget = path.join(shortDir, 'missing', 'file.txt');
+		const result = canonicalizeTailTolerant(missingTarget);
+		const expectedAncestor = fsSync.realpathSync.native(longDir);
+		expect(result).toBe(path.join(expectedAncestor, 'missing', 'file.txt'));
+		fsSync.rmSync(longDir, { recursive: true, force: true });
+	});
+
+	it('allows a new-file write inside a linked worktree when cwd is short-form', () => {
+		if (process.platform !== 'win32') return;
+		const sandboxDir = canonicalMkdtemp('w3368-e2e-');
+		const mainRepoDir = path.join(sandboxDir, 'main-repo');
+		fsSync.mkdirSync(mainRepoDir, { recursive: true });
+		const g = (a: string) =>
+			execSync(`git ${a}`, { cwd: mainRepoDir, stdio: 'pipe' });
+		g('init -b main');
+		g('config user.name "Test"');
+		g('config user.email "test@example.com"');
+		g('commit --allow-empty -m "initial commit"');
+		const linkedDir = path.join(sandboxDir, 'linked');
+		g(`worktree add "${linkedDir}" -b feat/linked`);
+		clearGuardrailsCaches();
+		const shortMain = shortFormOf(mainRepoDir);
+		const shortSandbox = shortFormOf(sandboxDir);
+		if (!shortMain || !shortSandbox) {
+			fsSync.rmSync(sandboxDir, { recursive: true, force: true });
+			return;
+		}
+		// Exact windows-CI failure shape: git porcelain reports the worktree
+		// root long-form while the caller cwd AND target are 8.3 short-form
+		// and the target file does not exist yet — the target must still
+		// re-root into the worktree instead of being denied as ROOT_ESCAPE.
+		const result = checkFileAuthority(
+			'architect',
+			path.join(shortSandbox, 'linked', 'src', 'index.ts'),
+			shortMain,
+		);
+		expect(result.allowed).toBe(true);
 		fsSync.rmSync(sandboxDir, { recursive: true, force: true });
 	});
 });
