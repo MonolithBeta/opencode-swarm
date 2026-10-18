@@ -947,11 +947,11 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/background/workspace-snapshot.ts'],
 		writerCitations: [
-			'src/background/workspace-snapshot.ts:1933 captureWorkspaceSnapshotAsync — async twin persist path: after a successful capture the content digest is written to the .swarm-contained marker (:1982-1993)',
-			'src/background/workspace-snapshot.ts:1985 atomicWriteSwarmFile — validateSwarmPath(SNAPSHOT_DIGEST_MARKER_FILENAME)-contained atomic temp+rename; advisory by contract, a containment rejection or write failure never fails the capture (:1989-1992)',
+			'src/background/workspace-snapshot.ts:1934 captureWorkspaceSnapshotAsync — async twin persist path: after a successful capture the content digest is written to the .swarm-contained marker (:1983-1994)',
+			'src/background/workspace-snapshot.ts:1986 atomicWriteSwarmFile — validateSwarmPath(SNAPSHOT_DIGEST_MARKER_FILENAME)-contained atomic temp+rename; advisory by contract, a containment rejection or write failure never fails the capture (:1990-1993)',
 		],
 		readerCitations: [
-			'src/background/workspace-snapshot.ts:2007 shouldSkipSnapshot — single readFileSync of the marker, trim + exact compare; missing/malformed marker or candidate digest fails open to false (a skip can never suppress a capture)',
+			'src/background/workspace-snapshot.ts:2008 shouldSkipSnapshot — single readFileSync of the marker, trim + exact compare; missing/malformed marker or candidate digest fails open to false (a skip can never suppress a capture)',
 		],
 		schemaVersion: 'none — single sha256 hex line (64 lowercase hex chars + trailing newline)',
 		stateClass: 'derived-rebuildable',

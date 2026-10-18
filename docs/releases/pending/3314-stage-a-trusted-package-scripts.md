@@ -47,11 +47,14 @@ plausibility screen simple scripts pass, so a repository whose merge base
 already carries a trivially-passing compound script gets a vacuous Stage A
 green; and sibling scripts/files the trusted script invokes (`bun run clean`,
 `scripts/*.ts`) remain repository content, as they already are for simple
-scripts. One inherited path-shape limit (fail-closed, same as the contract
-path): workspaces whose directory names fall outside the git snapshot reader's
-manifest-path pattern (scoped packages like `@acme/ui`, spaced or Unicode
-directory names) stay BLOCKED even when base-identical. For discovery-scanned
-workspaces of that shape (anything directly under
+scripts. One inherited path-shape limit (fail-closed, applies to the manifest
+and the `.pr-validation.json` contract read alike): workspaces whose directory
+or file names fall outside the git snapshot reader's path pattern (scoped
+packages like `@acme/ui`, spaced or Unicode directory names) stay BLOCKED even
+when base-identical; every conforming path shape — including dot-initial
+segments such as `.pr-validation.json` and `.github/` — reads correctly at the
+root and at depth. For discovery-scanned workspaces of the non-conforming
+shape (anything directly under
 `packages`/`apps`/`services`/`libs`/`crates`) there is no `.pr-validation.json`
 escape either — the contract read fails the same path pattern — so the way out
 is renaming the directory to a conforming shape or making the script

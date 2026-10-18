@@ -354,21 +354,22 @@ async function runGitAsyncDetailed(
 }
 
 /**
+ * Manifest-path allowlist for `git show <rev>:<path>` reads. `./` is admitted
+ * so callers can opt into cwd-relative resolution (git resolves a bare <path>
+ * from the repository toplevel). Any segment — including the final one — may
+ * carry a single leading dot before a name char (`.github/`, dotfiles,
+ * `.pr-validation.json`); `..` never passes: the optional dot must be
+ * followed by a name char, a segment cannot start with a second dot, and the
+ * caller's segment split still rejects any `..` component.
+ */
+const gitSnapshotRelativePathPattern =
+	/^(?:\.\/|\.?(?=[A-Za-z0-9]))(?:\.?[A-Za-z0-9][A-Za-z0-9._-]*\/)*\.?[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+/**
  * Read one bounded repository file from an immutable commit without consulting
  * the mutable checkout. Callers compare this text with the checkout copy before
  * treating a PR-provided contract as authority.
  */
-/**
- * Manifest-path allowlist for `git show <rev>:<path>` reads. `./` is admitted
- * so callers can opt into cwd-relative resolution (git resolves a bare <path>
- * from the repository toplevel); a bare leading dot before a name char
- * (`.foo/bar`) stays admitted as before. `../` never passes: the optional
- * prefix matches only a dot followed by a slash (or a dot before a name
- * char), and the caller's segment split still rejects any `..` component.
- */
-const gitSnapshotRelativePathPattern =
-	/^(?:\.\/|\.?(?=[A-Za-z0-9]))(?:[A-Za-z0-9][A-Za-z0-9._-]*\/)*[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
 export function readGitTextAtRevision(
 	directory: string,
 	revision: string,

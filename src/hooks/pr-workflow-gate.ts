@@ -8620,7 +8620,7 @@ export async function recordPrFeedbackStageA(
 			feedbackItemIds: reproductionFeedbackItemIds,
 			applicableCategories: normalizedCategories,
 			applicableObligations,
-			...(options.baseIdentity?.baseRef !== undefined
+			...(options.baseIdentity !== undefined
 				? {
 						baseRef: options.baseIdentity.baseRef,
 						baseSha: options.baseIdentity.baseSha,

@@ -122,4 +122,97 @@ describe('run-pr-feedback-stage-a real git-show reader contract', () => {
 			},
 		]);
 	});
+
+	test('the reader admits dot-initial segments (contract files) at root and depth', () => {
+		const { dir } = initRepoWithManifest('stage-a-reader-contract-');
+		fs.mkdirSync(path.join(dir, 'services', 'api'), { recursive: true });
+		const rootContract = '{"version":1,"validators":[]}\n';
+		fs.writeFileSync(path.join(dir, '.pr-validation.json'), rootContract);
+		const apiContract = '{"version":1,"validators":[{"id":"api"}]}\n';
+		fs.writeFileSync(
+			path.join(dir, 'services', 'api', '.pr-validation.json'),
+			apiContract,
+		);
+		git('add .pr-validation.json services/api/.pr-validation.json', dir);
+		git('commit -m "contracts"', dir);
+		const sha = git('rev-parse HEAD', dir).trim();
+		const sub = path.join(dir, 'services', 'api');
+		// The Stage A contract call site always sends ./<path> with a
+		// dot-initial basename — the guard must admit it at the root and at
+		// depth, and the .github/ dot-initial middle segment too.
+		expect(readGitTextAtRevision(dir, sha, './.pr-validation.json')).toBe(
+			rootContract,
+		);
+		expect(readGitTextAtRevision(sub, sha, './.pr-validation.json')).toBe(
+			apiContract,
+		);
+		expect(
+			readGitTextAtRevision(dir, sha, './services/api/.pr-validation.json'),
+		).toBe(apiContract);
+		expect(
+			readGitTextAtRevision(dir, sha, './.github/workflows/ci.yml'),
+		).toBeNull();
+		// Traversal still rejected in every position.
+		expect(readGitTextAtRevision(dir, sha, 'a/../../b')).toBeNull();
+		expect(readGitTextAtRevision(dir, sha, './..hidden/x')).toBeNull();
+	});
+
+	test('discovery trusts a base-identical contract validator through the real reader', () => {
+		const repo = canonicalMkdtemp('stage-a-reader-contract-e2e-');
+		createdDirs.push(repo);
+		git('init -b main', repo);
+		git('config user.name "Test"', repo);
+		git('config user.email "test@example.com"', repo);
+		const manifest = `${JSON.stringify(
+			{
+				scripts: {
+					build: 'bun run clean && bun run build:ts',
+					'lint:contract': 'node ./validate.mjs',
+				},
+			},
+			null,
+			'\t',
+		)}\n`;
+		fs.writeFileSync(path.join(repo, 'package.json'), manifest);
+		const contract = `${JSON.stringify(
+			{
+				version: 1,
+				validators: [
+					{
+						id: 'build-validator',
+						category: 'build',
+						working_directory: '.',
+						command: ['node', './validate.mjs'],
+					},
+				],
+			},
+			null,
+			'\t',
+		)}\n`;
+		fs.writeFileSync(path.join(repo, '.pr-validation.json'), contract);
+		git('add package.json .pr-validation.json', repo);
+		git('commit -m "base with contract"', repo);
+		const baseSha = git('rev-parse HEAD', repo).trim();
+		git('switch -c feat', repo);
+		fs.writeFileSync(path.join(repo, 'README.md'), 'readme\n');
+		git('add README.md', repo);
+		git('commit -m "readme"', repo);
+		const headSha = git('rev-parse HEAD', repo).trim();
+		const mergeBase = _internals.resolveExactMergeBase(repo, 'main', headSha);
+		expect(mergeBase?.toLowerCase()).toBe(baseSha);
+		// The build script is compound and its name does not pass the
+		// plausibility screen, so the ONLY path to the obligation is the
+		// .pr-validation.json contract trusted through the REAL reader at the
+		// real merge base.
+		const obligations = _internals.discoverApplicableStageAObligations(repo, {
+			baseRef: 'main',
+			baseSha: mergeBase as string,
+		});
+		expect([...obligations]).toContainEqual({
+			id: 'build:.:.pr-validation.json#build-validator',
+			category: 'build',
+			workingDirectory: '.',
+			source: '.pr-validation.json#build-validator',
+		});
+	});
 });
