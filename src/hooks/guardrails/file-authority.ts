@@ -259,7 +259,7 @@ function parseWorktreeListPorcelain(output: string): WorktreeListRecord[] {
  * make `git worktree list` report an arbitrary directory as a worktree, and
  * every directory this function returns is a trusted containment root.
  */
-const W3368_DIAG = process.env.W3368_DIAG === '1';
+const W3368_DIAG = process.env.W3368_DIAG !== '0';
 function w3368Diag(message: string): void {
 	if (W3368_DIAG) console.error(`[3368-diag] ${message}`);
 }
