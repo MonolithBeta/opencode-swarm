@@ -259,6 +259,11 @@ function parseWorktreeListPorcelain(output: string): WorktreeListRecord[] {
  * make `git worktree list` report an arbitrary directory as a worktree, and
  * every directory this function returns is a trusted containment root.
  */
+const W3368_DIAG = process.env.W3368_DIAG === '1';
+function w3368Diag(message: string): void {
+	if (W3368_DIAG) console.error(`[3368-diag] ${message}`);
+}
+
 function isValidWorktreeRecord(
 	repoRootRecord: WorktreeListRecord | undefined,
 	record: WorktreeListRecord,
@@ -267,6 +272,7 @@ function isValidWorktreeRecord(
 		try {
 			return fsSync.statSync(path.join(record.path, '.git')).isDirectory();
 		} catch {
+			w3368Diag('reject leg1: ' + record.path);
 			return false;
 		}
 	}
@@ -276,6 +282,7 @@ function isValidWorktreeRecord(
 	try {
 		dotGitStat = fsSync.lstatSync(dotGitPath);
 	} catch {
+		w3368Diag('reject leg2: ' + record.path);
 		return false;
 	}
 	if (!dotGitStat.isFile()) return false;
@@ -283,6 +290,7 @@ function isValidWorktreeRecord(
 	try {
 		gitDirLine = fsSync.readFileSync(dotGitPath, 'utf8').trim();
 	} catch {
+		w3368Diag('reject leg3: ' + record.path);
 		return false;
 	}
 	if (!gitDirLine.startsWith('gitdir:')) return false;
@@ -302,6 +310,7 @@ function isValidWorktreeRecord(
 			path.join(gitDirPath, 'gitdir'),
 		);
 	} catch {
+		w3368Diag('reject leg4: ' + record.path);
 		return false;
 	}
 	if (repoRootRecord) {
@@ -316,9 +325,11 @@ function isValidWorktreeRecord(
 				'worktrees',
 			);
 		} catch {
+			w3368Diag('reject leg5: ' + record.path);
 			return false;
 		}
 		if (!isPathIdentityWithin(registrationGitdirFile, worktreesRoot)) {
+			w3368Diag('reject leg6: ' + record.path);
 			return false;
 		}
 	}
@@ -336,6 +347,7 @@ function isValidWorktreeRecord(
 	try {
 		backReference = fsSync.readFileSync(registrationGitdirFile, 'utf8').trim();
 	} catch {
+		w3368Diag('reject leg7: ' + record.path);
 		return false;
 	}
 	try {
@@ -344,6 +356,7 @@ function isValidWorktreeRecord(
 			fsSync.realpathSync(backReference),
 		);
 	} catch {
+		w3368Diag('reject leg8: ' + record.path);
 		return false;
 	}
 }
@@ -384,10 +397,16 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 			},
 		);
 
+		if (W3368_DIAG)
+			w3368Diag(`porcelain: ${JSON.stringify(output.slice(0, 800))}`);
 		const records = parseWorktreeListPorcelain(output);
 		const repoRootRecord = records[0];
 		for (const record of records) {
-			if (!isValidWorktreeRecord(repoRootRecord, record)) continue;
+			if (!isValidWorktreeRecord(repoRootRecord, record)) {
+				w3368Diag(`record rejected: ${record.path}`);
+				continue;
+			}
+			if (W3368_DIAG) w3368Diag(`record accepted: ${record.path}`);
 			try {
 				worktrees.push(fsSync.realpathSync(record.path));
 			} catch {
@@ -395,7 +414,8 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 				// failing closed here beats trusting a lexical path.
 			}
 		}
-	} catch {
+	} catch (error) {
+		w3368Diag(`git worktree list failed: ${String(error).slice(0, 300)}`);
 		// Not a git repository or git command failed
 	}
 
