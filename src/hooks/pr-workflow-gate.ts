@@ -15720,7 +15720,12 @@ function tokenizeStandaloneGitCommand(
 			inQuotes = !inQuotes;
 			continue;
 		}
-		if (!inQuotes && /\s/.test(ch)) {
+		// Split ONLY on the characters cmd.exe and POSIX IFS treat as
+		// separators outside quotes — space, tab, newline. JS \s additionally
+		// matches NBSP/formfeed/vtab, which those shells deliver INSIDE the
+		// argv word; splitting there would mis-resolve an attached -F value
+		// as absolute when the shell-faithful value is relative (in-repo).
+		if (!inQuotes && (ch === ' ' || ch === '\t' || ch === '\n')) {
 			flush();
 			continue;
 		}
@@ -15761,7 +15766,12 @@ export function extractStandaloneGitCommitMessageFile(
 	if (subcommand < 0) return null;
 	for (let i = subcommand + 1; i < tokens.length; i += 1) {
 		const token = tokens[i];
-		if (token.quoted) continue;
+		// Flag POSITION is evaluated on the quote-stripped text regardless of
+		// how the token began: every supported shell strips quotes around a
+		// bare flag too (`git commit "-F" x` delivers a real -F to git).
+		// Quoted OPERANDS are protected by the consumption branches below
+		// (-m/-c/-C/--reuse-message/--fixup skip their next token), not by
+		// skipping quoted tokens here.
 		if (token.text === '-F' || token.text === '--file') {
 			const value = tokens[i + 1];
 			return value === undefined ? null : value.text;

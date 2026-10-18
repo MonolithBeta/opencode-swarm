@@ -99,6 +99,22 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 					/requires an immutable inventory and verification batches/,
 				);
 			}
+			// Reviewer round-3 floors: fully-quoted FLAGS are real flags in every
+			// shell (quotes strip around flags too), and a NBSP after -F is NOT
+			// a separator for cmd.exe/POSIX, so the attached value stays
+			// relative (in-repo). All four must keep the in-repo refusal.
+			for (const command of [
+				'git commit "--file=msg.txt"',
+				'git commit "-F" msg.txt',
+				'git commit "-Fmsg.txt"',
+				'git commit -F' + String.fromCharCode(0xa0) + 'msg.txt',
+			]) {
+				await expect(
+					enforcePrWorkflowToolBefore(repo, session, 'shell', { command }),
+				).rejects.toThrow(
+					/resolves inside the repository|message file .*outside the repository/,
+				);
+			}
 			// Outside-repo -F keeps today's classifier admission: it reaches the
 			// ladder precondition instead of the in-repo refusal.
 			const outside = join(canonicalMkdtemp('commit-ff-outside-'), 'msg.txt');
