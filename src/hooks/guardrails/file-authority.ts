@@ -259,9 +259,17 @@ function parseWorktreeListPorcelain(output: string): WorktreeListRecord[] {
  * make `git worktree list` report an arbitrary directory as a worktree, and
  * every directory this function returns is a trusted containment root.
  */
-const W3368_DIAG = process.env.W3368_DIAG !== '0';
-function w3368Diag(message: string): void {
-	if (W3368_DIAG) warn(`[3368-diag] ${message}`);
+
+function canonicalizeWindowsPath(p: string): string {
+	if (process.platform !== 'win32') return p;
+	try {
+		const native = fsSync.realpathSync.native(p);
+		return native.startsWith(String.fromCharCode(92, 92, 63, 92))
+			? native.slice(4)
+			: native;
+	} catch {
+		return p;
+	}
 }
 
 function isValidWorktreeRecord(
@@ -272,7 +280,6 @@ function isValidWorktreeRecord(
 		try {
 			return fsSync.statSync(path.join(record.path, '.git')).isDirectory();
 		} catch {
-			w3368Diag('reject leg1: ' + record.path);
 			return false;
 		}
 	}
@@ -282,7 +289,6 @@ function isValidWorktreeRecord(
 	try {
 		dotGitStat = fsSync.lstatSync(dotGitPath);
 	} catch {
-		w3368Diag('reject leg2: ' + record.path);
 		return false;
 	}
 	if (!dotGitStat.isFile()) return false;
@@ -290,7 +296,6 @@ function isValidWorktreeRecord(
 	try {
 		gitDirLine = fsSync.readFileSync(dotGitPath, 'utf8').trim();
 	} catch {
-		w3368Diag('reject leg3: ' + record.path);
 		return false;
 	}
 	if (!gitDirLine.startsWith('gitdir:')) return false;
@@ -310,7 +315,6 @@ function isValidWorktreeRecord(
 			path.join(gitDirPath, 'gitdir'),
 		);
 	} catch {
-		w3368Diag('reject leg4: ' + record.path);
 		return false;
 	}
 	if (repoRootRecord) {
@@ -325,11 +329,9 @@ function isValidWorktreeRecord(
 				'worktrees',
 			);
 		} catch {
-			w3368Diag('reject leg5: ' + record.path);
 			return false;
 		}
 		if (!isPathIdentityWithin(registrationGitdirFile, worktreesRoot)) {
-			w3368Diag('reject leg6: ' + record.path);
 			return false;
 		}
 	}
@@ -347,7 +349,6 @@ function isValidWorktreeRecord(
 	try {
 		backReference = fsSync.readFileSync(registrationGitdirFile, 'utf8').trim();
 	} catch {
-		w3368Diag('reject leg7: ' + record.path);
 		return false;
 	}
 	try {
@@ -356,7 +357,6 @@ function isValidWorktreeRecord(
 			fsSync.realpathSync(backReference),
 		);
 	} catch {
-		w3368Diag('reject leg8: ' + record.path);
 		return false;
 	}
 }
@@ -375,6 +375,10 @@ function isValidWorktreeRecord(
  * (moved/copied/pruned worktree folders) still validates, because git
  * itself cannot distinguish that from a real `git worktree add`.
  */
+export function canonicalizeWindowsPathPublic(p: string): string {
+	return canonicalizeWindowsPath(p);
+}
+
 export function getLinkedGitWorktrees(dir: string): string[] {
 	const cached = gitWorktreeCache.get(dir);
 	if (cached !== undefined) {
@@ -397,25 +401,20 @@ export function getLinkedGitWorktrees(dir: string): string[] {
 			},
 		);
 
-		if (W3368_DIAG)
-			w3368Diag(`porcelain: ${JSON.stringify(output.slice(0, 800))}`);
 		const records = parseWorktreeListPorcelain(output);
 		const repoRootRecord = records[0];
 		for (const record of records) {
 			if (!isValidWorktreeRecord(repoRootRecord, record)) {
-				w3368Diag(`record rejected: ${record.path}`);
 				continue;
 			}
-			if (W3368_DIAG) w3368Diag(`record accepted: ${record.path}`);
 			try {
-				worktrees.push(fsSync.realpathSync(record.path));
+				worktrees.push(canonicalizeWindowsPath(record.path));
 			} catch {
 				// A root that cannot be realpath'd is not a verified directory;
 				// failing closed here beats trusting a lexical path.
 			}
 		}
 	} catch (error) {
-		w3368Diag(`git worktree list failed: ${String(error).slice(0, 300)}`);
 		// Not a git repository or git command failed
 	}
 
@@ -1071,6 +1070,11 @@ export function checkFileAuthorityWithRules(
 	// systems only have root `/`, so roots only differ when the target is
 	// on a different Windows drive.
 	let effectiveDir = dir;
+	// The caller cwd/target may be in 8.3 short-name form (GitHub
+	// Windows runners report TEMP as C:\UsersRUNNER~1 + ...) while git
+	// reports long-form roots; canonicalize before every lexical
+	// comparison.
+	const nativeTarget2 = canonicalizeWindowsPath(resolvedTarget);
 	// Re-root to the LONGEST (most specific) matching worktree root, not the
 	// first: `git worktree list` always lists the main worktree first, so a
 	// first-match loop re-roots targets inside a NESTED linked worktree to the
@@ -1080,11 +1084,11 @@ export function checkFileAuthorityWithRules(
 		const worktrees = getLinkedGitWorktrees(dir);
 		let best: { wt: string; rel: string } | undefined;
 		for (const wt of worktrees) {
-			const relToWt = path.relative(wt, resolvedTarget).replace(/\\/g, '/');
+				const relToWt = path.relative(wt, nativeTarget2).replace(/\\/g, '/');
 			if (
 				relToWt !== '..' &&
 				!relToWt.startsWith('../') &&
-				!isOnDifferentFilesystemRoot(resolvedTarget, wt)
+				!isOnDifferentFilesystemRoot(nativeTarget2, wt)
 			) {
 				if (!best || wt.length > best.wt.length) {
 					best = { wt, rel: relToWt };
@@ -1105,7 +1109,7 @@ export function checkFileAuthorityWithRules(
 	// bounded by the re-rooted base instead of the session cwd.
 	const findPlantedLinkBelow = (root: string): string | null => {
 		const ancestors: string[] = [];
-		let current = resolvedTarget;
+		let current = nativeTarget2;
 		while (true) {
 			const rel = path.relative(root, current);
 			if (
