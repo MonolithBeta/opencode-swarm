@@ -805,13 +805,22 @@ const SKILL_METADATA_NON_STRING_SCALAR =
 
 /**
  * Strip a trailing YAML comment from a frontmatter value, quote-aware
- * (PR #3387 follow-up, FB-027): a `#` inside a quoted scalar is content, so
- * `[a, "b # c"] # note` strips to `[a, "b # c"]` — the previous
- * first-char-only check escaped exactly that shape from the flow-collection
- * and bare-scalar checks. A quote opens ONLY at a value start (after a
- * flow-element boundary) — an interior apostrophe in a plain scalar
- * (`[it's, b]`) is content, not a quote opener, so the trailing comment
- * still strips and the finding still fires (fix-review round 2). A `#` at
+ * (PR #3387 follow-up, FB-027; hardened in the follow-up review): a `#`
+ * inside a BALANCED quoted scalar is content, so `[a, "b # c"] # note`
+ * strips to `[a, "b # c"]` — the previous first-char-only check escaped
+ * exactly that shape from the flow-collection and bare-scalar checks.
+ *
+ * A quote opens ONLY at a value start (after a flow-element boundary, or
+ * after `:` when a whitespace/EOL follows — the `:` in a plain flow scalar
+ * like `b:'c` is content, not a mapping separator, so its quote must not
+ * open). A doubled `''` inside a single-quoted scalar is the YAML escape
+ * for a literal quote, so `'it''s # x'` stays quoted through the `#`. If a
+ * quote is still open at end of value (malformed input), the strip falls
+ * back to the naive first-comment scan so those shapes keep firing the way
+ * the pre-quote-aware detector did. That fallback is the parity boundary,
+ * not a guarantee: a malformed value whose quotes CLOSE around the comment
+ * (e.g. `['a] # b' x`) stays unstripped — documented bounded-subset
+ * behavior, the same class as the skill-scoring flow parser. A `#` at
  * value start is a comment-only value (strips to empty), and `#` must
  * follow whitespace or start the value to count as a comment opener.
  */
@@ -825,7 +834,14 @@ function stripFrontmatterValueComment(value: string): string {
 				i += 1;
 				continue;
 			}
-			if (ch === quote) quote = undefined;
+			if (ch === quote) {
+				if (quote === "'" && value[i + 1] === "'") {
+					// YAML doubled single-quote escape — content, stay quoted.
+					i += 1;
+					continue;
+				}
+				quote = undefined;
+			}
 			atValueStart = false;
 			continue;
 		}
@@ -837,11 +853,30 @@ function stripFrontmatterValueComment(value: string): string {
 		if (ch === '#' && (i === 0 || /\s/.test(value[i - 1] as string))) {
 			return value.slice(0, i).trim();
 		}
-		if (ch === '{' || ch === '[' || ch === ',' || ch === ':') {
+		if (ch === '{' || ch === '[' || ch === ',') {
 			atValueStart = true;
 			continue;
 		}
+		if (ch === ':') {
+			// A mapping separator only when a space/EOL follows; the colon in
+			// `b:'c` sits inside a plain scalar, and the quote after it is
+			// content (follow-up review: base fired there, head must too).
+			const next = value[i + 1];
+			atValueStart = next === undefined || /\s/.test(next);
+			continue;
+		}
 		if (!/\s/.test(ch)) atValueStart = false;
+	}
+	if (quote !== undefined) {
+		// Unterminated quote (malformed YAML): fall back to the naive strip
+		// so those shapes keep firing. Parity boundary only — a malformed
+		// value whose quotes CLOSE around the comment stays unstripped (see
+		// the function docstring).
+		for (let i = 0; i < value.length; i++) {
+			if (value[i] === '#' && (i === 0 || /\s/.test(value[i - 1] as string))) {
+				return value.slice(0, i).trim();
+			}
+		}
 	}
 	return value.trim();
 }
@@ -904,8 +939,8 @@ export function detectSkillFrontmatterSpecDrift(
 					);
 					if (child) {
 						// Strip a trailing YAML comment, quote-aware (PR #3387
-						// follow-up, FB-027): a `#` inside a quoted scalar is
-						// content, so `[a, "b # c"] # note` strips to
+						// follow-up, FB-027): a `#` inside a BALANCED quoted
+						// scalar is content, so `[a, "b # c"] # note` strips to
 						// `[a, "b # c"]` and still triggers the flow-collection
 						// check — the previous first-char-only check escaped
 						// it. A `#` at value start is a comment-only value
@@ -969,7 +1004,8 @@ export function detectSkillFrontmatterSpecDrift(
 				// treated as carrying an inline value — including the
 				// value-is-entirely-comment form (plan-critic Round 3).
 				// Quote-aware for the same reason as the child-value strip
-				// above (FB-027): a `#` inside a quoted scalar is content.
+				// above (FB-027): a `#` inside a BALANCED quoted scalar is
+				// content.
 				const inline = stripFrontmatterValueComment(match[2].trim());
 				if (inline !== '') {
 					findings.push({
