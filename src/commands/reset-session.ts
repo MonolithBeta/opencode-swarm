@@ -851,10 +851,11 @@ export async function handleResetSessionCommand(
 			'at rework_required also survives this reset; when the Stage B ' +
 			'verdict did not require a code change, the architect can exit it ' +
 			'with the recover_rework_task tool (issue #2755). A task wedged at ' +
-			'TASK_RETRY_USER_ESCALATION_REQUIRED (plan status in_progress, ' +
-			'retry ladder at the user_escalation rung) is exited with the ' +
+			'TASK_RETRY_USER_ESCALATION_REQUIRED is exited with the ' +
 			'audited update_task_status force repair (issue #3389; see ' +
 			'docs/troubleshooting/recovery-runbook.md), which reopens the task ' +
-			'and clears the retry circuit.',
+			"and clears the retry circuit — the task's plan status must " +
+			'already be in_progress; a task still pending in the plan takes ' +
+			'one ordinary in_progress status update first.',
 	].join('\n');
 }

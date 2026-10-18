@@ -1901,7 +1901,7 @@ export async function executeUpdateTaskStatus(
 			};
 		}
 		logger.log(
-			`[update-task-status] Force-override: audited repair re-opening task ${args.task_id} (settled task, or in_progress at the retry-escalation user_escalation rung per issue #3389) to in_progress`,
+			`[update-task-status] Force-override: attempting audited repair for task ${args.task_id} (settled task, or in_progress at the retry-escalation rung per issue #3389; admission is verified under the plan lock) to in_progress`,
 		);
 	}
 

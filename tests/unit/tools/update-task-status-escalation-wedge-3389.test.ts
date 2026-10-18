@@ -10,7 +10,10 @@ import {
 import { createDelegationGateHook } from '../../../src/hooks/delegation-gate';
 import { ensureAgentSession, resetSwarmState } from '../../../src/state';
 import type { ToolContext } from '../../../src/tools/create-tool';
-import { executeUpdateTaskStatus } from '../../../src/tools/update-task-status';
+import {
+	executeUpdateTaskStatus,
+	update_task_status,
+} from '../../../src/tools/update-task-status';
 import { createSafeTestDir } from '../../helpers/safe-test-dir';
 
 const TASK_ID = '1.1';
@@ -179,8 +182,18 @@ describe('issue #3389 update_task_status wedge repair (handler level)', () => {
 		const probe = await dispatchProbe(directory);
 		expect(probe.refused).toBe(true);
 		expect(probe.message).toContain('TASK_RETRY_USER_ESCALATION_REQUIRED');
+		expect(probe.message).toContain('If the user authorizes repair');
 		expect(probe.message).toContain('update_task_status');
+		// The recipe's argument names are pinned so the advertised remedy
+		// cannot drift from the tool's actual schema (maintainer review R).
+		expect(probe.message).toContain('status "in_progress"');
+		expect(probe.message).toContain('force true');
+		expect(probe.message).toContain('expected_state');
 		expect(probe.message).toContain('expected_generation 2');
+		expect(probe.message).toContain('target_state "idle"');
+		expect(probe.message).toContain('transition_id');
+		// The plan-status precondition is part of the advertised remedy.
+		expect(probe.message).toContain('plan status must already be in_progress');
 	});
 
 	test('the audited force repair succeeds through the tool handler and clears the retry circuit', async () => {
@@ -239,18 +252,20 @@ describe('issue #3389 update_task_status wedge repair (handler level)', () => {
 		).toBe(false);
 	});
 
-	test('the tool schema no longer describes the repair as backward-only (issue #3389 wording)', async () => {
-		const sourcePath = path.join(
-			__dirname,
-			'..',
-			'..',
-			'..',
-			'src',
-			'tools',
-			'update-task-status.ts',
-		);
-		const source = fs.readFileSync(sourcePath, 'utf8');
-		expect(source).not.toContain('backward-only');
-		expect(source).toContain('retry-escalation user_escalation rung');
+	test('the exported tool schema describes the repair contract without the backward-only wording (issue #3389)', async () => {
+		// Runtime pin on the zod descriptions the model actually receives (the
+		// exported createSwarmTool object preserves its args schema), not a
+		// source-text scan: a revert of either description must fail here.
+		const tool = update_task_status;
+		const args = (tool as { args?: Record<string, { description?: string }> })
+			.args;
+		expect(args).toBeDefined();
+		const forceDescription = args?.force?.description ?? '';
+		const targetDescription = args?.target_state?.description ?? '';
+		expect(forceDescription.toLowerCase()).not.toContain('backward');
+		expect(targetDescription.toLowerCase()).not.toContain('backward');
+		expect(forceDescription).toContain('in_progress');
+		expect(forceDescription).toContain('retry ladder user_escalation rung');
+		expect(targetDescription).toContain('idle');
 	});
 });

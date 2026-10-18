@@ -16,7 +16,11 @@ and the remedy the message named — "authorize repair" — was itself refused
   `force: true`, exact CAS fields, `target_state: "idle"`, reason, and
   transition id) is now admitted exactly when a durable `user_escalation` exists
   for the task's CURRENT retry epoch and `retryCount` sits at the threshold —
-  the ladder's own user-decision proof. `repair_idle` then reopens the task and
+  the ladder's own durable escalation record (machine-written when the ladder
+  reaches its rung; user authorization arrives via the repair's audited
+  `reason`). The task's plan status must already be `in_progress`; a wedged
+  task still `pending` in the plan takes one ordinary `in_progress` status
+  update first. `repair_idle` then reopens the task and
   clears the whole retry circuit (`retryCount`/`retryHistory`/`retryEpoch`
   reset, generation rotated), so the next coder dispatch starts fresh.
 - Every other `in_progress` repair still fails closed with
@@ -28,8 +32,9 @@ and the remedy the message named — "authorize repair" — was itself refused
   the unreachable bare wording; the `update_task_status` schema descriptions
   and force-override log line no longer call the repair "backward-only".
 - Docs: the recovery runbook gains a retry-escalation user-decision wedge
-  section (including why `approve_retry_sounding_board` and
-  `recover_rework_task` do not apply, and noting the superseded blocked
+  section (covering the plan-status precondition, why
+  `approve_retry_sounding_board` is scoped to the earlier rung, what
+  `recover_rework_task` does and does not exit, and the superseded blocked
   round-trip workaround); the reset-session retry-gate disclosure,
   plan-durability, and engineering-invariants FR-005 entries name the new
   admission.

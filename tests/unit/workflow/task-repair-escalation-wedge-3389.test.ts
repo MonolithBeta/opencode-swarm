@@ -131,7 +131,13 @@ function seedWedge(directory: string, fixture: WedgeFixture = {}): void {
 				// and its refusal can only be attributed to the retryCount
 				// conjunct (final-critic round 1, finding 1).
 				retryEpoch: retryCount === 0 ? 0 : retryEpoch,
-				lastOutcome: retryCount >= 3 ? 'stage_a_failed' : 'dispatch_attempted',
+				// Reducer-consistent pair: `dispatch_no_mutation` preserves the
+				// state and appends its own outcome, so the wedge shape from the
+				// issue (accepted_mutation_failed then two no-mutation
+				// rejections) ends with lastOutcome 'dispatch_no_mutation'
+				// (issue #3389's own durable record).
+				lastOutcome:
+					retryCount >= 3 ? 'dispatch_no_mutation' : 'dispatch_attempted',
 				updatedAt: FIXED_TS,
 			},
 		}),
@@ -147,7 +153,9 @@ function seedWedge(directory: string, fixture: WedgeFixture = {}): void {
 			taskId: TASK_ID,
 			generation,
 			retryEpoch: fixture.escalationEpoch ?? retryEpoch,
-			rejectionCount: 3,
+			// Track the fixture's counter so the seeded event stays internally
+			// consistent with the snapshot the admission predicate reads.
+			rejectionCount: fixture.retryCount ?? 3,
 			rejectionHistory: [
 				'accepted_mutation_failed',
 				'dispatch_no_mutation',
@@ -278,6 +286,56 @@ describe('issue #3389 retry-escalation wedge repair admission', () => {
 		await expect(runRepair(directory, 'rework_required', 2)).rejects.toThrow(
 			'TASK_REPAIR_NOT_BACKWARD',
 		);
+	});
+
+	test('refuses when user_escalation sits at an OLDER epoch than the live epoch (an any-epoch-up-to-live lookup would admit here)', async () => {
+		// The escalation ladder ran at epoch 1; the workflow has since advanced
+		// to live epoch 3 (retryCount reset then re-climbed to 3 at the newer
+		// epoch). A mutant admitting an escalation found at ANY epoch up to the
+		// live one would find the epoch-1 record and admit; the real predicate
+		// reads only the live epoch 3, finds nothing, and refuses.
+		seedWedge(directory, {
+			generation: 4,
+			retryEpoch: 3,
+			retryCount: 3,
+			escalationActions: ['user_escalation'],
+			escalationEpoch: 1,
+		});
+		await expect(runRepair(directory, 'rework_required', 4)).rejects.toThrow(
+			'TASK_REPAIR_NOT_BACKWARD',
+		);
+	});
+
+	test('refuses the wedge repair when the caller CAS fields are stale (admission succeeds only against the exact generation)', async () => {
+		seedWedge(directory, { generation: 2, retryEpoch: 1, retryCount: 3 });
+		await expect(runRepair(directory, 'rework_required', 1)).rejects.toThrow(
+			'TASK_REPAIR_CAS_MISMATCH',
+		);
+	});
+
+	test('replaying the same wedge transition id returns alreadyApplied and writes one audit event', async () => {
+		seedWedge(directory, { generation: 2, retryEpoch: 1, retryCount: 3 });
+		const first = await runRepair(directory, 'rework_required', 2);
+		expect(first.alreadyApplied).toBe(false);
+		const replay = await runRepair(directory, 'rework_required', 2);
+		expect(replay.alreadyApplied).toBe(true);
+		expect(replay.transitionId).toBe(first.transitionId);
+		const evidence = await readTaskEvidence(directory, TASK_ID);
+		const workflow = getTaskWorkflowSnapshot(evidence);
+		expect(workflow.retryCount).toBe(0);
+		expect(workflow.retryEpoch).toBe(0);
+		// The audit event is idempotent per exact task and transition id: the
+		// replay must not have added a second one.
+		expect(
+			hasTaskRepairAuditEvent(directory, TASK_ID, `repair-${TASK_ID}-wedge`),
+		).toBe(true);
+		const events = fs
+			.readFileSync(path.join(directory, '.swarm', 'events.jsonl'), 'utf8')
+			.trim()
+			.split('\n')
+			.map((line) => JSON.parse(line) as { type?: string })
+			.filter((event) => event.type === 'task_workflow_repaired');
+		expect(events).toHaveLength(1);
 	});
 
 	test('refuses when the durable user_escalation exists but retryCount sits below the threshold (defense-in-depth conjunct)', async () => {
