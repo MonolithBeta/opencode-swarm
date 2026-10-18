@@ -158,7 +158,10 @@ describe('guardrails worktree containment hardening (issue #3368 review)', () =>
 		// target, so first-match would re-root to the main repo and resolve
 		// the '.git' deny prefix against mainRepoDir (no match); longest-match
 		// re-roots to nestedDir where the prefix resolves and denies.
-		const target = path.join(nestedDir, '.git', 'config');
+		// Target the .git entry itself (a file in a linked worktree on every
+		// platform) so resolution never depends on a nonexistent path's
+		// platform-specific fallback.
+		const target = path.join(nestedDir, '.git');
 		const cwdWorktree = path.join(sandboxDir, 'linked');
 		git(`worktree add "${cwdWorktree}" -b feat/cwd`, mainRepoDir);
 		clearGuardrailsCaches();
