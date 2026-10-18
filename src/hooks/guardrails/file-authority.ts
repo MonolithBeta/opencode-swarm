@@ -312,8 +312,15 @@ function isValidWorktreeRecord(
 		}
 	}
 	// ROUND-TRIP leg: the registration's gitdir file must name this root's
-	// .git path back, so the registration cannot launder an unrelated
-	// directory as this repository's worktree.
+	// .git path back. This proves the pair is mutually consistent, which
+	// rejects the 3-file forgery (gitdir pointing at a dir with no
+	// cooperating .git file) and registrations naming unrelated repos.
+	// SCOPE: it does NOT reject a cooperative forgery where the target
+	// directory also contains an attacker-written .git file — git itself
+	// cannot distinguish that from a real `git worktree add`, and every
+	// anchor leg lives in .git/ which the repo's own content can write.
+	// Worktree trust is therefore git-native trust, bounded by the
+	// precondition that .git/ is not attacker-writable.
 	let backReference: string;
 	try {
 		backReference = fsSync.readFileSync(registrationGitdirFile, 'utf8').trim();
@@ -1238,8 +1245,8 @@ export function checkFileAuthorityWithRules(
 		// effectiveDir). The removed second disjunct tested the RAW caller
 		// string against the ORIGINAL dir — a different coordinate system that
 		// could grant declared-scope allow for a path the containment layer
-		// never matched (issue #3368 review, F-006); the sole production
-		// caller passes declaredScope entries covering the same file the
+		// never matched (issue #3368 review, F-006); every production caller
+		// passes declaredScope entries covering the same file the
 		// normalized operands already resolve.
 		isPathWithinDeclaredScope(
 			normalizedPath,
