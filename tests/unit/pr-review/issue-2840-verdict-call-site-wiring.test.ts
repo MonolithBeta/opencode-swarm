@@ -74,7 +74,7 @@ describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet
 			'src/hooks/pr-workflow-gate.ts:13571', // dispatchCoverageFinalization message formatting
 			'src/hooks/pr-workflow-gate.ts:13706', // completion preflight
 			'src/hooks/pr-workflow-gate.ts:13747', // completion post-ladder finding-policy check
-			'src/pr-review/completion.ts:1714', // readPrReviewTerminalCoverageForReport
+			'src/pr-review/completion.ts:1721', // readPrReviewTerminalCoverageForReport
 		]);
 	});
 
