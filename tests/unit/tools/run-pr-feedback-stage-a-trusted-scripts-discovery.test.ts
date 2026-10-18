@@ -48,7 +48,7 @@ describe('run-pr-feedback-stage-a trusted base-identical compound script discove
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'package.json'
+			revision === BASE_SHA && relativePath === './package.json'
 				? packageText
 				: null;
 
@@ -71,5 +71,46 @@ describe('run-pr-feedback-stage-a trusted base-identical compound script discove
 				source: 'package.json#lint',
 			},
 		]);
+	});
+
+	/**
+	 * Round-2 review (absent-key mutant): the base manifest PARSES but its
+	 * scripts object omits the key the working tree adds — the actual
+	 * "PR-added script" shape. The guard must treat a missing base key as
+	 * not-base-identical (opaque/BLOCKED), not as a trust pass; the mutant
+	 * `baseScript === undefined || (...)` survived every fixture that only
+	 * covered the differing-text shape.
+	 */
+	test('a base manifest that parses but omits the script key stays BLOCKED', () => {
+		const directory = canonicalMkdtemp('stage-a-absent-key-');
+		createdDirs.push(directory);
+		const workingText = `${JSON.stringify(
+			{ scripts: { build: 'bun run clean && bun run build:ts' } },
+			null,
+			'\t',
+		)}\n`;
+		fs.writeFileSync(path.join(directory, 'package.json'), workingText);
+		const baseText = `${JSON.stringify(
+			{ scripts: { test: 'bun test' } },
+			null,
+			'\t',
+		)}\n`;
+		_internals.readGitTextAtRevision = (
+			_directory: string,
+			revision: string,
+			relativePath: string,
+		): string | null =>
+			revision === BASE_SHA && relativePath === './package.json'
+				? baseText
+				: null;
+
+		expect(() =>
+			_internals.discoverApplicableStageAObligations(directory, {
+				baseRef: 'origin/main',
+				baseSha: BASE_SHA,
+			}),
+		).toThrow(
+			'Stage A opaque package script ./package.json#build requires a trusted base-identical contract validator for build',
+		);
 	});
 });

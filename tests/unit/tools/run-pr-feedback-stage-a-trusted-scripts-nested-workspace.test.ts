@@ -42,7 +42,7 @@ describe('run-pr-feedback-stage-a trusted compound scripts in nested workspaces 
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'packages/web/package.json'
+			revision === BASE_SHA && relativePath === './packages/web/package.json'
 				? nestedManifest
 				: null;
 
@@ -64,7 +64,7 @@ describe('run-pr-feedback-stage-a trusted compound scripts in nested workspaces 
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'packages/web/package.json'
+			revision === BASE_SHA && relativePath === './packages/web/package.json'
 				? `${JSON.stringify(
 						{ scripts: { build: 'turbo run build --filter=api && echo done' } },
 						null,
@@ -99,7 +99,7 @@ describe('run-pr-feedback-stage-a trusted compound scripts in nested workspaces 
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'packages/web/package.json'
+			revision === BASE_SHA && relativePath === './packages/web/package.json'
 				? nestedManifest
 				: null;
 		expect(() =>
@@ -110,5 +110,58 @@ describe('run-pr-feedback-stage-a trusted compound scripts in nested workspaces 
 		).toThrow(
 			'Stage A opaque package script packages/web/package.json#build requires a trusted base-identical contract validator for build',
 		);
+	});
+
+	/**
+	 * Round-2 review (subdirectory bind, executed 3x): the tool declares no
+	 * working_directory, so a session rooted at a SUBDIRECTORY reaches
+	 * discovery with directory = <repo>/<sub>, and `git show <rev>:<path>`
+	 * resolves a bare <path> from the repository TOPLEVEL — a PR-added
+	 * subdirectory manifest would be "trusted" against the toplevel base
+	 * manifest. The `./`-prefixed request is the fix: the session root's own
+	 * manifest is the only manifest ever consulted, and never the bare
+	 * toplevel-relative form.
+	 */
+	test('a subdirectory-rooted session consults only cwd-relative base paths', () => {
+		const repoDir = canonicalMkdtemp('stage-a-subdir-repo-');
+		createdDirs.push(repoDir);
+		const sessionDir = path.join(repoDir, 'services', 'api');
+		fs.mkdirSync(sessionDir, { recursive: true });
+		const sessionManifest = `${JSON.stringify(
+			{ scripts: { build: 'bun run clean && bun run build:ts' } },
+			null,
+			'\t',
+		)}\n`;
+		fs.writeFileSync(path.join(sessionDir, 'package.json'), sessionManifest);
+		const requestedPaths: string[] = [];
+		_internals.readGitTextAtRevision = (
+			_directory: string,
+			revision: string,
+			relativePath: string,
+		): string | null => {
+			if (revision === BASE_SHA) requestedPaths.push(relativePath);
+			return relativePath === './package.json' ? sessionManifest : null;
+		};
+
+		// The session manifest is cwd-relative-identical at the merge base, so
+		// discovery trusts it — and every base read (manifest + default
+		// contract probe) went through the cwd-relative form, never the
+		// toplevel-relative one.
+		const obligations = _internals.discoverApplicableStageAObligations(
+			sessionDir,
+			{ baseRef: 'origin/main', baseSha: BASE_SHA },
+		);
+		expect([...obligations]).toEqual([
+			{
+				id: 'build:.:package.json#build',
+				category: 'build',
+				workingDirectory: '.',
+				source: 'package.json#build',
+			},
+		]);
+		expect([...requestedPaths].sort()).toEqual([
+			'./.pr-validation.json',
+			'./package.json',
+		]);
 	});
 });

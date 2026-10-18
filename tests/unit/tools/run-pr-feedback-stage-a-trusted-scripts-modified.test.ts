@@ -50,7 +50,7 @@ describe('run-pr-feedback-stage-a base-identity requirement for compound scripts
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'package.json'
+			revision === BASE_SHA && relativePath === './package.json'
 				? baseText
 				: null;
 

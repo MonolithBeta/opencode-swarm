@@ -1107,10 +1107,16 @@ function readTrustedRepositoryValidationContract(
 	if (!provenance) return undefined;
 	const current = readRepositoryValidationContract(directory, contractPath);
 	const currentText = readBoundedText(path.resolve(directory, contractPath));
+	// `git show <rev>:<path>` resolves <path> from the repository toplevel
+	// unless it carries a `./` prefix, which makes it cwd-relative. The
+	// contract path is declared relative to the session directory, which is
+	// not always the toplevel (this tool declares no working_directory), so
+	// the `./` prefix is what keeps the base read anchored to the same
+	// directory the working-tree read used.
 	const baseText = _internals.readGitTextAtRevision(
 		directory,
 		provenance.baseSha,
-		contractPath.replaceAll('\\', '/').replace(/^\.\//, ''),
+		`./${contractPath.replaceAll('\\', '/').replace(/^\.\//, '')}`,
 	);
 	if (!current || !currentText || baseText === null || currentText !== baseText)
 		return undefined;
@@ -1137,10 +1143,15 @@ function isBaseIdenticalRepositoryScript(
 		workspaceRelative === '.'
 			? 'package.json'
 			: `${workspaceRelative}/package.json`;
+	// `git show <rev>:<path>` resolves <path> from the repository toplevel
+	// unless it carries a `./` prefix, which makes it cwd-relative. The
+	// session root is not always the toplevel (this tool declares no
+	// working_directory), so the `./` prefix is what stops a subdirectory
+	// session from trusting its manifest against the toplevel base manifest.
 	const baseText = _internals.readGitTextAtRevision(
 		canonicalRoot,
 		contractBase.baseSha,
-		relativeManifest,
+		`./${relativeManifest}`,
 	);
 	if (baseText === null || baseText.length > 512 * 1024) return false;
 	try {
@@ -1834,7 +1845,7 @@ function discoverApplicableStageAObligations(
 									);
 									continue;
 								}
-								discoveryOverflow = `Stage A opaque package script ${path.relative(canonicalRoot, candidateRoot).replaceAll('\\', '/') || '.'}/package.json#${script} requires a trusted base-identical contract validator for ${category} — commit a base-identical .pr-validation.json validator, or keep the script unchanged from the merge base named by base_ref and base_sha and select it exactly through the package manager`;
+								discoveryOverflow = `Stage A opaque package script ${path.relative(canonicalRoot, candidateRoot).replaceAll('\\', '/') || '.'}/package.json#${script} requires a trusted base-identical contract validator for ${category} — authorize a .pr-validation.json validator that is already byte-identical at the immutable merge base (a validator this PR adds is not trusted), or pass base_ref and base_sha identifying the immutable merge base and keep this script byte-identical to it, selecting it exactly through the package manager; otherwise de-compound the script or keep it out of this PR`;
 							}
 							continue;
 						}
@@ -2407,7 +2418,22 @@ export async function executeRunPrFeedbackStageA(
 			context.sessionID,
 			afterDigest,
 			receipts,
-			{ applicableCategories, applicableObligations },
+			{
+				applicableCategories,
+				applicableObligations,
+				// Record the base identity the trusted base-identical decisions
+				// consumed. The merge-base consistency check is internal-only —
+				// no durable PR_FEEDBACK base binding exists to verify against —
+				// so the receipt marks the trust floor for downstream detection
+				// instead of leaving base substitution silent (round-2 review).
+				...(contractBase
+					? {
+							baseRef: contractBase.baseRef,
+							baseSha: contractBase.baseSha,
+							baseVerification: 'caller-asserted' as const,
+						}
+					: { baseVerification: 'none' as const }),
+			},
 		);
 		// Success: do NOT persist full output. A successful Stage A run has no
 		// failure evidence worth preserving — the useful record is the

@@ -51,7 +51,7 @@ describe('run-pr-feedback-stage-a trusted base-identical repo build script (AC2)
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'package.json'
+			revision === BASE_SHA && relativePath === './package.json'
 				? packageText
 				: null;
 

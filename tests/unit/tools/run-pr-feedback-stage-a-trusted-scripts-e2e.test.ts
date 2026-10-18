@@ -92,7 +92,7 @@ beforeEach(async () => {
 	_internals.resolveExactMergeBaseAsync = async (...a) =>
 		_internals.resolveExactMergeBase(...a);
 	_internals.readGitTextAtRevision = (_dir, sha, manifestPath) =>
-		sha === BASE && manifestPath === 'package.json' ? basePackageJson : null;
+		sha === BASE && manifestPath === './package.json' ? basePackageJson : null;
 	_internals.runExternalTool = mock(async () => ({
 		status: 'completed' as const,
 		exitCode: 0,

@@ -90,7 +90,7 @@ describe('run-pr-feedback-stage-a non-opaque script behaviors stay unchanged (AC
 			revision: string,
 			relativePath: string,
 		): string | null =>
-			revision === BASE_SHA && relativePath === 'package.json'
+			revision === BASE_SHA && relativePath === './package.json'
 				? packageText
 				: null;
 

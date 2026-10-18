@@ -657,6 +657,17 @@ interface PrFeedbackStageARecord {
 		source: string;
 		validatorContract?: { path: string; id: string };
 	}>;
+	/**
+	 * Caller-asserted base identity behind this run's trusted base-identical
+	 * script/contract decisions. There is no durable PR_FEEDBACK base binding
+	 * to verify against yet (pr-workflow-gate binds a merge base only for
+	 * PR_REVIEW), so this is recorded for downstream detectability, not as a
+	 * verified anchor; `baseVerification: 'caller-asserted'` marks runs where
+	 * trust decisions consumed a caller-supplied merge base.
+	 */
+	baseRef?: string;
+	baseSha?: string;
+	baseVerification?: 'caller-asserted' | 'none';
 	validatedAt: string;
 }
 
@@ -1353,6 +1364,12 @@ const PrFeedbackStageARecordSchema = z
 			)
 			.max(256)
 			.optional(),
+		baseRef: z.string().min(1).max(256).optional(),
+		baseSha: z
+			.string()
+			.regex(/^[0-9a-f]{40}$/)
+			.optional(),
+		baseVerification: z.enum(['caller-asserted', 'none']).optional(),
 		validatedAt: z.string().min(1),
 	})
 	.strict();
@@ -8399,6 +8416,17 @@ export async function recordPrFeedbackStageA(
 			source: string;
 			validatorContract?: { path: string; id: string };
 		}>;
+		/**
+		 * Caller-asserted base identity consumed by this run's trusted
+		 * base-identical decisions. Recorded (not verified): no durable
+		 * PR_FEEDBACK base binding exists yet, so the receipt marks the trust
+		 * floor honestly instead of leaving substitution silent.
+		 */
+		baseIdentity?: {
+			baseRef?: string;
+			baseSha?: string;
+			baseVerification: 'caller-asserted' | 'none';
+		};
 	} = {},
 ): Promise<PrWorkflowGateState> {
 	const state = await assertPrFeedbackVerificationSettled(directory, sessionID);
@@ -8589,6 +8617,13 @@ export async function recordPrFeedbackStageA(
 			feedbackItemIds: reproductionFeedbackItemIds,
 			applicableCategories: normalizedCategories,
 			applicableObligations,
+			...(options.baseIdentity?.baseRef !== undefined
+				? {
+						baseRef: options.baseIdentity.baseRef,
+						baseSha: options.baseIdentity.baseSha,
+					}
+				: {}),
+			baseVerification: options.baseIdentity?.baseVerification,
 			validatedAt: isoNow(),
 		},
 		prFeedbackGateBatches: retainsGateBatches
