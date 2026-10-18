@@ -261,7 +261,7 @@ function parseWorktreeListPorcelain(output: string): WorktreeListRecord[] {
  */
 const W3368_DIAG = process.env.W3368_DIAG !== '0';
 function w3368Diag(message: string): void {
-	if (W3368_DIAG) console.error(`[3368-diag] ${message}`);
+	if (W3368_DIAG) warn(`[3368-diag] ${message}`);
 }
 
 function isValidWorktreeRecord(
