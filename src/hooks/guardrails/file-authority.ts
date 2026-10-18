@@ -305,8 +305,19 @@ function isValidWorktreeRecord(
 		return false;
 	}
 	if (repoRootRecord) {
-		const repoGitDir = path.join(repoRootRecord.path, '.git');
-		const worktreesRoot = path.join(repoGitDir, 'worktrees');
+		// Canonicalize the repo .git dir (realpath) before the lexical
+		// containment check: git's porcelain output may carry 8.3 short-name
+		// or differently-cased segments on Windows, and realpath on the
+		// registration file alone would then mismatch the raw-path root.
+		let worktreesRoot: string;
+		try {
+			worktreesRoot = path.join(
+				fsSync.realpathSync(path.join(repoRootRecord.path, '.git')),
+				'worktrees',
+			);
+		} catch {
+			return false;
+		}
 		if (!isPathIdentityWithin(registrationGitdirFile, worktreesRoot)) {
 			return false;
 		}
