@@ -52,8 +52,9 @@ describe('guardrails worktree short-name canonicalization (win32)', () => {
 		// The canonical form must not retain any 8.3 segment and must name the
 		// same directory as the long form. Both sides go through the NATIVE
 		// realpath: the plain JS realpath leaves a short-form fixture
-		// unexpanded (os.tmpdir() is 8.3 on GitHub windows runners), which
-		// would compare long vs short and fail spuriously.
+		// unexpanded (the OS temp root arrives 8.3 short-form on GitHub
+		// windows runners), which would compare long vs short and fail
+		// spuriously.
 		expect(canonical.includes('~')).toBe(false);
 		expect(fsSync.realpathSync.native(canonical)).toBe(
 			fsSync.realpathSync.native(longDir),
