@@ -46,23 +46,36 @@ describe('#3022 v2 event-name contract (mapV2EventToV1 case labels)', () => {
 
 	// #3401 (PR #3402 review PRR-004): names read PUMP-SIDE (not mapper case
 	// labels) are equally load-bearing — the subagent gate depends on
-	// `session.tool.input.started`. Pin each literal's presence in the module
-	// source so a host rename/omission cannot silently disable the feature
-	// with every behavioural test green (the #3022 defect class).
-	test('every pump-side read event name is pinned by a literal in the module source', () => {
+	// `session.tool.input.started`. Scrape the pump-side read literals from
+	// the module source and require set-equality with the exported list, so a
+	// rename in EITHER direction (list entry vs production read) fails — the
+	// #3022 defect class (an unverified name drifting from every real host
+	// dialect) cannot silently disable the feature with all tests green.
+	test('the pump-side read event names match the exported list exactly', () => {
 		const sourcePath = path.resolve(
 			import.meta.dir,
 			'../../../../src/host/v2/events.ts',
 		);
 		const source = fs.readFileSync(sourcePath, 'utf-8');
-		expect(PUMP_SIDE_READ_EVENT_NAMES.length).toBeGreaterThan(0);
-		for (const name of PUMP_SIDE_READ_EVENT_NAMES) {
-			expect(source).toContain(`'${name}'`);
-			// Not a mapper case label — the contract above already pins those;
-			// a pump-side name that became a case label would be double-pinned
-			// but still enforced.
-			expect(FROZEN_CASE_LABELS).not.toContain(name);
-		}
+		// Pump-side reads compare the envelope type against a literal in one
+		// of two shapes (`envelope?.type !== '…'` in the registry reader,
+		// `type !== '…'` in the identity seeder); the mapper's own reads are
+		// `case` labels, pinned above. Subtract the case labels so the set is
+		// exactly the pump-side-only names.
+		const pumpReads = [
+			...new Set(
+				[
+					...source.matchAll(/envelope\?\.type !== '([^']+)'/g),
+					...source.matchAll(/type !== '([^']+)'/g),
+				].map((m) => m[1] as string),
+			),
+		];
+		const pumpOnly = pumpReads.filter(
+			(name) => !(FROZEN_CASE_LABELS as readonly string[]).includes(name),
+		);
+		expect([...pumpOnly].sort()).toEqual(
+			[...PUMP_SIDE_READ_EVENT_NAMES].sort(),
+		);
 		// The registry reader is wired into the pump, not dead code.
 		expect(source).toContain('rememberToolNameFromEnvelope(envelope);');
 		expect(source).toContain(

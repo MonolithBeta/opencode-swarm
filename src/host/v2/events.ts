@@ -154,10 +154,12 @@ export const _internals = {
 
 /**
  * Guarded read of the child session id from a progress envelope (issue #3401,
- * PR #3402 review PRR-012). Only a plain object's OWN string `sessionID` is
- * accepted — arrays, class instances and Proxy/getter shapes are rejected by
- * `isPlainObject`, and the property read itself is wrapped so a throwing
- * accessor cannot escape into the pump loop (which would terminate the pump).
+ * PR #3402 review PRR-012). `isPlainObject` rejects arrays and null; the
+ * property read is wrapped so a throwing accessor cannot escape into the pump
+ * loop (which would terminate the pump). Class instances and prototype-
+ * inherited `sessionID` values still read through — they grant nothing on
+ * their own, because the durable claim (claimScopeBindingForChildDurably)
+ * remains the sole authority for whatever child id is delivered.
  */
 function readProgressChildSessionID(
 	data: Record<string, unknown>,

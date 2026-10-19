@@ -103,6 +103,21 @@ export async function pumpEnvelopes(
 	return { received, drained };
 }
 
+/** Every RAW tool part the pump delivered (no production-guard filtering).
+ * Negative assertions use this so a guard deletion shows up as a delivered
+ * part rather than being masked by the test's own predicate copy. */
+export function deliveredParts(
+	events: DeliveredEvent[],
+): Array<Record<string, unknown>> {
+	const parts: Array<Record<string, unknown>> = [];
+	for (const event of events) {
+		if (event.type !== 'message.part.updated') continue;
+		const part = event.properties.part as Record<string, unknown> | undefined;
+		if (part) parts.push(part);
+	}
+	return parts;
+}
+
 /** Delivered events carrying a qualifying task part, evaluated with the
  * production guard's predicate (src/index.ts ~3898-3916: part.type,
  * isTaskToolId, callID/sessionID/metadata.sessionId with trim checks,
@@ -169,5 +184,9 @@ export async function expectDropsVsControl(
 	const controlRun = await pumpEnvelopes(control);
 	expect(controlRun.drained).toBe(true);
 	expect(qualifyingParts(controlRun.received).length).toBe(1);
+	// Raw-part assertion (not predicate-filtered): a deleted production guard
+	// delivers a part the predicate copy would still reject, which would mask
+	// the mutation.
+	expect(deliveredParts(negativeRun.received).length).toBe(0);
 	expect(qualifyingParts(negativeRun.received).length).toBe(0);
 }

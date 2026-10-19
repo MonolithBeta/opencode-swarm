@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test';
 import {
+	deliveredParts,
 	expectDropsVsControl,
 	flatToolCalledEvents,
 	inputStarted,
@@ -173,23 +174,50 @@ describe('#3401 — malformed progress payloads fail closed', () => {
 		});
 	}
 
-	test('an over-long tool name is never recorded (control still qualifies)', async () => {
+	test('an over-long tool name is never recorded (name cap, control qualifies)', async () => {
 		const call = 'call_g_longname';
-		const longName = `subagent${'x'.repeat(300)}`;
+		// A VALID subagent id (dotted form passes isV2SubagentToolId) whose only
+		// disqualifying property is length — isolates the 256-char name cap.
+		const longName = `tool.${'x'.repeat(300)}.subagent`;
+		const boundedName = `tool.${'y'.repeat(50)}.subagent`;
 		const { received, drained } = await pumpEnvelopes([
 			inputStarted(PARENT, call, longName),
 			progress(PARENT, call, 'ses_c_longname'),
 		]);
 		expect(drained).toBe(true);
-		expect(qualifyingParts(received).length).toBe(0);
-		// The same call with a bounded name qualifies — the drop was the name
-		// cap, not a dead harness.
+		expect(deliveredParts(received).length).toBe(0);
+		// The same call with a bounded (still dotted) name qualifies — the drop
+		// was the name cap, not a dead harness.
+		await resetToolNameRegistry();
+		const control = await pumpEnvelopes([
+			inputStarted(PARENT, call, boundedName),
+			progress(PARENT, call, 'ses_c_longname'),
+		]);
+		expect(deliveredParts(control.received).length).toBe(1);
+	});
+
+	test('an array metadata with an attached sessionID is rejected by the isPlainObject gate', async () => {
+		// An array with a `sessionID` property attached reads through a bare
+		// `typeof === 'object'` check; only isPlainObject rejects it.
+		const call = 'call_g_arrprop';
+		const arrayMetadata = ['ses_c_arr'];
+		(arrayMetadata as unknown as Record<string, unknown>).sessionID =
+			'ses_c_arrprop';
+		const { received, drained } = await pumpEnvelopes([
+			inputStarted(PARENT, call, 'subagent'),
+			{
+				type: 'session.tool.progress',
+				data: { sessionID: PARENT, id: call, metadata: arrayMetadata },
+			},
+		]);
+		expect(drained).toBe(true);
+		expect(deliveredParts(received).length).toBe(0);
 		await resetToolNameRegistry();
 		const control = await pumpEnvelopes([
 			inputStarted(PARENT, call, 'subagent'),
-			progress(PARENT, call, 'ses_c_longname'),
+			progress(PARENT, call, 'ses_c_arrprop'),
 		]);
-		expect(qualifyingParts(control.received).length).toBe(1);
+		expect(deliveredParts(control.received).length).toBe(1);
 	});
 });
 
@@ -214,12 +242,18 @@ describe('#3401 — hostile payload shapes cannot kill the pump', () => {
 			toolCalled(PARENT, 'call_g_after'),
 		]);
 		expect(drained).toBe(true);
-		expect(qualifyingParts(received).length).toBe(0);
+		expect(deliveredParts(received).length).toBe(0);
 		// The pump survived the hostile envelope and kept dispatching.
 		expect(flatToolCalledEvents(received).length).toBe(1);
 	});
 
-	test('whitespace-only ids are rejected by the production trim guards', async () => {
+	test('whitespace-only ids never synthesize (end-to-end fail-closed)', async () => {
+		// End-to-end property: no part is delivered for whitespace parent/call/
+		// child ids. Layer attribution: the CHILD case isolates the progress
+		// gate's own trim check (nothing else sees metadata.sessionID); the
+		// PARENT and CALL cases are also rejected at store time
+		// (rememberToolNameFromEnvelope bounds the registry key), so those two
+		// assert the composed behavior rather than one layer.
 		const variants: Array<{ call: string; envelope: Record<string, unknown> }> =
 			[
 				{

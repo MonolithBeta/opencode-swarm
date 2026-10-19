@@ -15,7 +15,9 @@ empty/self-referencing session ids are still dropped.
 Before this fix, coder dispatches on OpenCode 2 hosts could fail closed at the
 child's first write with
 `SCOPE_NOT_DECLARED: coder cannot invoke edit without a validated scope for task
-unknown` (#3401; the reporter's environment is quoted in the issue). The
+unknown. ACTION[architect]: call declare_scope with the exact workspace-relative
+paths and replace_existing=true, then dispatch a new Task call.`
+(#3401; the reporter's environment is quoted in the issue). The
 parent-side declaration and `pending_child` dispatch record were correct, but
 the only child-side claim path requires a v1-shaped tool part that the v2 pump
 never produced: `session.tool.called` passes through flat (no `part`), and the
