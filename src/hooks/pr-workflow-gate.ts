@@ -5437,8 +5437,7 @@ export async function rebindPrFeedbackHead(
 				currentHead !== undefined &&
 				currentHead !== null &&
 				currentHead !== (state.prHeadSha ?? '').toLowerCase() &&
-				error instanceof Error &&
-				!error.message.includes('HEAD may already sit at the new head')
+				error instanceof Error
 			) {
 				throw new Error(
 					`BLOCKED: ${error.message} NOTE: the checkout HEAD is "${currentHead}" while the bound intake head is still "${state.prHeadSha}" — the fast-forward already moved HEAD; a plain retry of the same rebind completes it`,
@@ -15784,7 +15783,10 @@ function isPrWorkflowRecoverySwarmCommandArgs(
 
 /**
  * Issue #3315 D3: the one sanctioned staging shape — `git add -- <path...>`
- * with no flags at all, no quoting, no globs, no pathspec magic. Every path
+ * with no flags at all, no globs, no pathspec magic. Paths are read through
+ * the same shell-faithful tokenizer as the commit classifier, so a balanced
+ * quoted path arrives unquoted exactly as a real shell would deliver it.
+ * Every path
  * must additionally be inside the current changed-path set (checked at
  * admission time against the same enumeration the revision digest hashes), so
  * ignored or unhashed content can never be staged through this surface.
