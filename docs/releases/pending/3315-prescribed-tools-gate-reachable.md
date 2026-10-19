@@ -35,7 +35,8 @@ where it is prescribed, with every security floor pinned by regression tests.
   runs through dispatch lanes or PR_FEEDBACK Stage A. The dirty-tree refusal
   now names the first five offending paths plus a total count.
 - A prescribed-tools reachability sweep (architect prompt + both PR skills vs
-  the gate) ships as the standing guardrail, with a documented exclusion list
-  of ten state-gated tools.
+  the gate) ships as the standing guardrail, with a documented, per-entry-reasoned exclusion list
+  (20 tools at landing: prohibitive or post-gate skill mentions, non-PR ceremony/plan
+  tools named only outside PR-workflow prose).
 - The architect prompt budget ceiling rises 163,000 → 164,000 chars for the
   new staging/rebind/trailer guidance (precedent: #2946).

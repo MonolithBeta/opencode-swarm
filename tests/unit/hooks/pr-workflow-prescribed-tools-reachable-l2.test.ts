@@ -80,15 +80,44 @@ const SOURCES = {
 
 /**
  * Every backticked single-word lowercase identifier in a source file. The
- * escaped form \`identifier\` is normalized to bare backticks first: the
- * architect prompt prose lives inside a template literal, so every prose
- * backtick there is source-escaped and invisible to a bare-backtick regex
- * (final-critic round 1 — the sweep was blind to 14 named tools).
+ * escaped form backslash-backtick identifier backslash-backtick is normalized
+ * to bare backticks first: the architect prompt prose lives inside a template
+ * literal, so every prose backtick there is source-escaped and invisible to a
+ * bare-backtick regex (final-critic round 1 — the sweep was blind to 14 named
+ * tools). The escape pair is built with String.fromCharCode so no write
+ * transport can collapse it back into a no-op.
  */
+const ESCAPED_BACKTICK = String.fromCharCode(92, 96);
+
 function backtickedIdentifiers(filePath: string): Set<string> {
-	const content = readFileSync(filePath, 'utf-8').replace(/`/g, '`');
+	const raw = readFileSync(filePath, 'utf-8');
+	const content = raw.split(ESCAPED_BACKTICK).join('`');
 	const matches = content.match(/`[a-z_][a-z0-9_]*`/g) ?? [];
 	return new Set(matches.map((token) => token.slice(1, -1)));
+}
+
+/**
+ * Self-assertion (final-critic round 2): the escaped-only architect names must
+ * be present in the extracted architect set — if the normalization above ever
+ * becomes a byte-level no-op again (a write-transport escape collapse did
+ * exactly that once), the sweep must fail loudly here, not pass vacuously.
+ */
+function assertExtractionSeesEscapedArchitectNames(
+	architectNames: ReadonlySet<string>,
+): void {
+	for (const name of [
+		'summarize_work',
+		'web_search',
+		'web_fetch',
+		'get_approved_plan',
+		'checkpoint',
+	]) {
+		if (!architectNames.has(name)) {
+			throw new Error(
+				`C24 extraction self-check failed: escaped-only architect name "${name}" not extracted — the escaped-backtick normalization is not working`,
+			);
+		}
+	}
 }
 
 const TOOL_NAME_SET = new Set<string>(TOOL_NAMES);
@@ -288,6 +317,7 @@ describe('prescribed-tools reachability sweep (issue #3315 AC24)', () => {
 			const reviewSet = backtickedIdentifiers(SOURCES.reviewSkill);
 			const feedbackSet = backtickedIdentifiers(SOURCES.feedbackSkill);
 			const architectSet = backtickedIdentifiers(SOURCES.architect);
+			assertExtractionSeesEscapedArchitectNames(architectSet);
 
 			// The sweep set: backticked identifiers ∩ TOOL_METADATA keys, plus
 			// the frozen AC5/AC17 both-mode additions below (git_blame/gitingest
