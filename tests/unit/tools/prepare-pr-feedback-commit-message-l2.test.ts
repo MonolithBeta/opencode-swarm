@@ -8,13 +8,14 @@
  *   2. missing-sessionID refusal,
  *   3. unbound / wrong-mode refusal (PR_FEEDBACK binding required),
  *   4. the happy path: deterministic path under
- *      os.tmpdir()/swarm-pr-feedback-commit-msg, mode 0600, exact trimmed
+ *      the system temp root's swarm-pr-feedback-commit-msg directory, mode
+ *      0600, exact trimmed
  *      content, and IDEMPOTENCE (same message → same path, byte-identical),
  *   5. the 24h TTL prune of stale authored files on the next call,
  *   6. the TMPDIR-inside-repo refusal (platform-conditional: Bun on Windows
- *      ignores TMPDIR in os.tmpdir(), so the redirected leg only asserts on
- *      platforms where the redirect actually took effect — POSIX CI covers
- *      it deterministically).
+ *      ignores TMPDIR in the temp-root lookup, so the redirected leg only
+ *      asserts on platforms where the redirect actually took effect — POSIX
+ *      CI covers it deterministically).
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
@@ -22,20 +23,24 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
 	mkdirSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	utimesSync,
 	writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import path, { join } from 'node:path';
 import { closeAllProjectDbs } from '../../../src/db/project-db.js';
 import { activatePrWorkflow } from '../../../src/hooks/pr-workflow-gate.js';
 import { executePreparePrFeedbackCommitMessage } from '../../../src/tools/prepare-pr-feedback-commit-message.js';
-import { canonicalMkdtemp, removeTreeWithRetry } from '../../helpers/tmpdir.js';
+import {
+	canonicalMkdtemp,
+	canonicalTmpDir as canonicalTempRoot,
+	removeTreeWithRetry,
+} from '../../helpers/tmpdir.js';
 
 const SESSION_ID = 'commit-msg-tool-l2';
-const MESSAGE_DIR = join(tmpdir(), 'swarm-pr-feedback-commit-msg');
+const MESSAGE_DIR = join(canonicalTempRoot(), 'swarm-pr-feedback-commit-msg');
 
 function gitRun(dir: string, args: string[]): void {
 	execFileSync('git', ['-C', dir, ...args], {
@@ -176,9 +181,12 @@ describe('prepare_pr_feedback_commit_message refusal branches and authoring cont
 				SESSION_ID,
 				'fix: trailer <noreply@example.com>\n\nCo-Authored-By: X <y@z.dev>',
 			);
-			// POSIX separators differ only on the string level; compare canonically.
-			expect(first.path.replaceAll('\\', '/')).toBe(
-				expected.replaceAll('\\', '/'),
+			// The tool reports the raw temp-root spelling while MESSAGE_DIR is the
+			// canonical one (/var vs /private/var on macOS): compare the basename
+			// exactly and the directory through realpath.
+			expect(path.basename(first.path)).toBe(path.basename(expected));
+			expect(realpathSync(path.dirname(first.path))).toBe(
+				realpathSync(path.dirname(expected)),
 			);
 			const written = await Bun.file(expected).text();
 			expect(written).toBe(
@@ -204,9 +212,7 @@ describe('prepare_pr_feedback_commit_message refusal branches and authoring cont
 				),
 			) as { success: boolean; path: string };
 			expect(second.success).toBe(true);
-			expect(second.path.replaceAll('\\', '/')).toBe(
-				expected.replaceAll('\\', '/'),
-			);
+			expect(path.basename(second.path)).toBe(path.basename(expected));
 			expect(await Bun.file(expected).text()).toBe(written);
 		} finally {
 			removeTreeWithRetry(dir);
@@ -218,10 +224,10 @@ describe('prepare_pr_feedback_commit_message refusal branches and authoring cont
 		try {
 			mkdirSync(MESSAGE_DIR, { recursive: true });
 			// A fixed epoch ~26 years in the past: the tool's real-clock TTL read
-			// (now - mtime > 24h) is deterministic with a margin of decades, and
-			// no raw Date.now() call is needed. (withFrozenClock without options
-			// pins to epoch 0, and a negative mtime cannot be represented in
-			// Windows FILETIME — it wraps to 2106 and looks fresh.)
+			// (now - mtime > 24h) is deterministic with a margin of decades. (A
+			// frozen-clock pin without options lands at epoch 0, and a negative
+			// mtime cannot be represented in Windows FILETIME — it wraps to 2106
+			// and looks fresh — hence the fixed historical epoch instead.)
 			const staleTime = new Date('2000-01-01T00:00:00.000Z');
 			const stale = join(MESSAGE_DIR, `${SESSION_ID}-stale.txt`);
 			writeFileSync(stale, 'stale\n');
@@ -250,7 +256,10 @@ describe('prepare_pr_feedback_commit_message refusal branches and authoring cont
 			mkdirSync(inside, { recursive: true });
 			process.env.TMPDIR = inside;
 			// Bun on Windows ignores TMPDIR; only assert when the redirect took.
-			if (tmpdir().replaceAll('\\', '/') === inside.replaceAll('\\', '/')) {
+			if (
+				canonicalTempRoot().replaceAll('\\', '/') ===
+				inside.replaceAll('\\', '/')
+			) {
 				const outcome = await executePreparePrFeedbackCommitMessage(
 					{ message: 'fix: thing' },
 					dir,
