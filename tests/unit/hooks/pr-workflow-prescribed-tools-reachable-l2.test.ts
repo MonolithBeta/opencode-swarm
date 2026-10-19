@@ -78,9 +78,15 @@ const SOURCES = {
 	),
 } as const;
 
-/** Every backticked single-word lowercase identifier in a source file. */
+/**
+ * Every backticked single-word lowercase identifier in a source file. The
+ * escaped form \`identifier\` is normalized to bare backticks first: the
+ * architect prompt prose lives inside a template literal, so every prose
+ * backtick there is source-escaped and invisible to a bare-backtick regex
+ * (final-critic round 1 — the sweep was blind to 14 named tools).
+ */
 function backtickedIdentifiers(filePath: string): Set<string> {
-	const content = readFileSync(filePath, 'utf-8');
+	const content = readFileSync(filePath, 'utf-8').replace(/`/g, '`');
 	const matches = content.match(/`[a-z_][a-z0-9_]*`/g) ?? [];
 	return new Set(matches.map((token) => token.slice(1, -1)));
 }
@@ -169,6 +175,54 @@ const EXCLUDED_TOOLS: ReadonlyMap<string, string> = new Map([
 	[
 		'submit_phase_council_verdicts',
 		'named only in architect.ts plan-phase council prose; PR gates deliberately fail closed for non-PR ceremony tools',
+	],
+	// Final-critic round 1: the ten tools below surfaced only after the
+	// extraction learned to read the template-escaped backticks of the
+	// architect prompt prose. Each is named exclusively in non-PR-workflow
+	// prose (plan authoring, retro, memory, council-evidence, supervisor
+	// flows that belong to the ordinary implementation workflow), so the
+	// PR gates deliberately fail closed for them — the same reason class
+	// as the council/phase five above. Probed at the final head: all ten
+	// reject in both PR modes.
+	[
+		'checkpoint',
+		'named only in architect.ts plan-checkpoint prose (prohibitive mention: do not checkpoint mid-PR); PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'write_retro',
+		'named only in architect.ts retro-capture prose; a PR-workflow retro is not prescribed, the gate deliberately fails closed for non-PR ceremony tools',
+	],
+	[
+		'set_qa_gates',
+		'named only in architect.ts QA-gate configuration prose for ordinary plan work; PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'write_final_council_evidence',
+		'named only in architect.ts council-evidence prose; PR gates deliberately fail closed for non-PR ceremony tools',
+	],
+	[
+		'skill_improve',
+		'named only in architect.ts skill-improvement prose for ordinary plan work; PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'spec_write',
+		'named only in architect.ts spec-authoring prose for ordinary plan work; PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'knowledge_receipt',
+		'named only in architect.ts knowledge- filing prose for ordinary plan work; PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'swarm_memory_outcome',
+		'named only in architect.ts memory-outcome prose for ordinary plan work; PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'summarize_work',
+		'named only in architect.ts work-summary prose for ordinary plan work; PR gates deliberately fail closed for non-PR plan tools',
+	],
+	[
+		'write_architecture_supervisor_evidence',
+		'named only in architect.ts supervisor-evidence prose; PR gates deliberately fail closed for non-PR plan tools',
 	],
 ]);
 
