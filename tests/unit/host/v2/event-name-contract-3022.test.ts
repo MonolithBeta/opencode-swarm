@@ -22,6 +22,9 @@ const FROZEN_CASE_LABELS = [
 	'session.text.delta',
 	'session.tool.called',
 	'session.tool.input.delta',
+	// #3401: subagent-gated synthesis of the v1 scope-activation ToolPart from
+	// the child-identity progress event (live capture 2.0.29; schema at 2.0.32).
+	'session.tool.progress',
 	'session.text.ended',
 	'session.tool.success',
 	'session.tool.failed',

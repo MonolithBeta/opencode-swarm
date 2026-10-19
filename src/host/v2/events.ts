@@ -36,6 +36,7 @@
 import { recordSessionChatAgent } from '../../models/task-model-routing';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
+import { isV2SubagentToolId } from './hooks.js';
 import { recordV2SessionErrorFromEnvelope } from './session-client';
 import type { V1HooksSubset, V2EventEnvelope, V2PluginContext } from './types';
 
@@ -47,18 +48,74 @@ interface MappedEvent {
 	properties: Record<string, unknown>;
 }
 
+/**
+ * Shared payload extraction (#3022 dialect rule): live plugin-stream
+ * envelopes carry the payload under `data`; the SDK SSE/REST dialect under
+ * `properties`. Every reader of an envelope's fields must go through this.
+ */
+function envelopePayload(envelope: V2EventEnvelope): Record<string, unknown> {
+	return (
+		(envelope as { data?: Record<string, unknown> }).data ??
+		(envelope as { properties?: Record<string, unknown> }).properties ??
+		{}
+	);
+}
+
+/**
+ * Pump-side tool-name registry (issue #3401). The v2 tool events carry the
+ * dispatch identity as `(sessionID, id)` but only `session.tool.input.started`
+ * carries the tool NAME — and the scope-activation synthesis below must be
+ * gated on the call actually being the subagent tool. Bounded per AGENTS.md
+ * invariant 8: FIFO eviction, per-(session,call) keys so sessions never mix;
+ * an evicted or never-recorded name degrades to today's fail-closed drop.
+ */
+const MAX_TRACKED_TOOL_NAMES = 512;
+const toolNameByDispatchKey = new Map<string, string>();
+
+function rememberToolNameFromEnvelope(envelope: V2EventEnvelope): void {
+	if (envelope?.type !== 'session.tool.input.started') return;
+	const payload = envelopePayload(envelope);
+	const name = typeof payload.name === 'string' ? payload.name : undefined;
+	const sessionID =
+		typeof payload.sessionID === 'string' ? payload.sessionID : undefined;
+	const callID = typeof payload.id === 'string' ? payload.id : undefined;
+	if (!name || !sessionID || !callID) return;
+	const key = dispatchKey(sessionID, callID);
+	if (
+		!toolNameByDispatchKey.has(key) &&
+		toolNameByDispatchKey.size >= MAX_TRACKED_TOOL_NAMES
+	) {
+		const oldest = toolNameByDispatchKey.keys().next().value;
+		if (oldest !== undefined) toolNameByDispatchKey.delete(oldest);
+	}
+	toolNameByDispatchKey.set(key, name);
+}
+
+/**
+ * Length-prefixed so no (sessionID, callID) pair can alias onto another pair's
+ * key regardless of the id characters the host mints.
+ */
+function dispatchKey(sessionID: string, callID: string): string {
+	return `${sessionID.length}#${sessionID}${callID}`;
+}
+
+function lookupToolNameForDispatch(
+	sessionID: string,
+	callID: string,
+): string | undefined {
+	return toolNameByDispatchKey.get(dispatchKey(sessionID, callID));
+}
+
 /** Map a v2 event envelope onto the v1 handler input (or undefined). */
 export function mapV2EventToV1(
 	envelope: V2EventEnvelope,
+	lookupToolName?: (sessionID: string, callID: string) => string | undefined,
 ): MappedEvent | undefined {
 	const type = typeof envelope?.type === 'string' ? envelope.type : undefined;
 	if (type === undefined) return undefined;
 	// #3022: live plugin-stream envelopes carry the payload under `data`; the
 	// SDK SSE/REST dialect carries it under `properties`. Accept both.
-	const data =
-		(envelope as { data?: Record<string, unknown> }).data ??
-		(envelope as { properties?: Record<string, unknown> }).properties ??
-		{};
+	const data = envelopePayload(envelope);
 	const sessionID =
 		typeof data.sessionID === 'string' ? data.sessionID : undefined;
 	switch (type) {
@@ -109,6 +166,54 @@ export function mapV2EventToV1(
 				type: 'message.part.updated',
 				properties: { ...(sessionID ? { sessionID } : {}), ...data },
 			};
+		case 'session.tool.progress': {
+			// Issue #3401: the v2 subagent tool publishes the CHILD session id
+			// as live progress metadata (`metadata.sessionID`, emitted right
+			// after child-session creation, before the child runs — host
+			// packages/core/src/tool/plugin/subagent.ts). Synthesize the v1
+			// ToolPart shape the scope-activation handler requires
+			// (src/index.ts ~3884: part.type/callID/sessionID/state.metadata.
+			// sessionId). Gated on the tracked tool name so a non-subagent
+			// tool's progress metadata can never masquerade as a Task dispatch;
+			// empty or self-referencing ids fail closed (and the v1 guard
+			// re-checks parent ≠ child before claiming). The durable claim
+			// (claimScopeBindingForChildDurably) remains the sole authority.
+			const metadata = (
+				typeof data.metadata === 'object' && data.metadata !== null
+					? data.metadata
+					: {}
+			) as Record<string, unknown>;
+			const childSessionID =
+				typeof metadata.sessionID === 'string' ? metadata.sessionID : undefined;
+			const callID = typeof data.id === 'string' ? data.id : undefined;
+			if (
+				!lookupToolName ||
+				typeof sessionID !== 'string' ||
+				sessionID.trim() === '' ||
+				!callID ||
+				callID.trim() === '' ||
+				!childSessionID ||
+				childSessionID.trim() === '' ||
+				childSessionID === sessionID
+			)
+				return undefined;
+			const toolName = lookupToolName(sessionID, callID);
+			if (!toolName || !isV2SubagentToolId(toolName)) return undefined;
+			return {
+				type: 'message.part.updated',
+				properties: {
+					part: {
+						type: 'tool',
+						// Collapses to the bare v1 id, mirroring the #3169/#3180
+						// tool-boundary translation policy (hooks.ts).
+						tool: 'task',
+						callID,
+						sessionID,
+						state: { metadata: { sessionId: childSessionID } },
+					},
+				},
+			};
+		}
 		case 'session.text.ended':
 		case 'session.tool.success':
 		case 'session.tool.failed':
@@ -157,10 +262,7 @@ export function seedSessionIdentityFromEnvelope(
 ): void {
 	const type = typeof envelope?.type === 'string' ? envelope.type : undefined;
 	if (type !== 'session.created' && type !== 'session.agent.selected') return;
-	const payload =
-		(envelope as { data?: Record<string, unknown> }).data ??
-		(envelope as { properties?: Record<string, unknown> }).properties ??
-		{};
+	const payload = envelopePayload(envelope);
 	const sessionID =
 		typeof payload.sessionID === 'string' ? payload.sessionID : undefined;
 	const agent = typeof payload.agent === 'string' ? payload.agent : undefined;
@@ -210,7 +312,9 @@ export function startDeferredEventPump(
 				// event stream (no error text in context()); record them for the
 				// session-client shim's result translation. Sync, bounded, O(1).
 				recordV2SessionErrorFromEnvelope(envelope);
-				const mapped = mapV2EventToV1(envelope);
+				// #3401: remember tool names for dispatch-gated synthesis below.
+				rememberToolNameFromEnvelope(envelope);
+				const mapped = mapV2EventToV1(envelope, lookupToolNameForDispatch);
 				if (mapped === undefined) {
 					const t =
 						typeof envelope?.type === 'string' ? envelope.type : '(no type)';
