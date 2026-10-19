@@ -36,7 +36,7 @@
 import { recordSessionChatAgent } from '../../models/task-model-routing';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
-import { isV2SubagentToolId } from './hooks.js';
+import { isPlainObject, isV2SubagentToolId } from './hooks.js';
 import { recordV2SessionErrorFromEnvelope } from './session-client';
 import type { V1HooksSubset, V2EventEnvelope, V2PluginContext } from './types';
 
@@ -47,6 +47,20 @@ interface MappedEvent {
 	type: string;
 	properties: Record<string, unknown>;
 }
+
+/**
+ * Host event names this pump reads OUTSIDE the mapper switch (issue #3401,
+ * PR #3402 review PRR-004). The frozen `#3022` event-name contract test pins
+ * only mapper `case` labels, so a name read pump-side must be pinned here or a
+ * host rename/omission silently disables the feature with every test green —
+ * the exact defect class that contract exists to prevent. `input.started` is
+ * the sole source of the subagent gate below; `agent.selected` seeds v1
+ * session identity.
+ */
+export const PUMP_SIDE_READ_EVENT_NAMES = [
+	'session.tool.input.started',
+	'session.agent.selected',
+] as const;
 
 /**
  * Shared payload extraction (#3022 dialect rule): live plugin-stream
@@ -62,12 +76,29 @@ function envelopePayload(envelope: V2EventEnvelope): Record<string, unknown> {
 }
 
 /**
+ * Bounds for host-supplied identifiers recorded or forwarded by this module.
+ * Sibling schemas already bound comparable ids (MAX_ID_CHARS in
+ * src/evidence/phase-participation.ts; MAX_V2_WRAPPER_INNER_CHARS in
+ * hooks.ts); an unbounded id would let one envelope retain arbitrary memory
+ * in the registry or flow downstream.
+ */
+const MAX_TRACKED_TOOL_NAME_CHARS = 256;
+const MAX_DISPATCH_ID_CHARS = 256;
+
+function isBoundedId(value: string): boolean {
+	return value.trim() !== '' && value.length <= MAX_DISPATCH_ID_CHARS;
+}
+
+/**
  * Pump-side tool-name registry (issue #3401). The v2 tool events carry the
  * dispatch identity as `(sessionID, id)` but only `session.tool.input.started`
  * carries the tool NAME — and the scope-activation synthesis below must be
  * gated on the call actually being the subagent tool. Bounded per AGENTS.md
  * invariant 8: FIFO eviction, per-(session,call) keys so sessions never mix;
  * an evicted or never-recorded name degrades to today's fail-closed drop.
+ * Only subagent names are stored (PR #3402 Copilot review): non-subagent
+ * names are never usable at the gate, so storing them would only consume
+ * eviction budget.
  */
 const MAX_TRACKED_TOOL_NAMES = 512;
 const toolNameByDispatchKey = new Map<string, string>();
@@ -76,15 +107,18 @@ function rememberToolNameFromEnvelope(envelope: V2EventEnvelope): void {
 	if (envelope?.type !== 'session.tool.input.started') return;
 	const payload = envelopePayload(envelope);
 	const name = typeof payload.name === 'string' ? payload.name : undefined;
+	if (!name || name.length > MAX_TRACKED_TOOL_NAME_CHARS) return;
+	if (!isV2SubagentToolId(name)) return;
 	const sessionID =
 		typeof payload.sessionID === 'string' ? payload.sessionID : undefined;
 	const callID = typeof payload.id === 'string' ? payload.id : undefined;
-	if (!name || !sessionID || !callID) return;
+	if (!sessionID || !callID) return;
+	if (!isBoundedId(sessionID) || !isBoundedId(callID)) return;
 	const key = dispatchKey(sessionID, callID);
-	if (
-		!toolNameByDispatchKey.has(key) &&
-		toolNameByDispatchKey.size >= MAX_TRACKED_TOOL_NAMES
-	) {
+	// Refresh insertion order so a re-observed dispatch is not evicted ahead
+	// of newer entries (Map.set alone preserves the original position).
+	toolNameByDispatchKey.delete(key);
+	if (toolNameByDispatchKey.size >= MAX_TRACKED_TOOL_NAMES) {
 		const oldest = toolNameByDispatchKey.keys().next().value;
 		if (oldest !== undefined) toolNameByDispatchKey.delete(oldest);
 	}
@@ -104,6 +138,38 @@ function lookupToolNameForDispatch(
 	callID: string,
 ): string | undefined {
 	return toolNameByDispatchKey.get(dispatchKey(sessionID, callID));
+}
+
+/** Drop the pump-side tool-name registry. Called by the v2 plugin cleanup so a
+ * re-setup in the same process starts without stale (session,call)→name
+ * residue, and exported through `_internals` for test isolation (AGENTS.md
+ * invariant 7/8). */
+export function clearToolNameRegistry(): void {
+	toolNameByDispatchKey.clear();
+}
+
+export const _internals = {
+	clearToolNameRegistry,
+};
+
+/**
+ * Guarded read of the child session id from a progress envelope (issue #3401,
+ * PR #3402 review PRR-012). Only a plain object's OWN string `sessionID` is
+ * accepted — arrays, class instances and Proxy/getter shapes are rejected by
+ * `isPlainObject`, and the property read itself is wrapped so a throwing
+ * accessor cannot escape into the pump loop (which would terminate the pump).
+ */
+function readProgressChildSessionID(
+	data: Record<string, unknown>,
+): string | undefined {
+	const metadata = data.metadata;
+	if (!isPlainObject(metadata)) return undefined;
+	try {
+		const child = metadata.sessionID;
+		return typeof child === 'string' ? child : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** Map a v2 event envelope onto the v1 handler input (or undefined). */
@@ -178,27 +244,25 @@ export function mapV2EventToV1(
 			// empty or self-referencing ids fail closed (and the v1 guard
 			// re-checks parent ≠ child before claiming). The durable claim
 			// (claimScopeBindingForChildDurably) remains the sole authority.
-			const metadata = (
-				typeof data.metadata === 'object' && data.metadata !== null
-					? data.metadata
-					: {}
-			) as Record<string, unknown>;
-			const childSessionID =
-				typeof metadata.sessionID === 'string' ? metadata.sessionID : undefined;
 			const callID = typeof data.id === 'string' ? data.id : undefined;
-			if (
-				!lookupToolName ||
-				typeof sessionID !== 'string' ||
-				sessionID.trim() === '' ||
-				!callID ||
-				callID.trim() === '' ||
-				!childSessionID ||
-				childSessionID.trim() === '' ||
-				childSessionID === sessionID
-			)
+			const childSessionID = readProgressChildSessionID(data);
+			const drop = (reason: string): undefined => {
+				// Distinct from the pump's "not mapped" line: the type IS mapped;
+				// this gate rejected it. A recurrence of #3401 must be
+				// diagnosable, not silent (PR #3402 review PRR-008).
+				log('v2 subagent progress dropped', { reason });
 				return undefined;
+			};
+			if (!lookupToolName) return drop('no-tool-name-lookup');
+			if (typeof sessionID !== 'string' || !isBoundedId(sessionID))
+				return drop('invalid-parent-session');
+			if (!callID || !isBoundedId(callID)) return drop('invalid-call-id');
+			if (!childSessionID || !isBoundedId(childSessionID))
+				return drop('invalid-child-session');
+			if (childSessionID === sessionID) return drop('self-referencing-child');
 			const toolName = lookupToolName(sessionID, callID);
-			if (!toolName || !isV2SubagentToolId(toolName)) return undefined;
+			if (!toolName) return drop('untracked-tool-name');
+			if (!isV2SubagentToolId(toolName)) return drop('non-subagent-tool');
 			return {
 				type: 'message.part.updated',
 				properties: {

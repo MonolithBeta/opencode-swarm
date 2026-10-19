@@ -12,25 +12,31 @@ empty/self-referencing session ids are still dropped.
 
 ## Why
 
-Before this fix, every standard single-workspace coder dispatch on an
-OpenCode 2 host failed closed at the child's first write with
-`SCOPE_NOT_DECLARED: coder cannot invoke edit without a validated scope for
-task unknown` (#3401). The parent-side declaration and `pending_child` dispatch
-record were correct, but the only child-side claim path requires a v1-shaped
-tool part that the v2 pump never produced: `session.tool.called` passes
-through flat (no `part`), and the one event that carries the child identity
-mid-run (`session.tool.progress`) was dropped as unmapped. The pending binding
-therefore never flipped to the child-owned active generation, the coder child
-never resolved a task id, and every write was refused before execution — each
-blocked attempt also consumed a retry diagnostic.
+Before this fix, coder dispatches on OpenCode 2 hosts could fail closed at the
+child's first write with
+`SCOPE_NOT_DECLARED: coder cannot invoke edit without a validated scope for task
+unknown` (#3401; the reporter's environment is quoted in the issue). The
+parent-side declaration and `pending_child` dispatch record were correct, but
+the only child-side claim path requires a v1-shaped tool part that the v2 pump
+never produced: `session.tool.called` passes through flat (no `part`), and the
+one event that carries the child identity mid-run (`session.tool.progress`) was
+dropped as unmapped. The pending binding therefore never flipped to the
+child-owned active generation, the coder child never resolved a task id, and
+every write was refused before execution — each blocked attempt also consumed
+a retry diagnostic.
 
 ## Verification
 
 The synthesized part feeds the existing, unchanged v1 activation chain
 (`taskMetadata` → durable claim → child `currentTaskId`/`declaredCoderScope`);
 the durable claim (`claimScopeBindingForChildDurably`) remains the sole
-authority, so a forged or misdelivered progress event for a non-subagent or
+authority, so a forged or misaddressed progress event for a non-subagent or
 unknown call still finds no pending binding and no-ops. Pinned by
-`tests/unit/host/v2/scope-activation-progress-3401.test.ts` (live-captured
-envelope fixtures, gating negatives, registry bound) and the updated
-`#3022` event-name contract list.
+`tests/unit/host/v2/scope-activation-progress-3401.test.ts` and
+`tests/unit/host/v2/scope-activation-progress-gating-3401.test.ts`
+(live-capture-mirroring envelope fixtures, gating negatives with differential
+positive controls, registry bounds) plus the extended `#3022` event-name
+contract test. The full end-to-end path was additionally exercised against a
+live 2.0.29 host during development (event-capture plugin; the envelope shapes
+are identical at the v2.0.32 schema); the PR's automated checks cover the
+contract level rather than a live host run.

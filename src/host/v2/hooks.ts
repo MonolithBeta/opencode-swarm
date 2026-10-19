@@ -73,7 +73,11 @@ export function isV2SubagentToolId(
  * keep them dead — every recognized form collapses to `task`.
  */
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Plain-object shape guard (arrays/instances rejected); exported for the
+ * event pump's progress-metadata validation (issue #3401 / PR #3402). */
+export function isPlainObject(
+	value: unknown,
+): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 

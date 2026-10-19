@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { PUMP_SIDE_READ_EVENT_NAMES } from '../../../../src/host/v2/events';
 
 /**
  * Issue #3022 guardrail (Phase 4.2, plan Part F): the v2 event mapper's
@@ -41,5 +42,31 @@ describe('#3022 v2 event-name contract (mapV2EventToV1 case labels)', () => {
 			(m) => m[1] as string,
 		);
 		expect([...labels].sort()).toEqual([...FROZEN_CASE_LABELS].sort());
+	});
+
+	// #3401 (PR #3402 review PRR-004): names read PUMP-SIDE (not mapper case
+	// labels) are equally load-bearing — the subagent gate depends on
+	// `session.tool.input.started`. Pin each literal's presence in the module
+	// source so a host rename/omission cannot silently disable the feature
+	// with every behavioural test green (the #3022 defect class).
+	test('every pump-side read event name is pinned by a literal in the module source', () => {
+		const sourcePath = path.resolve(
+			import.meta.dir,
+			'../../../../src/host/v2/events.ts',
+		);
+		const source = fs.readFileSync(sourcePath, 'utf-8');
+		expect(PUMP_SIDE_READ_EVENT_NAMES.length).toBeGreaterThan(0);
+		for (const name of PUMP_SIDE_READ_EVENT_NAMES) {
+			expect(source).toContain(`'${name}'`);
+			// Not a mapper case label — the contract above already pins those;
+			// a pump-side name that became a case label would be double-pinned
+			// but still enforced.
+			expect(FROZEN_CASE_LABELS).not.toContain(name);
+		}
+		// The registry reader is wired into the pump, not dead code.
+		expect(source).toContain('rememberToolNameFromEnvelope(envelope);');
+		expect(source).toContain(
+			'mapV2EventToV1(envelope, lookupToolNameForDispatch);',
+		);
 	});
 });
