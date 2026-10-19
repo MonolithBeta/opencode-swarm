@@ -15754,9 +15754,12 @@ function standaloneGitCommitSubcommandIndex(
  * Issue #3315 D8/AC25: extract the message-file argument of a standalone
  * `git commit` for every spelling the classifier grammar admits — `-F <p>`,
  * `-F<p>`, `--file=<p>`, `--file <p>` — reading option positions correctly:
- * operands of `-m`/`--message`/`-c`/`-C`/`--reuse-message`/`--fixup` are
- * consumed as values (a `-F` inside a commit message is message text, not a
- * flag). Null when the commit carries no message-file argument.
+ * operands of every value-taking git-commit option are consumed as values
+ * (a `-F` inside a commit message, an author, or a cleanup mode is operand
+ * text, not a flag — git's parse-options consumes option-looking values
+ * unconditionally), and an unquoted `--` terminates option parsing entirely
+ * (everything after it is a pathspec). Null when the commit carries no
+ * message-file argument.
  */
 export function extractStandaloneGitCommitMessageFile(
 	command: string,
@@ -15770,36 +15773,55 @@ export function extractStandaloneGitCommitMessageFile(
 		// how the token began: every supported shell strips quotes around a
 		// bare flag too (`git commit "-F" x` delivers a real -F to git).
 		// Quoted OPERANDS are protected by the consumption branches below
-		// (-m/-c/-C/--reuse-message/--fixup skip their next token), not by
-		// skipping quoted tokens here.
+		// (-m/-c/-C/--author/... skip their next token), not by skipping
+		// quoted tokens here.
+		if (token.text === '--') break; // pathspec terminator: no flags after it
 		if (token.text === '-F' || token.text === '--file') {
 			const value = tokens[i + 1];
 			return value === undefined ? null : value.text;
 		}
-		if (token.text === '-m' || token.text === '--message') {
-			i += 1; // the next token is the message operand, never a flag
-			continue;
-		}
-		if (
-			token.text === '-c' ||
-			token.text === '-C' ||
-			token.text === '--reuse-message' ||
-			token.text === '--fixup'
-		) {
-			i += 1; // commit-ish operand
+		if (GIT_COMMIT_VALUE_TAKING_OPTIONS.has(token.text)) {
+			i += 1; // the next token is this option's operand, never a flag
 			continue;
 		}
 		if (token.text.startsWith('--message=')) continue;
 		if (token.text.startsWith('--file=')) {
 			return token.text.slice('--file='.length);
 		}
-		const attached = /^-F(.+)$/i.exec(token.text);
+		// [\s\S]: a glued attached value may contain JS line terminators
+		// (U+2028/U+2029), which regex `.` cannot match; cmd/POSIX argv keep
+		// them inside the word, so the value they delimit must still resolve.
+		const attached = /^-F([\s\S]+)$/i.exec(token.text);
 		if (attached) return attached[1];
-		const attachedMessage = /^-m(.+)$/i.exec(token.text);
+		const attachedMessage = /^-m([\s\S]+)$/i.exec(token.text);
 		if (attachedMessage) continue;
 	}
 	return null;
 }
+
+/**
+ * The finite git-commit option set that REQUIRES a value in the
+ * space-separated form (git parse-options consumes the next argv
+ * unconditionally for these). `--untracked-files`/`-u` deliberately absent:
+ * their value is optional, so a following `-F` stays a real flag.
+ */
+const GIT_COMMIT_VALUE_TAKING_OPTIONS: ReadonlySet<string> = new Set([
+	'-m',
+	'--message',
+	'-c',
+	'--reedit-message',
+	'-C',
+	'--reuse-message',
+	'-t',
+	'--template',
+	'--fixup',
+	'--squash',
+	'--author',
+	'--date',
+	'--cleanup',
+	'--trailer',
+	'--pathspec-from-file',
+]);
 
 /**
  * Issue #3315 D8/AC25: the working base a standalone git command resolves

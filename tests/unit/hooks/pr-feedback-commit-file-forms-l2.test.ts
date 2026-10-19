@@ -115,6 +115,35 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 					/resolves inside the repository|message file .*outside the repository/,
 				);
 			}
+			// Reviewer round-4 floors: git parse-options consumes option-looking
+			// values unconditionally for value-taking options (--author,
+			// --cleanup, ...), an unquoted -- terminates option parsing (later
+			// tokens are pathspecs), and U+2028/U+2029 are not cmd/POSIX IFS
+			// so a glued -F<U+2028> value stays relative (in-repo). The first
+			// three must reach the ladder; the line-separator two must refuse.
+			const LS = String.fromCharCode(0x2028);
+			const PS = String.fromCharCode(0x2029);
+			for (const command of [
+				'git commit --author "-F" msg.txt',
+				'git commit -m x -- "-F" msg.txt',
+				'git commit --cleanup "-F" msg.txt',
+			]) {
+				await expect(
+					enforcePrWorkflowToolBefore(repo, session, 'shell', { command }),
+				).rejects.toThrow(
+					/requires an immutable inventory and verification batches/,
+				);
+			}
+			for (const command of [
+				'git commit -F' + LS + 'msg.txt',
+				'git commit -F' + PS + 'msg.txt',
+			]) {
+				await expect(
+					enforcePrWorkflowToolBefore(repo, session, 'shell', { command }),
+				).rejects.toThrow(
+					/resolves inside the repository|message file .*outside the repository/,
+				);
+			}
 			// Outside-repo -F keeps today's classifier admission: it reaches the
 			// ladder precondition instead of the in-repo refusal.
 			const outside = join(canonicalMkdtemp('commit-ff-outside-'), 'msg.txt');
