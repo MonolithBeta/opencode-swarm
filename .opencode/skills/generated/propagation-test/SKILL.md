@@ -1,10 +1,8 @@
 ---
 name: propagation-test
 description: propagation test
-triggers:
-  - knowledge propagation test
-  - single-source update
 metadata:
+  triggers: '["knowledge propagation test","single-source update"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.897Z"

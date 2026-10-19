@@ -197,6 +197,7 @@ import {
 	recordWorktreeMergeFailure,
 } from './delegation-gate/worktree-merge-status';
 import { deleteStoredInputArgs, getStoredInputArgs } from './guardrails';
+import { resolveMessageTransformContext } from './host-boundary';
 import { isTaskToolId, normalizeToolName } from './normalize-tool-name';
 import {
 	insertGuidanceCarrier,
@@ -1480,6 +1481,67 @@ const ACCEPTANCE_ARGS_FIELDS = [
 	'input',
 	'message',
 ] as const;
+
+/**
+ * Default requirement line written by `hooks.auto_inject_acceptance`. The marker
+ * makes the synthesized origin visible to the coder/reviewer that receives it
+ * (it is otherwise indistinguishable from an architect-authored criterion).
+ */
+const AUTO_INJECTED_ACCEPTANCE_REQUIREMENT =
+	'- Complete verification of changes, tests, and documentation (auto-injected default: no task-specific acceptance criteria were supplied)';
+
+/**
+ * Synthesize a default ACCEPTANCE block into the Task args
+ * (`hooks.auto_inject_acceptance`). Mutates `args` in place, like
+ * {@link injectSpecRequirementsIntoAcceptance}.
+ *
+ * - `acceptance_field_empty`: fills the bare header in the field that actually
+ *   carries it. "First header" follows the validator's field order and its
+ *   `^ACCEPTANCE:` line match, and line endings are preserved, so the rewrite
+ *   always edits the header that {@link validateCoderReviewerAcceptanceField}
+ *   judged empty.
+ * - `acceptance_field_missing`: appends a block to `prompt`, else to the first
+ *   string field.
+ *
+ * @returns the mutated field, or `null` when no string field exists to carry the
+ *   block (the caller then keeps the fail-closed rejection).
+ */
+function injectDefaultAcceptance(
+	args: Record<string, unknown>,
+	reason: 'acceptance_field_missing' | 'acceptance_field_empty',
+): (typeof ACCEPTANCE_ARGS_FIELDS)[number] | null {
+	const stringFields = ACCEPTANCE_ARGS_FIELDS.filter(
+		(field) => typeof args[field] === 'string',
+	);
+	if (reason === 'acceptance_field_empty') {
+		for (const field of stringFields) {
+			// Capturing split keeps each line terminator at the odd indices.
+			const parts = (args[field] as string).split(/(\r?\n)/);
+			for (let i = 0; i < parts.length; i += 2) {
+				// Exactly the validator's header regex (validateCoderReviewerAcceptanceField),
+				// so a line it skips (e.g. `ACCEPTANCE:` + U+2028 or a lone CR, which `.`
+				// does not match) is skipped here too and its text is never rewritten.
+				const header = /^(ACCEPTANCE:)[ \t]*(.*)$/i.exec(parts[i]);
+				if (!header) continue;
+				parts.splice(
+					i,
+					1,
+					header[1],
+					parts[i + 1] ?? '\n',
+					AUTO_INJECTED_ACCEPTANCE_REQUIREMENT,
+				);
+				args[field] = parts.join('');
+				return field;
+			}
+		}
+		return null;
+	}
+	const target = stringFields.includes('prompt') ? 'prompt' : stringFields[0];
+	if (!target) return null;
+	args[target] =
+		`${args[target] as string}\n\nACCEPTANCE:\n${AUTO_INJECTED_ACCEPTANCE_REQUIREMENT}\n`;
+	return target;
+}
 
 export interface AcceptanceInjectionOutcome {
 	/** The args field that carried the ACCEPTANCE header and was mutated. */
@@ -2820,7 +2882,8 @@ async function enforceCoderRetryEscalation(input: {
 			action: 'user_escalation',
 		});
 		throw new Error(
-			`TASK_RETRY_USER_ESCALATION_REQUIRED: task ${input.taskId} failed its critic-guided simplified retry. Stop and ask the user to change scope, authorize repair, or choose a different approach.`,
+			`TASK_RETRY_USER_ESCALATION_REQUIRED: task ${input.taskId} failed its critic-guided simplified retry. Stop and ask the user to change scope, authorize repair, or choose a different approach. ` +
+				`If the user authorizes repair, the architect calls update_task_status on this task with status "in_progress", force true, expected_state set to the task's current workflow state, expected_generation ${input.generation}, target_state "idle", a reason, and a transition_id — the audited repair reopens the task and clears the retry circuit (issue #3389). The task's plan status must already be in_progress; a task still pending in the plan takes one ordinary in_progress status update first.`,
 		);
 	}
 	if (!input.criticSatisfied) {
@@ -4733,13 +4796,44 @@ export function createDelegationGateHook(
 			// Reuse the same broad text-field extraction other checks in this file
 			// use (see resolveDelegatedPlanTaskId / taskLooksLikePlanCritic) so the
 			// ACCEPTANCE line is found regardless of which arg carried the prompt.
-			const acceptancePromptText = ACCEPTANCE_ARGS_FIELDS.map(
-				(field) => args[field],
-			)
-				.filter((value): value is string => typeof value === 'string')
-				.join('\n');
-			const acceptanceCheck =
-				validateCoderReviewerAcceptanceField(acceptancePromptText);
+			const joinAcceptancePromptText = (): string =>
+				ACCEPTANCE_ARGS_FIELDS.map((field) => args[field])
+					.filter((value): value is string => typeof value === 'string')
+					.join('\n');
+			let acceptanceCheck = validateCoderReviewerAcceptanceField(
+				joinAcceptancePromptText(),
+			);
+			// Opt-in (hooks.auto_inject_acceptance, default false): synthesize a default
+			// ACCEPTANCE block instead of rejecting. The injection is re-validated
+			// against the exact text the validator reads, and the signal is emitted
+			// only when it actually took effect; otherwise the strict rejection below
+			// stands unchanged.
+			if (
+				!acceptanceCheck.valid &&
+				acceptanceCheck.reason &&
+				config.hooks?.auto_inject_acceptance
+			) {
+				const injectionReason = acceptanceCheck.reason;
+				const originalFields = { ...args };
+				const injectedField = injectDefaultAcceptance(args, injectionReason);
+				if (injectedField) {
+					acceptanceCheck = validateCoderReviewerAcceptanceField(
+						joinAcceptancePromptText(),
+					);
+					if (!acceptanceCheck.valid) {
+						// The injection did not satisfy the gate: leave the rejected
+						// dispatch exactly as the caller sent it.
+						args[injectedField] = originalFields[injectedField];
+					} else {
+						const notice = `ACCEPTANCE AUTO-INJECTED: the ${targetAgent} dispatch carried no usable ACCEPTANCE criteria (${injectionReason}), so hooks.auto_inject_acceptance wrote a generic default into ${injectedField}. State a task-specific ACCEPTANCE line in future dispatches (see ACCEPTANCE FIELD RESOLUTION).`;
+						logger.warn(`[delegation-gate] ${notice}`);
+						// logger.warn is debug-gated, so also surface it to the dispatching
+						// session where it is model-visible.
+						const noticeSession = swarmState.agentSessions.get(input.sessionID);
+						if (noticeSession) pushAdvisory(noticeSession, notice);
+					}
+				}
+			}
 			if (!acceptanceCheck.valid) {
 				const detail =
 					acceptanceCheck.reason === 'acceptance_field_empty'
@@ -7508,8 +7602,21 @@ export function createDelegationGateHook(
 			// Only operate when architect is the active agent
 			// Check if agent is undefined (main session = architect) or is 'architect' (after stripping prefix)
 			// Skip empty string agent names (invalid/uninitialized state)
-			const agent = lastUserMessage.info?.agent;
-			if (agent === '') return; // Skip empty string explicitly
+			// #3320: identity resolves through the shared message-transform context
+			// (session state first, last user message's info.agent fallback), so v2
+			// sessions seeded with a native agent (plan/build) are not treated as
+			// the architect main session.
+			// #3320 review round: the shared resolver's truthiness filter collapses
+			// an empty-string agent to undefined, so the raw last-user-message
+			// value is checked here first — an explicit empty-string identity is
+			// invalid/uninitialized state and must skip injection (pinned by
+			// tests/unit/hooks/delegation-gate-task-1-5.validation.test.ts).
+			const rawLastUserAgent = lastUserMessage.info?.agent;
+			if (rawLastUserAgent === '') return; // Skip empty string explicitly
+			const mctx = resolveMessageTransformContext(
+				output as Parameters<typeof resolveMessageTransformContext>[0],
+			);
+			const agent = mctx.agent;
 			const strippedAgent = agent ? stripKnownSwarmPrefix(agent) : undefined;
 			if (strippedAgent && strippedAgent !== 'architect') return;
 

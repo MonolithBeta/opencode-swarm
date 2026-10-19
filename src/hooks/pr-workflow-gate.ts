@@ -210,6 +210,7 @@ import type {
 } from '../pr-review/types.js';
 import {
 	buildVerdictSettlementReceipt,
+	deriveVerdictAttemptCounts,
 	deriveVerdictSettlementAdmission,
 	effectiveVerdictSettlementItems,
 	type PrReviewVerdictSettlementPhase,
@@ -657,6 +658,17 @@ interface PrFeedbackStageARecord {
 		source: string;
 		validatorContract?: { path: string; id: string };
 	}>;
+	/**
+	 * Caller-asserted base identity behind this run's trusted base-identical
+	 * script/contract decisions. There is no durable PR_FEEDBACK base binding
+	 * to verify against yet (pr-workflow-gate binds a merge base only for
+	 * PR_REVIEW), so this is recorded for downstream detectability, not as a
+	 * verified anchor; `baseVerification: 'caller-asserted'` marks runs where
+	 * trust decisions consumed a caller-supplied merge base.
+	 */
+	baseRef?: string;
+	baseSha?: string;
+	baseVerification?: 'caller-asserted' | 'none';
 	validatedAt: string;
 }
 
@@ -1353,6 +1365,15 @@ const PrFeedbackStageARecordSchema = z
 			)
 			.max(256)
 			.optional(),
+		baseRef: z.string().min(1).max(256).optional(),
+		baseSha: z
+			.string()
+			// Repo OID convention (GIT_OBJECT_ID_PATTERN): SHA-1 and SHA-256
+			// object formats are both first-class; the merge-base resolver and
+			// the tool's base_sha arg already admit 64-hex.
+			.regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/)
+			.optional(),
+		baseVerification: z.enum(['caller-asserted', 'none']).optional(),
 		validatedAt: z.string().min(1),
 	})
 	.strict();
@@ -6836,6 +6857,58 @@ export async function rollbackPrReviewBaseAdmissionIfUnlaunched(
 }
 
 /**
+ * Issue #3311 (ghost owners): remove a reviewer/critic validation batch whose
+ * dispatch launched ZERO lanes. A recorded-but-unlaunched batch would leave
+ * owner lanes with no delegation record, which N-of-M admission correctly
+ * treats as blocking (the #3101 silence constraint) — but the batch should
+ * never have been recorded. Mirrors `rollbackPrReviewBaseAdmissionIfUnlaunched`
+ * (fail-closed on an unreadable store: the rollback must PROVE the batch has
+ * no delegation records before removing the validation batch).
+ */
+export async function rollbackPrReviewValidationBatchIfUnlaunched(
+	directory: string,
+	sessionID: string,
+	batchId: string,
+): Promise<boolean> {
+	const normalizedSessionID = normalizeSessionID(sessionID);
+	const normalizedBatchId = normalizeBatchId(batchId);
+	return withPrWorkflowCheckoutMutationLock(directory, async () =>
+		withSessionStateMutation(directory, normalizedSessionID, async () => {
+			const state = await readPrWorkflowGateState(
+				directory,
+				normalizedSessionID,
+			);
+			if (!state || state.mode !== 'PR_REVIEW') return false;
+			const previous = state.prReviewValidationBatches ?? [];
+			if (!previous.some((batch) => batch.batchId === normalizedBatchId)) {
+				return false;
+			}
+			const batchRead = findByBatchIdDetailed(directory, normalizedBatchId, {
+				parentSessionId: normalizedSessionID,
+			});
+			if (batchRead.status === 'uncertain') {
+				// Issue #2511 fail-closed: without a readable store the batch's
+				// unlaunched-ness cannot be proven, so the batch stays recorded.
+				warnDelegationReadUncertainOnce(
+					'validation batch rollback existence guard',
+					batchRead,
+				);
+				return false;
+			}
+			if (batchRead.value.length > 0) return false;
+			await writeStateWhileLocked(directory, {
+				...state,
+				updatedAt: isoNow(),
+				prReviewValidationBatches: previous.filter(
+					(batch) => batch.batchId !== normalizedBatchId,
+				),
+			});
+			return true;
+		}),
+	);
+}
+
+/**
  * Delegation statuses that prove a lane will produce nothing further.
  *
  * Enumerated here rather than reusing `isTerminal`
@@ -7886,13 +7959,27 @@ export async function assertPrReviewValidationSettled(
 					MAX_UNCLAIMED_ITEMS_IN_MESSAGE,
 				);
 				const overflow = composed.unclaimed.length - named.length;
+				// Issue #3311: per-item attempt counts from the SAME window the
+				// admission reads (single derivation shared with the status
+				// projection), so the operator sees how close each item is to
+				// admissibility instead of re-deriving it from free text.
+				const attemptCounts = deriveVerdictAttemptCounts({
+					window: prReviewPhaseWindow(state, requiredPhase),
+					unclaimed: composed.unclaimed,
+				});
+				const attemptText = attemptCounts
+					.map(
+						(count) =>
+							`${count.itemId}: attempts: ${count.attemptsUsed} of ${count.attemptsRequired} (remaining: ${count.remaining})`,
+					)
+					.join('; ');
 				throw new Error(
 					`BLOCKED: PR_REVIEW ${requiredPhase} items lack an authenticated verdict from any successful lane: ${named.join(', ')}` +
 						(overflow > 0 ? ` (+${overflow} more)` : '') +
 						(composed.diagnostics.length > 0
 							? `; diagnostics: ${composed.diagnostics.join(' | ')}`
 							: '') +
-						`; N-of-M settlement not admissible (${admission.reason}); re-dispatch the unclaimed items to exhaust the retry budget with controller-observed liveness evidence, or complete downgrade-only once admissible`,
+						`; N-of-M settlement not admissible (${admission.reason}); per-item attempts: ${attemptText}; settle or re-dispatch the unclaimed items to exhaust the retry budget, or complete downgrade-only once admissible`,
 				);
 			}
 			const runId = state.prReviewArtifactRunId ?? state.prReviewReservedRunId;
@@ -8399,6 +8486,17 @@ export async function recordPrFeedbackStageA(
 			source: string;
 			validatorContract?: { path: string; id: string };
 		}>;
+		/**
+		 * Caller-asserted base identity consumed by this run's trusted
+		 * base-identical decisions. Recorded (not verified): no durable
+		 * PR_FEEDBACK base binding exists yet, so the receipt marks the trust
+		 * floor honestly instead of leaving substitution silent.
+		 */
+		baseIdentity?: {
+			baseRef?: string;
+			baseSha?: string;
+			baseVerification: 'caller-asserted' | 'none';
+		};
 	} = {},
 ): Promise<PrWorkflowGateState> {
 	const state = await assertPrFeedbackVerificationSettled(directory, sessionID);
@@ -8589,6 +8687,13 @@ export async function recordPrFeedbackStageA(
 			feedbackItemIds: reproductionFeedbackItemIds,
 			applicableCategories: normalizedCategories,
 			applicableObligations,
+			...(options.baseIdentity !== undefined
+				? {
+						baseRef: options.baseIdentity.baseRef,
+						baseSha: options.baseIdentity.baseSha,
+					}
+				: {}),
+			baseVerification: options.baseIdentity?.baseVerification,
 			validatedAt: isoNow(),
 		},
 		prFeedbackGateBatches: retainsGateBatches
@@ -16547,6 +16652,19 @@ function prReviewPhaseWindow(
 }
 
 /**
+ * Issue #3311: exported wrapper so the `pr_workflow_status` projection derives
+ * per-item verdict attempt counts over EXACTLY the window the N-of-M admission
+ * reads (the post-latest-council reviewer slice included), instead of
+ * hand-rolling a filter that can drift from settlement semantics.
+ */
+export function prReviewPhaseWindowForStatus(
+	state: PrWorkflowGateState,
+	phase: PrReviewComposablePhase,
+): PrReviewValidationBatchRecord[] {
+	return prReviewPhaseWindow(state, phase);
+}
+
+/**
  * Child sessions that already produced a reviewer artifact. A critic lane may
  * never reuse one — an agent cannot independently challenge its own review.
  *
@@ -17272,6 +17390,33 @@ export async function derivePrReviewOrderUnstableItems(
 		.filter(([, claim]) => claim.orderAgreement === 'disagree')
 		.map(([itemId]) => itemId)
 		.sort();
+}
+
+/**
+ * Issue #3310: the composed reviewer-phase severities, keyed by item id, so a
+ * critic dispatch can tell each assigned item's reviewer severity up front —
+ * the critic transport requires UPHELD to keep that exact severity rank.
+ * Read-only derivation with the same shape as the #2906 readers; an unset or
+ * partially-settled reviewer phase yields an empty/partial map and the
+ * dispatch-side caller renders nothing extra for unknown ids.
+ */
+export async function derivePrReviewReviewerSeverities(
+	directory: string,
+	sessionID: string,
+): Promise<Map<string, string>> {
+	const state = await requireBoundState(directory, sessionID, 'PR_REVIEW');
+	const ctx = await createPrReviewGateContext(directory, state);
+	const composition = composePrReviewPhaseVerdicts(
+		directory,
+		state,
+		'reviewer',
+		ctx,
+	);
+	const severities = new Map<string, string>();
+	for (const [itemId, claim] of composition.claims) {
+		severities.set(itemId, claim.severity);
+	}
+	return severities;
 }
 
 /**
