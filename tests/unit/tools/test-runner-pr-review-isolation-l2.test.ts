@@ -96,6 +96,7 @@ describe('test_runner isolation from the bound PR_REVIEW checkout (issue #3315 A
 					"import { join } from 'node:path';",
 					"test('writes sentinel next to itself', () => {",
 					"\twriteFileSync(join(import.meta.dir, 'snapshot-output.txt'), 'sentinel\\n');",
+					// vacuous-ok: keeps the GENERATED fixture test non-empty; the file write is the behavior under test.
 					'\texpect(true).toBe(true);',
 					'});',
 					'',

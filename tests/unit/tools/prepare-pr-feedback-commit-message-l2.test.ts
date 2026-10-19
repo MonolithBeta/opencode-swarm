@@ -273,6 +273,7 @@ describe('prepare_pr_feedback_commit_message refusal branches and authoring cont
 				expect(parsed.message).toMatch(/outside the repository/);
 			} else {
 				// Redirect ineffective on this platform; POSIX CI covers the branch.
+				// vacuous-ok: explicit no-op leg for platforms whose temp-root lookup ignores TMPDIR (Windows Bun); the POSIX leg asserts.
 				expect(true).toBe(true);
 			}
 		} finally {
