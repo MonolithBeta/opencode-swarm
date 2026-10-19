@@ -47,7 +47,10 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 /** Array-form git with explicit cwd; output ignored (mutation commands). */
 function gitQuiet(dir: string, args: string[]): void {
-	execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' });
+	execFileSync('git', ['-C', dir, ...args], {
+		stdio: 'ignore',
+		timeout: 30_000,
+	});
 }
 
 /** Array-form git capturing bounded stdout (rev-parse / status probes). */
@@ -55,6 +58,7 @@ function gitOut(dir: string, args: string[]): string {
 	return execFileSync('git', ['-C', dir, ...args], {
 		encoding: 'utf-8',
 		maxBuffer: 1024 * 1024,
+		timeout: 30_000,
 	}).trim();
 }
 

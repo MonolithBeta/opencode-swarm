@@ -92,6 +92,7 @@ import {
 	resolveRemoteRefsContainingHeadAsync,
 	resolveRemoteUrlIdentity,
 	resolveRemoteUrlIdentityAsync,
+	resolveRepoTopLevelAsync,
 	resolveWorkingTreeDirtyPathsAsync,
 	switchPrFeedbackTrackingCandidateAsync,
 } from '../background/workspace-snapshot.js';
@@ -5303,11 +5304,13 @@ async function bindPrWorkflowHeadWhileLocked(
  * Issue #3315 D1: fast-forward the local branch to the fetched bound tracking
  * ref when — and only when — a POSITIVE fast-forward opportunity exists: the
  * tracking ref resolves to exactly the requested new head AND the current HEAD
- * is its ancestor. Anything else (missing ref, mismatched tracking, failed
- * probe) falls through to the caller's existing assertions with their existing
- * messages, so no pinned refusal changes shape. HEAD only ever moves via
- * `git merge --ff-only` — never a merge commit, rebase, or reset — and every
- * probe is fail-soft so fixture repositories without a real git directory are
+ * is verified as its ancestor. A missing/mismatched ref falls through to the
+ * caller's existing assertions; an ancestry probe that cannot be verified
+ * (timeout) refuses with an explicit unverifiable message instead of
+ * misreporting divergence (FB-11/F-R13); a genuine non-descendant refuses
+ * with the fast-forward refusal. HEAD only ever moves via `git merge
+ * --ff-only` — never a merge commit, rebase, or reset — and every probe is
+ * fail-soft so fixture repositories without a real git directory are
  * unaffected.
  */
 async function maybeFastForwardRebindHead(
@@ -5322,18 +5325,28 @@ async function maybeFastForwardRebindHead(
 		directory,
 		tracking.remoteTrackingRef,
 	);
-	if (!trackingHead || trackingHead !== normalizedHead) return;
+	// FB-8/PRR-009: the tracking head is lowercased by the resolver, so the
+	// requested head must be lowercased too — the schema accepts mixed-case
+	// hex, and a case-only mismatch silently skipped the ff remedy.
+	if (!trackingHead || trackingHead !== normalizedHead.toLowerCase()) return;
 	const currentHead = (
 		await _test_exports.resolveCurrentGitHeadAsync(directory)
-	)?.trim();
+	)
+		?.trim()
+		.toLowerCase();
 	if (!currentHead) return;
-	if (currentHead.toLowerCase() === normalizedHead) return;
-	const isAncestor = await _test_exports.resolveIsAncestorAsync(
+	if (currentHead === normalizedHead.toLowerCase()) return;
+	const ancestry = await _test_exports.resolveIsAncestorAsync(
 		directory,
 		currentHead,
 		normalizedHead,
 	);
-	if (!isAncestor) {
+	if (ancestry === null) {
+		throw new Error(
+			`BLOCKED: PR_FEEDBACK rebind fast-forward could not verify whether "${normalizedHead}" is a descendant of the current HEAD "${currentHead}" (the ancestry probe timed out or its output was truncated); nothing moved — retry the rebind`,
+		);
+	}
+	if (!ancestry) {
 		throw new Error(
 			`BLOCKED: PR_FEEDBACK rebind fast-forward refused: the bound tracking ref ${tracking.remoteTrackingRef} points at "${normalizedHead}", which is not a descendant of the current HEAD "${currentHead}"; resolve the divergence manually (push the repair, then rebind) — the gate never merges or rebases`,
 		);
@@ -5351,7 +5364,7 @@ async function maybeFastForwardRebindHead(
 	);
 	if (!moved) {
 		throw new Error(
-			`BLOCKED: PR_FEEDBACK rebind fast-forward to ${tracking.remoteTrackingRef} failed without moving HEAD; verify the branch state and retry the rebind`,
+			`BLOCKED: PR_FEEDBACK rebind fast-forward to ${tracking.remoteTrackingRef} failed or timed out; if git left an index.lock or a partially updated tree, remove the lock / restore the tree manually before retrying — otherwise a plain retry of the rebind completes it`,
 		);
 	}
 }
@@ -5368,7 +5381,9 @@ export async function rebindPrFeedbackHead(
 	// final write).
 	return withPrWorkflowCheckoutMutationLock(directory, async () => {
 		const state = await requireBoundState(directory, sessionID, 'PR_FEEDBACK');
-		const normalizedHead = normalizePrHeadSha(prHeadSha);
+		// FB-8/PRR-009: the schema accepts mixed-case hex; lowercase once so
+		// every downstream comparison (mover, asserts, CAS payload) agrees.
+		const normalizedHead = normalizePrHeadSha(prHeadSha).toLowerCase();
 		if (state.prFeedbackReadyToPublish) {
 			throw new Error(
 				'BLOCKED: PR_FEEDBACK rebind is refused while publication is armed; complete the workflow (or push the bound commit) before rebinding.',
@@ -5401,9 +5416,37 @@ export async function rebindPrFeedbackHead(
 		// Issue #3315 D1: after the remote advances, nothing else the gate admits
 		// can move HEAD to the fetched tracking head — move it here (ff-only,
 		// positive-opportunity-gated) before the checkout assertions run.
-		await maybeFastForwardRebindHead(directory, normalizedHead);
-		await assertCurrentCheckoutHead(directory, normalizedHead, state.mode);
-		await assertPrFeedbackTrackingCheckout(directory, normalizedHead);
+		// FB-6/PRR-006: the two post-move assertions are INSIDE the compensation
+		// try — a probe failure after a successful ff leaves HEAD moved, and the
+		// operator must be told so (the compensation message covers it; a plain
+		// retry heals because the mover no-ops once HEAD equals the requested
+		// head).
+		try {
+			await maybeFastForwardRebindHead(directory, normalizedHead);
+			await assertCurrentCheckoutHead(directory, normalizedHead, state.mode);
+			await assertPrFeedbackTrackingCheckout(directory, normalizedHead);
+		} catch (error) {
+			const currentHead = (
+				await _test_exports
+					.resolveCurrentGitHeadAsync(directory)
+					.catch(() => null)
+			)
+				?.trim()
+				.toLowerCase();
+			if (
+				currentHead !== undefined &&
+				currentHead !== null &&
+				currentHead !== (state.prHeadSha ?? '').toLowerCase() &&
+				error instanceof Error &&
+				!error.message.includes('HEAD may already sit at the new head')
+			) {
+				throw new Error(
+					`BLOCKED: ${error.message} NOTE: the checkout HEAD is "${currentHead}" while the bound intake head is still "${state.prHeadSha}" — the fast-forward already moved HEAD; a plain retry of the same rebind completes it`,
+					{ cause: error },
+				);
+			}
+			throw error;
+		}
 		const nextState: PrWorkflowGateState = {
 			...state,
 			prHeadSha: normalizedHead,
@@ -5552,10 +5595,20 @@ export async function assertPrReviewCleanCheckout(
 		// of the rest) from the same porcelain enumeration that produced the
 		// dirty verdict — sibling seam, so the cleanliness semantics are
 		// unchanged and an unreadable enumeration merely omits the detail.
+		// FB-17/PRR-021: `-z` paths are byte-transparent — control characters
+		// and ANSI escapes are escaped before the join so the refusal stays a
+		// single-line, gate-authored message.
 		const dirtyPaths =
 			await _test_exports.resolveWorkingTreeDirtyPathsAsync(directory);
+		const sanitizePath = (value: string): string =>
+			value.replace(
+				/[\p{Cc}]/gu,
+				(ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+			);
 		const shown = dirtyPaths
-			? dirtyPaths.slice(0, PR_WORKFLOW_DIRTY_PATH_DISCLOSURE_LIMIT)
+			? dirtyPaths
+					.slice(0, PR_WORKFLOW_DIRTY_PATH_DISCLOSURE_LIMIT)
+					.map(sanitizePath)
 			: [];
 		const total = dirtyPaths ? dirtyPaths.length : 0;
 		const detail =
@@ -13299,14 +13352,18 @@ export async function enforcePrWorkflowToolBefore(
 			? ` ${describeBlockedPrReviewShellCommand(command, shellPermissionEnvelope)}`
 			: '';
 	if (state.mode === 'PR_REVIEW') {
-		// Issue #3315 E1: test_runner executes test suites in the working
-		// directory, so inside a bound PR_REVIEW checkout it would dirty the
-		// exact-PR-head tree with untracked outputs (snapshot files, fixtures)
-		// and wedge dispatch/completion on the clean-tree checks. Refuse it at
-		// admission; validation runs through dispatch_lanes_async lanes (whose
-		// children never hold test_runner in their overlay) or PR_FEEDBACK
-		// Stage A, which executes the repository's own scripts.
-		if (normalizedTool === 'test_runner') {
+		// Issue #3315 E1 (FB-16/PRR-020 scoped to the BOUND state per AC21):
+		// test_runner executes test suites in the working directory, so inside
+		// a bound PR_REVIEW checkout it would dirty the exact-PR-head tree with
+		// untracked outputs (snapshot files, fixtures) and wedge
+		// dispatch/completion on the clean-tree checks. Refuse it at admission;
+		// validation runs through dispatch_lanes_async lanes or PR_FEEDBACK
+		// Stage A, which executes the repository's own scripts. (The refusal
+		// fires for lane children too: their calls resolve to the gate-owning
+		// session here. FB-20/PRR-010: lane tool grants are set by the agent
+		// config allowlist, not by a lane overlay — the gate is the refusing
+		// layer.)
+		if (normalizedTool === 'test_runner' && state.prHeadSha) {
 			throw new Error(
 				'BLOCKED: PR_REVIEW test_runner would execute inside the bound checkout at the exact PR head and its outputs (snapshot files, fixtures) would dirty the tree; run validation through dispatch_lanes_async lanes or PR_FEEDBACK Stage A',
 			);
@@ -13486,12 +13543,23 @@ export async function enforcePrWorkflowToolBefore(
 		// classifier only when the message file resolves OUTSIDE the
 		// repository — an in-repo message file is an untracked file that
 		// breaks the clean-tree arming check. Author the file with the
-		// prepare_pr_feedback_commit_message controller tool.
+		// prepare_pr_feedback_commit_message controller tool. Containment is
+		// measured against the git TOPLEVEL (FB-13/F-R50: the clean check is
+		// repo-wide even when the gate directory is a subdirectory of the
+		// repository); an unresolvable toplevel falls back to the gate
+		// directory (fail-closed for the in-repo direction is preserved
+		// because the lexical check still runs on `directory`).
 		const messageFile = extractStandaloneGitCommitMessageFile(command);
 		if (messageFile !== null) {
 			const cwdBase = resolveStandaloneGitCommandCwd(command, directory);
 			const resolvedFile = path.resolve(cwdBase, messageFile);
-			if (isPathInsideRepository(resolvedFile, directory)) {
+			const containmentRoot =
+				await _test_exports.resolveRepoTopLevelAsync(directory);
+			if (
+				isPathInsideRepository(resolvedFile, directory) ||
+				(containmentRoot !== null &&
+					isPathInsideRepository(resolvedFile, containmentRoot))
+			) {
 				throw new Error(
 					`BLOCKED: PR_FEEDBACK commit -F message file "${messageFile}" resolves inside the repository; an in-repo message file would dirty the clean-tree arming check. The message file must live outside the repository; author it with the prepare_pr_feedback_commit_message tool and pass the returned path`,
 				);
@@ -13507,7 +13575,11 @@ export async function enforcePrWorkflowToolBefore(
 		// admitted, under the same ladder precondition as the approved
 		// commit. Every other form — flags, globs, pathspec magic,
 		// out-of-set paths — falls through to the fail-closed refusal
-		// below, whose message stays byte-identical.
+		// below, whose message stays byte-identical. Matching is EXACT
+		// first, then case/separator-folded ONLY when that fold is
+		// unambiguous (exactly one set member) — a case-insensitive
+		// filesystem stays usable while a POSIX pair of case-variant files
+		// can never admit the wrong one (FB-13/PRR-014).
 		const stagedPaths = extractStandaloneGitAddPaths(command);
 		const changedPaths = state.prHeadSha
 			? await _test_exports.resolvePrWorkflowChangedPathSetAsync(
@@ -13515,11 +13587,29 @@ export async function enforcePrWorkflowToolBefore(
 					state.prHeadSha,
 				)
 			: null;
-		const normalizePathToken = (token: string): string =>
-			token.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+		const foldToken = (token: string): string =>
+			token.replace(/\\/g, '/').replace(/^\.\//, '');
+		const tokenAdmitted = (token: string): boolean => {
+			if (changedPaths === null) return false;
+			const folded = foldToken(token);
+			// Exact separator/./-normalized match (case preserved) admits
+			// directly. Otherwise a case-folded match admits ONLY when it is
+			// unambiguous — a POSIX pair of case-variant files can never
+			// admit the wrong one (FB-13/PRR-014).
+			if (changedPaths.has(folded)) return true;
+			let foldedMatches = 0;
+			for (const member of changedPaths) {
+				if (member.toLowerCase() === folded.toLowerCase()) {
+					foldedMatches += 1;
+					if (foldedMatches > 1) return false;
+				}
+			}
+			return foldedMatches === 1;
+		};
 		if (
 			changedPaths !== null &&
-			stagedPaths.every((token) => changedPaths.has(normalizePathToken(token)))
+			stagedPaths.length > 0 &&
+			stagedPaths.every(tokenAdmitted)
 		) {
 			await assertPrFeedbackReadyToPublish(directory, sessionID);
 			return;
@@ -14529,6 +14619,7 @@ export const _test_exports = {
 	resolveLocalRefHeadAsync,
 	resolveIsAncestorAsync,
 	fastForwardToRefAsync,
+	resolveRepoTopLevelAsync,
 	resolvePrWorkflowChangedPathSetAsync,
 	resolveWorkingTreeDirtyPathsAsync,
 	resolveIsExactSingleChildCommit,
@@ -15698,7 +15789,7 @@ function isPrWorkflowRecoverySwarmCommandArgs(
  * admission time against the same enumeration the revision digest hashes), so
  * ignored or unhashed content can never be staged through this surface.
  */
-export function isSafeStandaloneGitAdd(command: string): boolean {
+function isSafeStandaloneGitAdd(command: string): boolean {
 	if (hasUnsafeShellControlSyntax(command)) return false;
 	const match = /^git\s+add\s+--\s+(.+)$/i.exec(command.trim());
 	if (!match) return false;
@@ -15710,17 +15801,32 @@ export function isSafeStandaloneGitAdd(command: string): boolean {
 function isSanctionedAddPath(token: string): boolean {
 	if (token.length === 0) return false;
 	if (/["'`\\]/.test(token)) return false;
-	if (/[*?]/.test(token)) return false;
+	// [*?] and [ ] are git wildmatch glob metacharacters: a literal bracketed
+	// filename would wildmatch-expand to sibling paths at execution, staging
+	// content the digest never hashed (PRR-014).
+	if (/[*?[\]]/.test(token)) return false;
 	if (token.includes(':')) return false;
 	if (token.startsWith('-')) return false;
 	return true;
 }
 
-/** Extract the path tokens of a sanctioned `git add -- <paths>` command (D3). */
-export function extractStandaloneGitAddPaths(command: string): string[] {
-	const match = /^git\s+add\s+--\s+(.+)$/i.exec(command.trim());
-	if (!match) return [];
-	return match[1].trim().split(/\s+/).filter(Boolean);
+/**
+ * Extract the path tokens of a sanctioned `git add -- <paths>` command (D3)
+ * through the same shell-faithful tokenizer as the commit classifier (FB-24:
+ * the previous whitespace split honored JS \s, which includes NBSP/formfeed
+ * that cmd/POSIX deliver INSIDE the argv word).
+ */
+function extractStandaloneGitAddPaths(command: string): string[] {
+	const tokens = tokenizeStandaloneGitCommand(command);
+	if (tokens.length < 3) return [];
+	if (tokens[0].quoted || tokens[0].text.toLowerCase() !== 'git') return [];
+	if (tokens[1].quoted || tokens[1].text.toLowerCase() !== 'add') return [];
+	const separator = tokens[2];
+	if (!separator || separator.text !== '--') return [];
+	return tokens
+		.slice(3)
+		.map((token) => token.text)
+		.filter(Boolean);
 }
 
 /**
@@ -15789,52 +15895,100 @@ function standaloneGitCommitSubcommandIndex(
 }
 
 /**
- * Issue #3315 D8/AC25: extract the message-file argument of a standalone
- * `git commit` for every spelling the classifier grammar admits — `-F <p>`,
- * `-F<p>`, `--file=<p>`, `--file <p>` — reading option positions correctly:
- * operands of every value-taking git-commit option are consumed as values
- * (a `-F` inside a commit message, an author, or a cleanup mode is operand
- * text, not a flag — git's parse-options consumes option-looking values
- * unconditionally), and an unquoted `--` terminates option parsing entirely
- * (everything after it is a pathspec). Null when the commit carries no
- * message-file argument.
+ * Issue #3315 D8/AC25 (feedback round: PRR-001/002): extract the message-file
+ * argument git actually reads from a standalone `git commit`. git binds
+ * -F/--file to ONE variable with LAST occurrence winning, so every occurrence
+ * is recorded and the last is returned. The walk models git parse-options:
+ * - long options with an attached `=value` never consume the next token;
+ *   `--file=`/unambiguous abbreviations of it (`--fil=` — `--fi=` is
+ *   ambiguous and errors in git) resolve to the message file in both the
+ *   attached and space-separated forms;
+ * - short-option CLUSTERS are walked char by char: boolean shorts continue,
+ *   a value-taking short (c/C/m/t) consumes the rest of the token (attached)
+ *   or the next token (bare) and ends the cluster, and an `F` in a cluster
+ *   takes the rest of the token (attached) or the next token as the message
+ *   file;
+ * - operands of every value-taking git-commit option are consumed as values
+ *   (a `-F` inside a commit message, an author, or a cleanup mode is operand
+ *   text, not a flag);
+ * - an unquoted `--` terminates option parsing (everything after it is a
+ *   pathspec);
+ * - leading `^` characters are stripped before flag-position tests (cmd.exe
+ *   escape: `^-F x` delivers `-F x` under cmd, a literal unknown rev under
+ *   POSIX — over-detection there is a harmless false refusal).
+ * Null when the commit carries no message-file argument.
  */
-export function extractStandaloneGitCommitMessageFile(
-	command: string,
-): string | null {
+function extractStandaloneGitCommitMessageFile(command: string): string | null {
 	const tokens = tokenizeStandaloneGitCommand(command);
 	const subcommand = standaloneGitCommitSubcommandIndex(tokens);
 	if (subcommand < 0) return null;
+	let lastMessageFile: string | null = null;
 	for (let i = subcommand + 1; i < tokens.length; i += 1) {
+		// Flag POSITION is evaluated on the quote-stripped, caret-stripped
+		// text: every supported shell strips quotes around a bare flag and
+		// cmd.exe strips carets, so `git commit "-F" x` and `^-F x` deliver a
+		// real -F to git. Quoted OPERANDS are protected by the consumption
+		// branches below, not by skipping quoted tokens here.
 		const token = tokens[i];
-		// Flag POSITION is evaluated on the quote-stripped text regardless of
-		// how the token began: every supported shell strips quotes around a
-		// bare flag too (`git commit "-F" x` delivers a real -F to git).
-		// Quoted OPERANDS are protected by the consumption branches below
-		// (-m/-c/-C/--author/... skip their next token), not by skipping
-		// quoted tokens here.
-		if (token.text === '--') break; // pathspec terminator: no flags after it
-		if (token.text === '-F' || token.text === '--file') {
+		const text = token.text.replace(/^\^+/, '');
+		if (text === '--') break; // pathspec terminator: no flags after it
+		if (text === '-F' || text === '--file') {
 			const value = tokens[i + 1];
-			return value === undefined ? null : value.text;
+			lastMessageFile = value === undefined ? null : value.text;
+			continue;
 		}
-		if (GIT_COMMIT_VALUE_TAKING_OPTIONS.has(token.text)) {
+		if (GIT_COMMIT_VALUE_TAKING_OPTIONS.has(text)) {
 			i += 1; // the next token is this option's operand, never a flag
 			continue;
 		}
-		if (token.text.startsWith('--message=')) continue;
-		if (token.text.startsWith('--file=')) {
-			return token.text.slice('--file='.length);
+		if (text.startsWith('--')) {
+			const eq = text.indexOf('=');
+			if (eq < 0) {
+				// Space-form unambiguous abbreviation of --file (--fil x): the
+				// next token is the message file. (--fi is ambiguous and never
+				// reaches git.)
+				if (/^--fil$/i.test(text)) {
+					const value = tokens[i + 1];
+					lastMessageFile = value === undefined ? null : value.text;
+					i += 1;
+				}
+				continue;
+			}
+			const name = text.slice(2, eq).toLowerCase();
+			if (name === 'file' || name === 'fil') {
+				lastMessageFile = text.slice(eq + 1);
+			}
+			continue;
 		}
-		// [\s\S]: a glued attached value may contain JS line terminators
-		// (U+2028/U+2029), which regex `.` cannot match; cmd/POSIX argv keep
-		// them inside the word, so the value they delimit must still resolve.
-		const attached = /^-F([\s\S]+)$/i.exec(token.text);
-		if (attached) return attached[1];
-		const attachedMessage = /^-m([\s\S]+)$/i.exec(token.text);
-		if (attachedMessage) continue;
+		if (text.startsWith('-') && text.length > 1) {
+			// Short-option cluster walk (git parse-options semantics): boolean
+			// shorts continue, a value-taking short (c/C/m/t) consumes the rest
+			// of the token (attached) or the next token (bare) and ends the
+			// walk, and F records the message file from its attached rest or
+			// the next token.
+			let consumedNext = false;
+			for (let p = 1; p < text.length; p += 1) {
+				const c = text[p];
+				if (c === 'F') {
+					const rest = text.slice(p + 1);
+					if (rest.length > 0) {
+						lastMessageFile = rest;
+					} else {
+						lastMessageFile = tokens[i + 1]?.text ?? null;
+						consumedNext = true;
+					}
+					break;
+				}
+				if ('cCmt'.includes(c)) {
+					if (p + 1 >= text.length) consumedNext = true;
+					break;
+				}
+				// Boolean short (a, e, i, n, q, s, v, ...): keep walking.
+			}
+			if (consumedNext) i += 1;
+		}
 	}
-	return null;
+	return lastMessageFile;
 }
 
 /**

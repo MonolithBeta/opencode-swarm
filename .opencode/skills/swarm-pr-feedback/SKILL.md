@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "8faa61128ce0"
+  swarm-contract-digest: "e57e18e79789"
 ---
 
 # Swarm PR Feedback
@@ -197,7 +197,8 @@ including pre-existing changes from other branches or prior work.
 **The check:** Run `git status --porcelain` first. If output is non-empty, identify
 which files are PR-related vs pre-existing uncommitted changes.
 
-**The rule:** Stage exact paths with the `--` separator, each already inside the
+**The rule:** Never stage with `git add -A`, `git add .`, or any glob form —
+stage exact paths with the `--` separator, each already inside the
 PR changed set (the gate refuses every other form):
 
 ```bash

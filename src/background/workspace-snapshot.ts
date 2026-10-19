@@ -985,8 +985,10 @@ export async function resolveWorkingTreeDirtyPathsAsync(
  * non-ignored file (`status --porcelain --untracked-files=all`). Staging
  * admission compares `git add --` pathspecs against exactly this set, so
  * content the digest never hashed (untouched paths, ignored files) can never
- * be staged through the sanctioned surface. Paths are normalized to
- * posix-relative lowercase for cross-platform comparison.
+ * be staged through the sanctioned surface. Paths are separator-normalized to
+ * posix-relative form with CASE PRESERVED — the admission side matches exact
+ * first and folds case only when that fold is unambiguous (FB-13/PRR-014: a
+ * POSIX pair of case-variant files must never admit the wrong one).
  */
 export async function resolvePrWorkflowChangedPathSetAsync(
 	directory: string,
@@ -1010,17 +1012,48 @@ export async function resolvePrWorkflowChangedPathSetAsync(
 	if (status === null) return null;
 	const set = new Set<string>();
 	const normalize = (value: string): string =>
-		value.replace(/\\/g, '/').replace(/^\.\//, '').toLowerCase();
+		value.replace(/\\/g, '/').replace(/^\.\//, '');
 	for (const name of diff.split('\0')) {
 		if (name.length > 0) set.add(normalize(name));
 	}
+	// With -z, rename/copy records carry the orig path as a bare second
+	// NUL-terminated record (FB-5/PRR-005: the sibling dirty-path parser and
+	// parsePorcelainPaths both skip it — without the skip a truncated phantom
+	// key enters the set and the real orig path never does).
+	let skipNextRecord = false;
 	for (const entry of status.split('\0')) {
-		if (entry.length < 4) continue;
+		if (entry.length === 0) continue;
+		if (skipNextRecord) {
+			skipNextRecord = false;
+			continue;
+		}
+		if (entry.length < 4 || entry[2] !== ' ') continue;
+		const statusCode = entry.slice(0, 2);
+		if (statusCode.includes('R') || statusCode.includes('C')) {
+			skipNextRecord = true;
+		}
 		const rawPath = entry.slice(3);
 		if (rawPath.length === 0) continue;
 		set.add(normalize(rawPath));
 	}
 	return set;
+}
+
+/**
+ * Resolve the git repository toplevel for a working directory (FB-13/F-R50:
+ * containment must be measured against the same root the repo-wide clean
+ * check enumerates, not a possibly-subdirectory gate directory). Null when
+ * the probe fails — callers fall back to the gate directory.
+ */
+export async function resolveRepoTopLevelAsync(
+	directory: string,
+): Promise<string | null> {
+	const toplevel = await runGitAsync(directory, [
+		'rev-parse',
+		'--show-toplevel',
+	]);
+	if (toplevel === null || toplevel.length === 0) return null;
+	return toplevel;
 }
 
 /**
@@ -1043,39 +1076,49 @@ export async function resolveLocalRefHeadAsync(
 }
 
 /**
- * `git merge-base --is-ancestor` wrapper (issue #3315 D1). True only on the
- * POSITIVE ancestry answer (exit 0); false covers both the definitive no and
- * an unverifiable probe — callers refuse the fast-forward on false, which is
- * the fail-closed direction (HEAD stays put).
+ * `git merge-base --is-ancestor` wrapper (issue #3315 D1; FB-11/PRR-006).
+ * True only on the POSITIVE ancestry answer (exit 0); false is the definitive
+ * no; null means the probe itself failed (timeout/overflow) — the caller
+ * distinguishes them so a probe timeout is never misreported as divergence.
  */
 export async function resolveIsAncestorAsync(
 	directory: string,
 	ancestor: string,
 	descendant: string,
-): Promise<boolean> {
+): Promise<boolean | null> {
 	if (!/^[0-9a-f]{40}$/i.test(ancestor) || !/^[0-9a-f]{40}$/i.test(descendant))
 		return false;
-	const out = await runGitAsync(directory, [
-		'merge-base',
-		'--is-ancestor',
-		ancestor,
-		descendant,
-	]);
-	return out !== null;
+	const out = await runGitAsyncDetailed(
+		directory,
+		['merge-base', '--is-ancestor', ancestor, descendant],
+		_internals.gitTimeoutMs,
+	);
+	if (!out.ok) {
+		if (out.reason === 'git-failed') return false;
+		return null; // timeout / buffer-truncated: unverifiable
+	}
+	return true;
 }
 
 /**
  * Fast-forward the current branch to a local ref with `git merge --ff-only`
- * (issue #3315 D1). Returns false on any failure; the caller only invokes this
- * after verifying HEAD is an ancestor of the ref, so a false here leaves HEAD
- * where it was (git --ff-only never creates a merge commit).
+ * (issue #3315 D1; FB-7/PRR-007: this MUTATING verb gets a dedicated 15s
+ * timeout — the 3s read-only snapshot bound could SIGKILL git mid-checkout
+ * and leave an index.lock — and an end-of-options `--` separator). Returns
+ * false on any failure; the caller only invokes this after verifying HEAD is
+ * an ancestor of the ref, so a false here leaves HEAD where it was (git
+ * --ff-only never creates a merge commit).
  */
 export async function fastForwardToRefAsync(
 	directory: string,
 	ref: string,
 ): Promise<boolean> {
 	if (!/^[A-Za-z0-9._/-]+$/.test(ref)) return false;
-	const out = await runGitAsync(directory, ['merge', '--ff-only', ref]);
+	const out = await runGitAsync(
+		directory,
+		['merge', '--ff-only', '--', ref],
+		15_000,
+	);
 	return out !== null;
 }
 

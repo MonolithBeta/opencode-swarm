@@ -114,8 +114,11 @@ describe('issue #3315 AC25 — in-repo commit message files are refused', () => 
 	test('git commit -F <absolute in-repo path> rejects with the in-repo message-file refusal', async () => {
 		dir = await createBoundRepoWithMessageFile();
 		// Windows: the joined path contains backslashes; the classifier receives
-		// the command string verbatim, which is the point of this form.
-		const command = `git commit -F ${join(dir, 'msg.txt')}`;
+		// the command string verbatim, which is the point of this form. The path
+		// is double-quoted the way a real invocation would be (temp roots may
+		// contain spaces), so this leg also exercises the classifier's
+		// quote-stripping on the -F argument.
+		const command = `git commit -F "${join(dir, 'msg.txt')}"`;
 		await expect(shellOutcome(dir, command)).resolves.toMatch(
 			/message file .* (must live )?outside the repository/,
 		);

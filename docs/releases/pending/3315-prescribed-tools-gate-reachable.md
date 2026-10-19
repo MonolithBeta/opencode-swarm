@@ -15,9 +15,10 @@ where it is prescribed, with every security floor pinned by regression tests.
 - `pr_workflow_status`, `git_blame` and `gitingest` are no longer misclassified
   as publication tools while PR_FEEDBACK is unarmed; publication-shaped names
   without observe metadata stay blocked.
-- One new file can be staged with a single sanctioned
-  `git add -- <exact paths>`, limited to the changed-path set the revision
-  digest hashes, under the same ladder precondition as the approved commit.
+- Multiple exact paths can be staged with one sanctioned `git add --
+  <exact paths>` command (no flags, no globs), each limited to the
+  changed-path set the revision digest hashes, under the same ladder
+  precondition as the approved commit.
   The swarm-pr-feedback skill now teaches exactly that form.
 - Commit messages containing shell metacharacters (e.g. a
   `Co-Authored-By: X <noreply@anthropic.com>` trailer) are committed through

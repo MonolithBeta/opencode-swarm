@@ -712,6 +712,55 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		},
 	},
 	{
+		id: 'pr-feedback-commit-message-files',
+		category: 2,
+		pathGrammar:
+			'<os.tmpdir()>/swarm-pr-feedback-commit-msg/{sanitized-sessionID}-{sha256(message)[:16]}.txt',
+		canonicalRoot: 'outside-swarm',
+		writerModules: ['src/tools/prepare-pr-feedback-commit-message.ts'],
+		writerCitations: [
+			'src/tools/prepare-pr-feedback-commit-message.ts:203 atomicWriteFileAnyRoot — canonical atomic write (temp+fsync+rename, mode 0600)',
+			'src/tools/prepare-pr-feedback-commit-message.ts:174 mkdirSync — dedicated temp subdirectory (recursive)',
+			'src/tools/prepare-pr-feedback-commit-message.ts:92 rmSync — pruneStaleMessageFiles TTL reaper',
+		],
+		readerCitations: [
+			'no plugin reader — the authored path is returned to the caller (:214-219) and consumed by `git commit -F` outside the plugin',
+		],
+		schemaVersion: 'plain-text commit message (no schema)',
+		stateClass: 'operational',
+		privacyClass: 'content',
+		writeLimits: {
+			bound: 'MAX_COMMIT_MESSAGE_CHARS 8192 per file (:36,:47-49; whitespace-only and NUL refused); one file per (sanitized sessionID, sha256(message)[:16]) key (:62-75); pruneStaleMessageFiles age-prunes every .txt in the directory at MESSAGE_FILE_TTL_MS 24 h on every authoring call (:38,:82-101)',
+			scope: 'per-key',
+			keyspaceBound:
+				'FINITE BY REAPER: the message-digest key domain has no closed enumeration, but pruneStaleMessageFiles (src/tools/prepare-pr-feedback-commit-message.ts:82-101) walks the whole dedicated directory on EVERY authoring call and removes every file older than the 24 h TTL, so the keyspace cannot outgrow one 24 h window of authored messages.',
+			citation:
+				'src/tools/prepare-pr-feedback-commit-message.ts:36-38,57-75,82-101,203-205',
+		},
+		readBound: {
+			pattern: 'write-only',
+			bound: 'never read back by the plugin; the content is written once atomically and handed off by path',
+			sync: false,
+			citation:
+				'src/tools/prepare-pr-feedback-commit-message.ts:203-205 (sole write; git reads the file as the -F argument, outside the plugin)',
+		},
+		lockModel:
+			'none — deterministic per-key filename + atomic write; concurrent authoring of the same message converges to identical bytes',
+		crashBehavior:
+			'a crash between temp and rename leaves no destination; the next authoring call rewrites the same deterministic path',
+		closePolicy:
+			'untouched — OS temp directory, outside /swarm close scope; the 24 h TTL prune owns the reap',
+		resetPolicy: 'not reset — OS temp scratch; stale files self-expire via the TTL prune',
+		legacyCompatibility: 'n/a',
+		healthSignal: 'n/a — authoring failures return structured refusals to the caller',
+		owner: '#3315',
+		disposition: {
+			kind: 'not-a-defect',
+			proof:
+				'Ephemeral authored commit-message files live in a dedicated OS-temp subdirectory OUTSIDE every repository (prepare-pr-feedback-commit-message.ts:57-75); the filename key is (sanitized sessionID, sha256(message)[:16]) and pruneStaleMessageFiles (:82-101) reaps files older than MESSAGE_FILE_TTL_MS=24 h on every authoring call, so there is no unbounded growth axis; writes are atomic with mode 0600 (:203-205) and a TMPDIR resolving inside the repository is refused (:166-172).',
+		},
+	},
+	{
 		id: 'lane-results-outputs',
 		category: 2,
 		pathGrammar: '.swarm/lane-results/{batchDigest}/{laneDigest}/{outputDigest}.json + candidates.jsonl',

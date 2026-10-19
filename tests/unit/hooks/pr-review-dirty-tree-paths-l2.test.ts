@@ -12,8 +12,13 @@
  * asserted via `/of \d+/`).
  *
  * Real Git fixture (no seam stubs): a real `git init` repo with one commit,
- * then three untracked files (dirty-a.txt, dirty-b.txt, dirty-c.txt) plus one
- * modified tracked file as a fourth dirt source. assertPrReviewCleanCheckout
+ * then SIX untracked files (dirty-a.txt … dirty-f.txt) plus one modified
+ * tracked file — SEVEN dirty paths in total, two OVER the shipped
+ * disclosure limit of 5 (PR_WORKFLOW_DIRTY_PATH_DISCLOSURE_LIMIT,
+ * pr-workflow-gate.ts), so the fixture exercises both the truncation slice
+ * (dirty-f.txt must NOT be disclosed) and the "first N of M" count. One
+ * earlier freeze shipped only four dirt sources and never crossed the limit.
+ * assertPrReviewCleanCheckout
  * is exported from src/hooks/pr-workflow-gate.ts and runs the REAL working
  * tree clean resolver (src/background/workspace-snapshot.ts) against the
  * repository — no gate state is required for this assertion.
@@ -33,7 +38,10 @@ function gitRun(dir: string, args: string[]): void {
 	});
 }
 
-/** Real repo with one commit, then three untracked + one modified tracked file. */
+/**
+ * Real repo with one commit, then six untracked + one modified tracked file —
+ * six paths beyond the disclosure limit of 5 so truncation is exercised.
+ */
 function createDirtyReviewRepo(): string {
 	const dir = canonicalMkdtemp('pr-review-dirty-paths-');
 	mkdirSync(join(dir, 'src'), { recursive: true });
@@ -44,9 +52,9 @@ function createDirtyReviewRepo(): string {
 	gitRun(dir, ['config', 'user.name', 'Swarm Test']);
 	gitRun(dir, ['add', '.']);
 	gitRun(dir, ['commit', '-q', '-m', 'init']);
-	writeFileSync(join(dir, 'dirty-a.txt'), 'a\n');
-	writeFileSync(join(dir, 'dirty-b.txt'), 'b\n');
-	writeFileSync(join(dir, 'dirty-c.txt'), 'c\n');
+	for (const name of ['a', 'b', 'c', 'd', 'e', 'f']) {
+		writeFileSync(join(dir, `dirty-${name}.txt`), `${name}\n`);
+	}
 	writeFileSync(tracked, 'export const a = 2;\n');
 	return dir;
 }
@@ -71,10 +79,15 @@ describe('issue #3315 AC22 — dirty-tree refusal names the dirty paths', () => 
 		expect(message).toMatch(
 			/requires a clean index and working tree at the exact PR head/,
 		);
-		// ...but at the unfixed base the next two assertions FAIL: the base
+		// ...but at the unfixed base the next assertions FAIL: the base
 		// message names NO path. Post-fix it must name at least dirty-a.txt...
 		expect(message).toMatch(/dirty-a\.txt/);
-		// ...and carry a total/count indication ("first N of M").
-		expect(message).toMatch(/of \d+/);
+		// ...carry the "first N of M" count, and TRUNCATE at the disclosure
+		// limit: seven dirty paths exist (the tracked modification first, then
+		// the six untracked files in porcelain path order), so the disclosed
+		// slice is the first 5 and dirty-f.txt (seventh) must NOT leak into
+		// the message.
+		expect(message).toMatch(/first 5 of 7/);
+		expect(message).not.toMatch(/dirty-f\.txt/);
 	});
 });

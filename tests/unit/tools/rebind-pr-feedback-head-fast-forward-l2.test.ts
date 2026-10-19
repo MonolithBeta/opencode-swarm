@@ -43,7 +43,10 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 /** Array-form git with explicit cwd; output ignored (mutation commands). */
 function gitQuiet(dir: string, args: string[]): void {
-	execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' });
+	execFileSync('git', ['-C', dir, ...args], {
+		stdio: 'ignore',
+		timeout: 30_000,
+	});
 }
 
 /** Array-form git capturing bounded stdout (rev-parse / status probes). */
@@ -51,6 +54,7 @@ function gitOut(dir: string, args: string[]): string {
 	return execFileSync('git', ['-C', dir, ...args], {
 		encoding: 'utf-8',
 		maxBuffer: 1024 * 1024,
+		timeout: 30_000,
 	}).trim();
 }
 
@@ -63,7 +67,7 @@ function isAncestor(
 		execFileSync(
 			'git',
 			['-C', dir, 'merge-base', '--is-ancestor', ancestor, descendant],
-			{ stdio: 'ignore' },
+			{ stdio: 'ignore', timeout: 30_000 },
 		);
 		return true;
 	} catch {
@@ -89,7 +93,10 @@ interface PrHeadFixture {
 function makePrHeadFixture(prefix: string): PrHeadFixture {
 	const repo = canonicalMkdtemp(`${prefix}repo-`);
 	const bare = canonicalMkdtemp(`${prefix}bare-`);
-	execFileSync('git', ['init', '-q', '--bare', bare], { stdio: 'ignore' });
+	execFileSync('git', ['init', '-q', '--bare', bare], {
+		stdio: 'ignore',
+		timeout: 30_000,
+	});
 	gitQuiet(repo, ['init', '-q']);
 	gitQuiet(repo, ['checkout', '-q', '-b', 'pr-head']);
 	gitOut(repo, ['config', 'user.email', 't@example.com']);
@@ -150,9 +157,9 @@ describe('rebindPrFeedbackHead fast-forward (issue #3315 AC2)', () => {
 			const state = await rebindPrFeedbackHead(repo, session, headB);
 			expect(state.prHeadSha).toBe(headB);
 			expect(gitOut(repo, ['rev-parse', 'HEAD'])).toBe(headB);
-			// The move was a fast-forward: A remains an ancestor of HEAD, so no
-			// merge/rebase/reset rewrote history.
-			expect(isAncestor(repo, headA, headB)).toBe(true);
+			// The move was a fast-forward: A remains an ancestor of the NEW HEAD,
+			// so no merge/rebase/reset rewrote history (headB was already proven
+			// an ancestor of itself by the fixture invariant above).
 			expect(isAncestor(repo, headA, gitOut(repo, ['rev-parse', 'HEAD']))).toBe(
 				true,
 			);

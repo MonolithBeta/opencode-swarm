@@ -18,21 +18,30 @@ import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 function gitQuiet(dir: string, args: string[]): void {
-	execFileSync('git', ['-C', dir, ...args], { stdio: 'ignore' });
+	execFileSync('git', ['-C', dir, ...args], {
+		stdio: 'ignore',
+		timeout: 30_000,
+	});
 }
 
 function gitOut(dir: string, args: string[]): string {
 	return execFileSync('git', ['-C', dir, ...args], {
 		encoding: 'utf-8',
 		maxBuffer: 1024 * 1024,
+		timeout: 30_000,
 	}).trim();
 }
 
 describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D8)', () => {
 	test('--file=<path>, --file <path>, attached -F<path>, quoted -F, and git -C relocation all refuse in-repo message files', async () => {
 		const repo = canonicalMkdtemp('commit-ff-forms-');
+		// Scratch roots for out-of-repo message files; removed with the repo.
+		const scratch: string[] = [];
 		try {
-			execFileSync('git', ['init', '-q', repo], { stdio: 'ignore' });
+			execFileSync('git', ['init', '-q', repo], {
+				stdio: 'ignore',
+				timeout: 30_000,
+			});
 			gitQuiet(repo, ['checkout', '-q', '-b', 'pr-head']);
 			gitOut(repo, ['config', 'user.email', 't@example.com']);
 			gitOut(repo, ['config', 'user.name', 'T']);
@@ -82,10 +91,9 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 			// Reviewer round-2 adversarial floors: attached-quoted spellings are
 			// unambiguous in every shell (quotes glue/stripped), so they must
 			// reach the ladder, never the in-repo refusal.
-			const outsideAdv = join(
-				canonicalMkdtemp('commit-ff-adv-'),
-				'my file.txt',
-			);
+			const advDir = canonicalMkdtemp('commit-ff-adv-');
+			scratch.push(advDir);
+			const outsideAdv = join(advDir, 'my file.txt');
 			writeFileSync(outsideAdv, 'adv\n');
 			const outsideAdvPosix = outsideAdv.replaceAll('\\', '/');
 			for (const command of [
@@ -146,7 +154,9 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 			}
 			// Outside-repo -F keeps today's classifier admission: it reaches the
 			// ladder precondition instead of the in-repo refusal.
-			const outside = join(canonicalMkdtemp('commit-ff-outside-'), 'msg.txt');
+			const outsideDir = canonicalMkdtemp('commit-ff-outside-');
+			scratch.push(outsideDir);
+			const outside = join(outsideDir, 'msg.txt');
 			writeFileSync(outside, 'outside message\n');
 			await expect(
 				enforcePrWorkflowToolBefore(repo, session, 'shell', {
@@ -157,6 +167,7 @@ describe('PR_FEEDBACK in-repo commit message files, all spellings (issue #3315 D
 			);
 		} finally {
 			safeRmRecursive(repo);
+			for (const dir of scratch) safeRmRecursive(dir);
 		}
 	});
 });
