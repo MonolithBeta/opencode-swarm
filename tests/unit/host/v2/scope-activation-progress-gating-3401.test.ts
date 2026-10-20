@@ -247,6 +247,30 @@ describe('#3401 — hostile payload shapes cannot kill the pump', () => {
 		expect(flatToolCalledEvents(received).length).toBe(1);
 	});
 
+	test('a throwing metadata PROPERTY accessor is contained and the pump keeps dispatching', async () => {
+		// The `data.metadata` read itself is inside the guarded helper's try —
+		// a throwing getter on the property must not escape into the pump loop.
+		const call = 'call_g_thrmeta';
+		const hostile = {
+			type: 'session.tool.progress',
+			data: {
+				sessionID: PARENT,
+				id: call,
+				get metadata(): Record<string, unknown> {
+					throw new Error('boom');
+				},
+			},
+		};
+		const { received, drained } = await pumpEnvelopes([
+			inputStarted(PARENT, call, 'subagent'),
+			hostile,
+			toolCalled(PARENT, 'call_g_after'),
+		]);
+		expect(drained).toBe(true);
+		expect(deliveredParts(received).length).toBe(0);
+		expect(flatToolCalledEvents(received).length).toBe(1);
+	});
+
 	test('whitespace-only ids never synthesize (end-to-end fail-closed)', async () => {
 		// End-to-end property: no part is delivered for whitespace parent/call/
 		// child ids. Layer attribution: the CHILD case isolates the progress

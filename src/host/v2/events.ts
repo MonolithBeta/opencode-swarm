@@ -154,22 +154,25 @@ export const _internals = {
 
 /**
  * Guarded read of the child session id from a progress envelope (issue #3401,
- * PR #3402 review PRR-012). `isPlainObject` rejects arrays and null; the
- * property read is wrapped so a throwing accessor cannot escape into the pump
- * loop (which would terminate the pump). Class instances and prototype-
- * inherited `sessionID` values still read through — they grant nothing on
- * their own, because the durable claim (claimScopeBindingForChildDurably)
- * remains the sole authority for whatever child id is delivered.
+ * PR #3402 review PRR-012). `isPlainObject` rejects arrays and null, and the
+ * whole read — including the `metadata` property access itself — is wrapped so
+ * a throwing accessor cannot escape into the pump loop (which would terminate
+ * the pump). Class instances and prototype-inherited `sessionID` values still
+ * read through — they grant nothing on their own, because the durable claim
+ * (claimScopeBindingForChildDurably) remains the sole authority for whatever
+ * child id is delivered.
  */
 function readProgressChildSessionID(
 	data: Record<string, unknown>,
 ): string | undefined {
-	const metadata = data.metadata;
-	if (!isPlainObject(metadata)) return undefined;
 	try {
+		const metadata = data.metadata;
+		if (!isPlainObject(metadata)) return undefined;
 		const child = metadata.sessionID;
 		return typeof child === 'string' ? child : undefined;
 	} catch {
+		// A throwing accessor on `metadata` or `metadata.sessionID` must not
+		// escape into the pump loop (which would terminate the pump).
 		return undefined;
 	}
 }
