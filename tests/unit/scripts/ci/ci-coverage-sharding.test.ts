@@ -100,7 +100,16 @@ describe('ci.yml coverage sharding — CI-004 + issue #2341', () => {
 		// coverage script applies the base quarantine list alone; running
 		// coverage shards on macOS/Windows would apply different quarantine
 		// lists and silently diverge the partitions.
-		expect(coverageShardJob).toContain('runs-on: ubuntu-latest');
+		//
+		// Since #3404 the label may be routed per event (`self-hosted` for
+		// merge_group, `ubuntu-latest` otherwise), so the assertion is on the
+		// resolved runner CLASS rather than one literal label: every branch of
+		// the runs-on value must name a Linux runner, and none may introduce an
+		// OS matrix dimension. Pinned by ci-self-hosted-routing.test.ts.
+		const runsOn = coverageShardJob.match(/runs-on: .*/)?.[0] ?? '';
+		expect(runsOn, 'coverage-shard runs-on line').not.toBe('');
+		expect(runsOn).toContain('ubuntu-latest');
+		expect(runsOn).not.toMatch(/windows-latest|macos-latest|matrix\.os/i);
 		expect(coverageShardJob).not.toMatch(/matrix:\s*\n\s*os:/);
 		expect(coverageShardJob).not.toContain('matrix.os');
 	});
