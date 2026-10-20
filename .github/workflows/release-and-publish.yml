@@ -6,7 +6,7 @@ on:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     permissions:
       contents: write
       pull-requests: write
@@ -98,7 +98,7 @@ jobs:
   publish-npm:
     needs: [release-please, build-sandbox-runner]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 15
     environment: npm
     permissions:
@@ -170,7 +170,7 @@ jobs:
   update-release-notes:
     needs: release-please
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 10
     permissions:
       contents: write
@@ -209,7 +209,7 @@ jobs:
   cleanup-release-fragments:
     needs: [release-please, update-release-notes]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Issue #2952: the three dispatched-run waits below declare 30 + 10 + 10 = 50 min
     # of poll budget; at the observed ~1.2x per-iteration gh round-trip overhead the
     # job needs ceil(50 x 1.2) + 5 min of margin = 65 min, so 70 min keeps 5 min of
@@ -462,7 +462,7 @@ jobs:
     # block). modeUpdatePr already no-ops gracefully when no
     # `autorelease: pending` PR exists.
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     # Serialize this job across concurrent merges to main. Two updates
     # would otherwise race on read-modify-write of the release PR body
     # (each run reads the current body, recomputes notes from its own
@@ -493,7 +493,7 @@ jobs:
   release-health-summary:
     needs: [release-please, cleanup-release-fragments]
     if: ${{ always() && needs.release-please.outputs.releases_created == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     timeout-minutes: 3
     permissions:
       contents: read
