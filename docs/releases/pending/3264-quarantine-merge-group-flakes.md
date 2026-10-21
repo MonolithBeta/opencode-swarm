@@ -26,6 +26,12 @@ after per-run evidence attribution from all eleven triggering CI runs:
   ubuntu-latest, 2026-10-20; ubuntu evidence routes to the general ledger
   because the coverage gate honors only that ledger — issue #2660
   precedent).
+- `tests/unit/scripts/ci/ci-yml-quarantine-3264.test.ts` (new): companion
+  ledger-pinning regression test (the #2761/#2826/#2867 pattern) asserting
+  each of the seven entries is active in exactly its attributed ledger,
+  carries the OWNER/EXPIRY block, exists on disk, the windows STATUS header
+  stays honest (11), and same-basename sibling
+  `tests/unit/evidence/archive.test.ts` stays in the gated set.
 
 ## Why
 
