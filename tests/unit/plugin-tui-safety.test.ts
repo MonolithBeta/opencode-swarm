@@ -134,12 +134,14 @@ describe('Plugin TUI safety', () => {
 
 	test('init path (#3405): ownership hints carry no raw console leg and keep their advisory legs', () => {
 		const source = readRepoFile('src/index.ts');
-		// Statement-anchored pins: comment prose can never satisfy or break
-		// them (a `//`-prefixed line fails the ^\s* anchor).
-		expect(/^\s*console\.warn\(redirectHint\);?\s*$/m.test(source)).toBe(false);
-		expect(/^\s*console\.warn\(failClosedHint\);?\s*$/m.test(source)).toBe(
-			false,
-		);
+		// Statement-anchored absence pin: a comment naming the call cannot
+		// satisfy it, and the bounded window also catches the
+		// `if (...) console.warn(hint)` form, a trailing-comment call, a
+		// multi-line call, console.error, and process.stderr.write — every
+		// form that would render the hint as a TUI overlay.
+		const RAW_HINT_EMITTER =
+			/(?:console\.(?:warn|error|log|info)|process\.stderr\.write)\s*\([\s\S]{0,240}?\b(?:redirectHint|failClosedHint)\b/;
+		expect(RAW_HINT_EMITTER.test(source)).toBe(false);
 		// Retention: the buffered advisory legs must survive any future edit
 		// that touches these branches (partial-deletion mutant must fail).
 		expect(/^\s*advisoryWarn\(redirectHint\);/m.test(source)).toBe(true);
@@ -160,6 +162,12 @@ describe('Plugin TUI safety', () => {
 		expect(bannerWarnLines).toHaveLength(1);
 		const windowStart = Math.max(0, bannerWarnLines[0] - 8);
 		const gateWindow = lines.slice(windowStart, bannerWarnLines[0]).join('\n');
-		expect(gateWindow).toContain('OPENCODE_SWARM_VERSION_BANNER');
+		// Statement-anchored: the gate must appear as CODE. A comment that
+		// merely names the env var cannot satisfy this pattern.
+		expect(
+			/^\s*if\s*\(\s*process\.env\.OPENCODE_SWARM_VERSION_BANNER\s*===\s*'1'\s*\)\s*\{\s*$/m.test(
+				gateWindow,
+			),
+		).toBe(true);
 	});
 });

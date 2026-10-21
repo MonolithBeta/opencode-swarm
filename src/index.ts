@@ -1206,8 +1206,8 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
  * Durable, bounded record of a bootstrap root redirect (#2679), written under
  * the OWNING project root's `.swarm/advisories/` (init-orphan-recovery
  * pattern) so the operator has a persistent, operator-understandable result
- * beyond the console/diagnose hint. Best-effort: the console hint already
- * fired, so any write failure is swallowed.
+ * beyond the `/swarm diagnose` advisory. Best-effort: that advisory is
+ * buffered before this write, so a write failure is swallowed.
  */
 function writeBootstrapRootRedirectRecord(
 	bootstrapRoot: string,
@@ -1226,7 +1226,7 @@ function writeBootstrapRootRedirectRecord(
 			}),
 		);
 	} catch {
-		// bounded best-effort record; the console/diagnose hint already fired
+		// bounded best-effort record; the /swarm diagnose advisory was buffered
 	}
 }
 

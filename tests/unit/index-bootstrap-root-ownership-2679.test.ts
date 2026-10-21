@@ -53,6 +53,16 @@ const ISOLATED_ENV_KEYS = [
 	'LOCALAPPDATA',
 ] as const;
 
+/**
+ * #3405: the retargeted hint assertion scans BOTH captured console streams
+ * for the ownership hint. advisoryWarn's debug leg writes that same text to
+ * stdout under OPENCODE_SWARM_DEBUG=1, so the suite must pin that var OFF
+ * for its own duration (and RESTORE the caller's value afterwards) instead
+ * of inheriting an ambient setting. Saved on entry, restored on exit — never
+ * deleted, so a caller's ambient value survives the suite.
+ */
+const MANAGED_ENV_KEYS = ['OPENCODE_SWARM_DEBUG'] as const;
+
 const fixtureRoots: string[] = [];
 const savedEnv = new Map<string, string | undefined>();
 let isolatedEnvRoot = '';
@@ -63,6 +73,10 @@ beforeAll(() => {
 	for (const key of ISOLATED_ENV_KEYS) {
 		savedEnv.set(key, process.env[key]);
 		process.env[key] = isolatedEnvRoot;
+	}
+	for (const key of MANAGED_ENV_KEYS) {
+		savedEnv.set(key, process.env[key]);
+		delete process.env[key];
 	}
 	restoreEnv = () => {
 		for (const [key, value] of savedEnv) {
@@ -165,12 +179,7 @@ function norm(p: string): string {
  * renders as a full-width overlay over the bubbletea TUI. The raw legs are
  * asserted ABSENT at each call site (both captured streams).
  */
-function hasParentRootHint(
-	captured: ConsoleCapture,
-	parent: string,
-	child: string,
-): boolean {
-	void captured;
+function hasParentRootHint(parent: string, child: string): boolean {
 	const lines = getDeferredWarnings().map((line) => norm(line));
 	return lines.some(
 		(line) =>
@@ -272,7 +281,7 @@ describe('bootstrap project-root ownership — ordinary child redirect (#2679, A
 		expect(parentEntries).toBeGreaterThanOrEqual(1);
 
 		// Operator hint: a buffered /swarm diagnose line names the parent root.
-		expect(hasParentRootHint(captured, parent, child)).toBe(true);
+		expect(hasParentRootHint(parent, child)).toBe(true);
 		// #3405: the hint must not ride raw stderr/stdout on either stream.
 		expect(hasNoRawHintLine(captured)).toBe(true);
 
@@ -420,7 +429,7 @@ describe('bootstrap project-root ownership — rehydration and attribution (#267
 
 		const { captured } = await bootAndSettle(child);
 
-		expect(hasParentRootHint(captured, parent, child)).toBe(true);
+		expect(hasParentRootHint(parent, child)).toBe(true);
 		// #3405: attribution rides the buffered channel, never raw console.
 		expect(hasNoRawHintLine(captured)).toBe(true);
 	});
