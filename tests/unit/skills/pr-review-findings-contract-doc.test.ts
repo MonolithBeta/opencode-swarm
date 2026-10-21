@@ -146,10 +146,14 @@ describe('skill dialect is structurally identical to the executable PR-review co
 				index === 0 ? PR_REVIEW_VERDICT_ROW_DESCRIPTORS.critic.marker : role,
 			)
 			.join(' | ');
+		// #3310: the Profile B/C section carries one full-grammar row per
+		// marker in each document (the shared reviewer/critic template fences
+		// are content-only now; SKILL.md's re-dispatch quote was removed).
 		const documents = [
-			[SKILL_PATH, 1, 2],
-			[PROMPT_TEMPLATES_PATH, 1, 2],
-			[DRY_RUN_PATH, 1, 0],
+			[SKILL_PATH, 1, 1],
+			[PROMPT_TEMPLATES_PATH, 1, 1],
+			// #3310: the dry-run's reviewer dispatch fence is content-only now.
+			[DRY_RUN_PATH, 0, 0],
 		] as const;
 		for (const [documentPath, reviewerCount, criticCount] of documents) {
 			const lines = fs.readFileSync(documentPath, 'utf8').split(/\r?\n/);
@@ -276,6 +280,23 @@ describe('parser receipt docs match the code that emits them (PRR-005/PRR-006)',
 		for (const kind of kinds) {
 			expect(doc).toContain(kind);
 		}
+	});
+
+	test('lane-output-recoverability states the in-flight replay contract (#3336)', () => {
+		// #3336 AC2: the durable in-flight replay note must state BOTH
+		// directions of live-schema re-parse — the CONFIRMED+NONE fail-closed
+		// flip and the UPHELD LOW/INFO accepting flip — so producers and
+		// operators debugging an upgrade-spanning run have a documented
+		// answer. The release fragment carries the same note (checked by the
+		// trace's frozen check C6); this pin targets the durable doc because
+		// pending fragments are consumed at release.
+		const doc = fs.readFileSync(RECOVERABILITY_PATH, 'utf8');
+		expect(doc).toMatch(/## In-flight replay across plugin upgrades/);
+		expect(doc).toMatch(/CONFIRMED[^.]*NONE|NONE[^.]*CONFIRMED/);
+		expect(doc).toMatch(/fail-closed/);
+		expect(doc).toMatch(/UPHELD/);
+		expect(doc).toMatch(/LOW/);
+		expect(doc).toMatch(/claimable/);
 	});
 });
 

@@ -315,6 +315,10 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 1440
+        },
+        "auto_inject_acceptance": {
+          "default": false,
+          "type": "boolean"
         }
       }
     },
@@ -1775,6 +1779,20 @@
           "default": false,
           "description": "Check off mapped Spec-Kit tasks in the source tasks.md when Swarm completes a plan task (issue #2501). Off by default — write-back to user-owned files is opt-in.",
           "type": "boolean"
+        }
+      }
+    },
+    "sdd": {
+      "description": "Spec-driven-development (SDD) provider selection. `sdd.source` (openspec | speckit | swarm) disambiguates a repo that has both openspec/ and .specify/ without passing --source. The SWARM_SDD_SOURCE environment variable overrides it; --source overrides both.",
+      "type": "object",
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "openspec",
+            "speckit",
+            "swarm"
+          ]
         }
       }
     },

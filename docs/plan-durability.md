@@ -262,7 +262,16 @@ transition ID. Under plan-lock then task-evidence-lock ordering it writes a
 PREPARED task-repair record before moving the ledger projection, clears only
 that task's QA proof, appends one audited event, and commits. Retrying the same
 transition lazily resumes that exact task; plugin initialization never scans
-repair records.
+repair records. One `in_progress` case shares this exact transaction (issue
+#3389): a task whose coder retry ladder recorded its durable `user_escalation`
+rung for the current retry epoch (with `retryCount` at the threshold) is
+repairable in one audited step — the same CAS fields, WAL, and audit event.
+The `repair_idle` transition that closes every repair — settled reopen and
+this wedge case alike — resets the retry circuit
+(`retryCount`/`retryHistory`/`retryEpoch` reset, generation rotated). Every
+other `in_progress` repair still fails closed with
+`TASK_REPAIR_NOT_BACKWARD`; see the
+[recovery runbook](troubleshooting/recovery-runbook.md).
 
 Close-specific terminal reconciliation is similarly exact-task transactional.
 New ledgers persist a `plan_epoch` in the `plan_created` root payload. When a
@@ -751,18 +760,20 @@ scheduling reads only, never write authority.
 
 ## Live-State Ownership and Hydration Fencing (issue #2667)
 
-The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`
-— keyed by sessionID — and `toolAggregates`, keyed by tool/aggregate name, all
-in `src/state.ts`) are PROCESS-LOCAL: every consumer reads them through
+The in-memory session maps (`agentSessions`, `activeAgent`, `delegationChains`,
+`primaryOwnerBySession` — keyed by sessionID — and `toolAggregates`, keyed by
+tool/aggregate name, all in `src/state.ts`) are PROCESS-LOCAL: every consumer reads them through
 sessionID- (or aggregate-key-) keyed accessors regardless of project. What
 changed in #2667 is that hydration — restoring one project's snapshot — no
 longer mutates state it does not own.
 
 Three layers, with distinct authority:
 
-- **Process-local** — the four live maps themselves and `pendingRehydrations`
+- **Process-local** — the five live maps themselves and `pendingRehydrations`
   (bounded by their pre-existing lifecycle mechanisms: the 2-hour idle-TTL
-  sweep for sessions, `resetSwarmState` for the rest), plus the per-project
+  sweep for sessions — which since #3320 also reclaims `primaryOwnerBySession`
+  rows — the 1000-entry FIFO on the owner map, and `resetSwarmState` for the
+  rest), plus the per-project
   registries in `src/session/hydration-ownership.ts` (hydration authority
   records, per-project rehydration caches, per-project hydrated-aggregate key
   sets — FIFO-capped at 32 entries each, with the directory→key memo

@@ -6,16 +6,8 @@ description: >
   cherry-pick vs revert decision matrix, partial-revert detection, merge-parent handling,
   and post-revert CI verification. Prevents the most common revert failure mode: version
   metadata regression from git reverse-apply.
-triggers:
-  - git revert
-  - revert commit
-  - revert merge
-  - undo merge
-  - reverse-apply
-  - branch contamination
-  - cherry-pick recovery
-  - release-please duplicate tag
 metadata:
+  triggers: '["git revert","revert commit","revert merge","undo merge","reverse-apply","branch contamination","cherry-pick recovery","release-please duplicate tag"]'
   effort: small
   generated_from_knowledge: '[]'
   source_knowledge_ids: '["f07c1f4d-9bb0-4219-9804-26aa8efe8146"]'

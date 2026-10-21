@@ -1,12 +1,8 @@
 ---
 name: widen-return-type
 description: widen return type
-triggers:
-  - widen return type
-  - opt-in tool map
-  - feature flag gating
-  - tool registration
 metadata:
+  triggers: '["widen return type","opt-in tool map","feature flag gating","tool registration"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:11:00.606Z"

@@ -37,7 +37,7 @@ first key. `"$schema"` is pure metadata and is ignored at runtime.
 
 ## Environment variables
 
-Most behavior is controlled by `opencode-swarm.json`. Environment variables are reserved for credentials, diagnostics, CI bypasses, and advanced backend selection.
+Most behavior is controlled by `opencode-swarm.json`. Environment variables are reserved for credentials, diagnostics, CI bypasses, advanced backend selection, and a process-wide SDD provider override.
 
 | Variable | Used by | Description |
 |---|---|---|
@@ -50,6 +50,7 @@ Most behavior is controlled by `opencode-swarm.json`. Environment variables are 
 | `SWARM_ALLOW_FULL_SUITE=1` | `test_runner` | Allows `scope: "all"` in the tool. Interactive repo validation should still use shell commands from `TESTING.md`. |
 | `SWARM_SKIP_SPEC_GATE=1` | `save_plan` tests/CI | Bypasses the spec gate. Use only for tests or tightly scoped CI fixtures. |
 | `SWARM_SKIP_GATE_SELECTION=1` | `save_plan` tests/CI | Bypasses QA-gate selection validation. Use only for tests or tightly scoped CI fixtures. |
+| `SWARM_SDD_SOURCE` | SDD resolver (`readEffectiveSpecSync`, `/swarm sdd`) | Selects the SDD provider (`openspec`, `speckit` or `swarm`; case-insensitive) when no `--source` is passed. Overrides `sdd.source` in the config; a native `.swarm/spec.md` still wins. Process-wide: it applies to every repository the process works in, so prefer the per-project `sdd.source` key for pinning. An unrecognized value is reported once in `/swarm diagnose` and ignored. |
 
 ## Minimal example
 
@@ -115,6 +116,7 @@ Generated from `PluginConfigSchema` (`src/config/schema.ts`) - do not edit insid
 | `docs` | object | — | Documentation synthesizer (docs agent) settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
 | `design_docs` | object | — | Structured design-doc generation (issue #1080, docs_design agent) — opt-in. | src/agents/index.ts:createSwarmAgents (+3) |
 | `speckit_checkoff` | object | — | Spec-Kit tasks.md check-off round trip (issue #2501) — opt-in, never on by default. | src/sdd/speckit-checkoff.ts:maybePropagateSpeckitCheckoff (+1) |
+| `sdd` | object | — | Spec-driven-development (SDD) provider selection. `sdd.source` (openspec \| speckit \| swarm) disambiguates a repo that has both openspec/ and .specify/ without passing --source. The SWARM_SDD_SOURCE environment variable overrides it; --source overrides both. | src/config/loader.ts:readSddSourceSetting (+1) |
 | `git` | object | — | Git executable resolution override (issue #2236 hardening). | src/config/loader.ts:exposedGitBinary |
 | `ui_review` | object | — | UI/UX review (designer agent) settings. | src/agents/index.ts:createSwarmAgents (+3) |
 | `compaction_advisory` | object | — | Compaction advisory settings. | src/hooks/system-enhancer.ts:createSystemEnhancerHook (+1) |
@@ -170,7 +172,7 @@ Sections marked `(strict)` reject unknown nested keys at config load time - a ty
 ## Architect prompt budget (characters and model tokens)
 
 The architect's built-in prompt composition is bounded by a published
-character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (161,500 chars in
+character ceiling, `ARCHITECT_PROMPT_BUDGET_CHARS` (164,000 chars in
 `src/agents/architect.ts`). Every supported feature combination — the default
 render, the work-complete council on or off, the advisory General Council
 (`council.general.enabled`) composed together with every documented opt-in
@@ -190,7 +192,7 @@ Two separate quantities are measured and recorded for every composition:
 - **Model tokens** — an estimate only (`estimateModelTokens`, roughly 4
   characters per token, rounded up). Real token usage varies by model and
   content; the estimate is reported next to the character count, never instead
-  of it, so a ~40K-token estimate at the 161K-char ceiling is understood as an
+  of it, so a ~41K-token estimate at the 164K-char ceiling is understood as an
   approximation of the system prompt's share of a 128K-token context window.
 
 Overflow policy (deterministic, guidance-preserving):
@@ -528,6 +530,24 @@ Runs a type-checking or linting command after the coder agent completes.
 {
   "incremental_verify": {
     "command": ["python", "-m", "mypy", "--config-file", "mypy.ini"]
+  }
+}
+```
+
+### hooks.auto_inject_acceptance
+
+Opt-in relaxation of the coder/reviewer `ACCEPTANCE:` delegation gate.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `auto_inject_acceptance` | boolean | `false` | When `true`, a `coder` or `reviewer` Task dispatch whose prompt has no `ACCEPTANCE:` line (or only an empty one) is not rejected with `ACCEPTANCE_FIELD_REQUIRED`. The gate instead writes a generic default requirement, marked `(auto-injected default: ...)`, into the dispatch and queues an `ACCEPTANCE AUTO-INJECTED` advisory for the dispatching session when that session is registered. |
+
+**Trade-off**: the default requirement is generic, not task-derived, so a dispatch that would have been rejected now reaches the coder/reviewer with a weak criterion. For a single task that maps to spec requirements, the verbatim `FR-###`/`SC-###` text is still appended and coverage-checked as usual. An explicit non-empty `ACCEPTANCE:` block is never modified, and the strict rejection stands, with the dispatch left exactly as sent, whenever the injection cannot be applied to the field the validator inspected (for example the dispatch has no text field, or an empty header is only visible after the fields are joined), or whenever an injected default still fails re-validation and the gate rolls the injection back. Because project config can set this key, treat a repository that enables it like any other repository-committed gate relaxation (compare `hooks.delegation_gate`).
+
+```json
+{
+  "hooks": {
+    "auto_inject_acceptance": true
   }
 }
 ```

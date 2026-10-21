@@ -8,12 +8,16 @@
  * splice regression), agent mapping edges, template expansion, the command
  * execute → session.prompt bridge, setup fail-closed, and cleanup ordering.
  *
- * Drives src/host/v2 modules directly (source-level) against mock v2
- * contexts per src/host/v2/types.ts provenance. All temp roots via
- * canonicalMkdtemp; no wall-clock, no subprocess.
+ * Most tests drive src/host/v2 modules directly against mock v2 contexts per
+ * src/host/v2/types.ts provenance. The final tests in this file boot the real
+ * plugin (OpenCodeSwarm.server) under an isolated global-config env
+ * (createIsolatedTestEnv) and drive its tool.execute hooks. All temp roots
+ * via canonicalMkdtemp; no subprocess.
  */
 
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
+import { mkdirSync } from 'node:fs';
+import path from 'node:path';
 import {
 	expandV1Template,
 	mapV1AgentToV2,
@@ -35,6 +39,7 @@ import type {
 	V2ToolHookInput,
 } from '../../../../src/host/v2/types';
 import { resetSwarmState, swarmState } from '../../../../src/state';
+import { createIsolatedTestEnv } from '../../../helpers/isolated-test-env';
 import { canonicalMkdtemp } from '../../../helpers/tmpdir';
 
 const REPO_ROOT = '../../../..';
@@ -105,8 +110,15 @@ function ctxEvent(
 	};
 }
 
+let isolatedEnv: ReturnType<typeof createIsolatedTestEnv>;
+
+beforeEach(() => {
+	isolatedEnv = createIsolatedTestEnv();
+});
+
 afterEach(() => {
 	resetSwarmState();
+	isolatedEnv.cleanup();
 });
 
 describe('v2 event pump + mapping (PRR-002/PRR-024)', () => {
@@ -378,5 +390,106 @@ describe('seed re-pairing (PRR-009)', () => {
 		// Mid-session switch: the second seed must re-pair (no first-write-wins).
 		seedV1SessionState('seed-s1', 'reviewer', directory);
 		expect(swarmState.activeAgent.get('seed-s1')).toBe('reviewer');
+	});
+
+	test('seedV1SessionState refreshes lastAgentEventTime when re-seeded with the same agent', async () => {
+		const { seedV1SessionState } = await import(
+			'../../../../src/host/v2/setup'
+		);
+		const directory = canonicalMkdtemp('swarm-v2-seed-time-');
+		seedV1SessionState('seed-s2', 'sre-planner', directory);
+		const session = swarmState.agentSessions.get('seed-s2');
+		expect(session).toBeDefined();
+		const staleTimestamp = 1_000;
+		session!.lastAgentEventTime = staleTimestamp;
+
+		seedV1SessionState('seed-s2', 'sre-planner', directory);
+		expect(session!.lastAgentEventTime).toBeGreaterThan(staleTimestamp);
+	});
+
+	test('v2 tool.execute.before preserves host-provided agent and does not bypass circuit breaker after >10s', async () => {
+		const OpenCodeSwarm = (await import('../../../../src/index')).default;
+		const directory = canonicalMkdtemp('swarm-v2-circuit-');
+		mkdirSync(path.join(directory, '.opencode'), { recursive: true });
+		const plugin = await OpenCodeSwarm.server({
+			directory,
+			worktree: directory,
+		} as never);
+
+		const sessionID = 'v2-circuit-session';
+		const { beginInvocation, ensureAgentSession } = await import(
+			'../../../../src/state'
+		);
+		const session = ensureAgentSession(sessionID, 'coder', directory);
+		const window = beginInvocation(sessionID, 'coder');
+		expect(window).not.toBeNull();
+		window!.hardLimitHit = true;
+		session.delegationActive = false;
+		session.lastAgentEventTime = 1_000;
+		swarmState.activeAgent.set(sessionID, 'coder');
+
+		const beforeHook = plugin['tool.execute.before'] as (
+			input: Record<string, unknown>,
+			output: { args: Record<string, unknown> },
+		) => Promise<void>;
+
+		await expect(
+			beforeHook(
+				{
+					tool: 'read',
+					sessionID,
+					callID: 'call-after-10s',
+					agent: 'coder',
+				},
+				{ args: { filePath: 'README.md' } },
+			),
+		).rejects.toThrow(/CIRCUIT BREAKER/);
+		expect(swarmState.activeAgent.get(sessionID)).toBe('coder');
+		expect(swarmState.agentSessions.get(sessionID)?.agentName).toBe('coder');
+	});
+
+	test('v2 tool.execute.after Task handoff restores host-provided parent agent instead of hardcoding architect', async () => {
+		const OpenCodeSwarm = (await import('../../../../src/index')).default;
+		const directory = canonicalMkdtemp('swarm-v2-handoff-');
+		mkdirSync(path.join(directory, '.opencode'), { recursive: true });
+		const plugin = await OpenCodeSwarm.server({
+			directory,
+			worktree: directory,
+		} as never);
+
+		const sessionID = 'v2-parent-session';
+		const { ensureAgentSession } = await import('../../../../src/state');
+		const session = ensureAgentSession(sessionID, 'sre-planner', directory);
+		session.delegationActive = true;
+		swarmState.activeAgent.set(sessionID, 'sre-planner');
+
+		const afterHook = plugin['tool.execute.after'] as (
+			input: Record<string, unknown>,
+			output: Record<string, unknown>,
+		) => Promise<void>;
+
+		await afterHook(
+			{
+				tool: 'task',
+				sessionID,
+				callID: 'task-call-1',
+				agent: 'sre-planner',
+				args: { subagent_type: 'coder' },
+			},
+			{
+				title: 'task',
+				output:
+					'<task id="child-1" state="completed"><task_result>done</task_result></task>',
+				metadata: {},
+			},
+		);
+
+		expect(swarmState.activeAgent.get(sessionID)).toBe('sre-planner');
+		expect(swarmState.agentSessions.get(sessionID)?.agentName).toBe(
+			'sre-planner',
+		);
+		expect(swarmState.agentSessions.get(sessionID)?.delegationActive).toBe(
+			false,
+		);
 	});
 });

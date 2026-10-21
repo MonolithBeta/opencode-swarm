@@ -20,6 +20,7 @@ import {
 	findRetiredEpicConfigKeys,
 	GATE_CONFIG_KNOWN_SECTION_KEYS,
 	GateConfigSchema,
+	HooksConfigSchema,
 	PluginConfigSchema,
 	retiredEpicKeyReplacement,
 	stripKnownSwarmPrefix,
@@ -1476,16 +1477,10 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 				value !== null
 			) {
 				const hooks = value as Record<string, unknown>;
-				// Check for deprecated/unknown hook fields
-				const validHooks = [
-					'system_enhancer',
-					'compaction',
-					'agent_activity',
-					'delegation_tracker',
-					'agent_awareness_max_chars',
-					'delegation_gate',
-					'delegation_max_chars',
-				];
+				// Check for deprecated/unknown hook fields. Derived from the schema so a
+				// newly added hooks.* key can never be flagged as unknown (and removed
+				// by --fix) while HooksConfigSchema accepts it.
+				const validHooks: string[] = Object.keys(HooksConfigSchema.shape);
 				for (const hookName of Object.keys(hooks)) {
 					if (!validHooks.includes(hookName)) {
 						findings.push({
@@ -2202,6 +2197,18 @@ function validateConfigKey(path: string, value: unknown): ConfigFinding[] {
 		// surfaced by schema parsing; the doctor only reports a non-object block.
 		case 'speckit_checkoff': {
 			emitObjectTypeMismatch('speckit_checkoff', value, findings);
+			break;
+		}
+
+		// SDD provider selection (`sdd.source`). Leaf errors (a value outside
+		// openspec | speckit | swarm) are reported by the raw-file collectors
+		// from the schema enum (`invalid-config-value` at `sdd.source`); the
+		// loader recovery ladder then handles it like any other invalid key (the
+		// leaf is dropped from the parsed config, or the fail-secure user_only /
+		// guardrails_defaults recovery applies), so the doctor here only reports
+		// a non-object block.
+		case 'sdd': {
+			emitObjectTypeMismatch('sdd', value, findings);
 			break;
 		}
 
