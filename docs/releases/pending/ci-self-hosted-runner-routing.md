@@ -12,7 +12,7 @@ CI has been rebalanced onto the organization's self-hosted runner pool (Linux X6
 
 Routing is expressed per job, so one job definition keeps every leg on the right runner. Every route names an explicit OS and architecture: every self-hosted runner carries the `self-hosted` label whatever its OS, so a bare `self-hosted` could land on the wrong machine. Matrix values are unchanged, so required-check names such as `unit (macos-latest, 3)` are unchanged.
 
-Self-hosted machines persist between jobs and run several runner instances per host, so each routed job first points `TMPDIR` at its per-job `RUNNER_TEMP` (emptied by the runner for every job). Files left behind by an earlier job, such as a stray `.swarm` directory, cannot leak into the next one.
+Self-hosted machines persist between jobs and run several runner instances per host, so the nine routed `ci.yml` jobs each begin by pointing `TMPDIR` at their per-job `RUNNER_TEMP` (emptied by the runner for every job). Files left behind by an earlier job, such as a stray `.swarm` directory, cannot leak into the next one. The `release-and-publish.yml`, `stale.yml`, `quarantine-aging.yml` and `host-contract-check.yml` jobs run single short steps that write no scratch state, so they keep the runner's default temp root.
 
 ## Why
 

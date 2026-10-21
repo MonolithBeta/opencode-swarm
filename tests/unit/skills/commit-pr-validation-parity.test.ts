@@ -63,8 +63,26 @@ const CI_COMMAND_TO_SKILL_STRING: Record<string, string> = {
 		'(cd scripts/swarm-model && node --test)',
 };
 
-/** Environment-setup commands in the quality job that are not quality gates. */
-const NON_QUALITY_SETUP_COMMANDS = new Set(['bun install --frozen-lockfile']);
+/**
+ * Environment-setup commands in the quality job that are not quality gates.
+ *
+ * `bun install` prepares the toolchain. The TMPDIR echo is runner plumbing
+ * added by the self-hosted routing work: it points the job's temp root at the
+ * per-job RUNNER_TEMP on persistent hosts and is gated on
+ * `runner.environment == 'self-hosted'`, so it never runs on the pull_request
+ * leg and is neither taught by nor needed in the contributor-facing commit-pr
+ * skill. Only runner-environment preparation belongs here; a new BLOCKING check
+ * must still be taught by the skill.
+ *
+ * Entries are the POST-normalization forms `qualityJobCommands` produces. That
+ * normalizer strips one leading and one trailing quote from every command, so
+ * the TMPDIR echo reads `$GITHUB_ENV` without its closing quote here — a
+ * verbatim copy of the ci.yml line will silently miss and fail the test.
+ */
+const NON_QUALITY_SETUP_COMMANDS = new Set([
+	'bun install --frozen-lockfile',
+	'echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV',
+]);
 
 /** YAML block-scalar indicators are syntax, not shell commands. */
 const YAML_BLOCK_SCALAR_MARKER = /^[|>][+-]?$/;
