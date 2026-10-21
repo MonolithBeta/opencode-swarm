@@ -39,8 +39,23 @@ jobs:
         id: check
         shell: bash
         run: |
+          # GROUP_BASE is where the protected branch meets this merge group.
+          # It is NOT the event's merge_group.base_sha: for an entry deeper in
+          # the queue that is the previous entry's synthetic queue commit, which
+          # already contains every PR queued ahead, so diffing from it would see
+          # only the last PR of a cumulative group. The merge-base of the group
+          # head with the base branch tip covers every queued PR that has not
+          # yet merged. If the base branch ref is unavailable, GROUP_BASE stays
+          # empty and both fast paths below stay off.
+          GROUP_BASE=
+          if [[ "$EVENT" == "merge_group" && "$REPOSITORY" == "ZaxbyHub/opencode-swarm" && "$BASE_REF" == refs/heads/* && -n "$HEAD_SHA" ]]; then
+            GROUP_BASE_FILE="$RUNNER_TEMP/opencode-swarm-group-base"
+            if git -C "$GITHUB_WORKSPACE" merge-base "$HEAD_SHA" "refs/remotes/origin/${BASE_REF#refs/heads/}" > "$GROUP_BASE_FILE" 2>/dev/null; then
+              IFS= read -r GROUP_BASE < "$GROUP_BASE_FILE" || true
+            fi
+          fi
           # docs-only: true only for a merge group whose WHOLE tree delta
-          # (base..head, every queued PR it batches) touches nothing outside
+          # (GROUP_BASE..head, every queued PR it batches) touches nothing outside
           # docs/releases/. Such a group still runs quality and the full unit
           # matrix (unit-passed stays independent of this detector) but skips the
           # other heavy jobs, which report success without running. It fails
@@ -49,9 +64,9 @@ jobs:
           # rename, so moving a file out of docs/releases/ cannot pass, and -z
           # keeps unusual path bytes from being misparsed.
           DOCS_ONLY=false
-          if [[ "$EVENT" == "merge_group" && "$REPOSITORY" == "ZaxbyHub/opencode-swarm" && -n "$BASE_SHA" && -n "$HEAD_SHA" ]]; then
+          if [[ -n "$GROUP_BASE" ]]; then
             GROUP_PATHS_FILE="$RUNNER_TEMP/opencode-swarm-group-paths"
-            if git -C "$GITHUB_WORKSPACE" diff --name-only --no-renames -z "$BASE_SHA" "$HEAD_SHA" > "$GROUP_PATHS_FILE"; then
+            if git -C "$GITHUB_WORKSPACE" diff --name-only --no-renames -z "$GROUP_BASE" "$HEAD_SHA" > "$GROUP_PATHS_FILE"; then
               DOCS_ONLY=true
               SAW_GROUP_PATH=
               while IFS= read -r -d '' GROUP_PATH; do
@@ -140,12 +155,12 @@ jobs:
             # its head, and GitHub merges all of them when the group passes.
             # The release fast path skips every test, so it applies only when
             # the group is the release merge ALONE (exactly one first-parent
-            # commit over the queue base). A release batched behind code PRs
-            # runs the full suite. Any git failure leaves the count unreadable
-            # and the full suite runs.
-            if [[ "$RELEASE_HEAD" && -n "$BASE_SHA" ]]; then
+            # commit over GROUP_BASE). A release batched behind code PRs runs
+            # the full suite. An unknown GROUP_BASE or any git failure leaves
+            # the count unreadable and the full suite runs.
+            if [[ "$RELEASE_HEAD" && -n "$GROUP_BASE" ]]; then
               GROUP_COMMITS=
-              git -C "$GITHUB_WORKSPACE" rev-list --first-parent --count "$BASE_SHA..$HEAD_SHA" > "$RELEASE_LOOKUP_FILE" 2>/dev/null || true
+              git -C "$GITHUB_WORKSPACE" rev-list --first-parent --count "$GROUP_BASE..$HEAD_SHA" > "$RELEASE_LOOKUP_FILE" 2>/dev/null || true
               IFS= read -r GROUP_COMMITS < "$RELEASE_LOOKUP_FILE" || true
               if [[ "$GROUP_COMMITS" == "1" ]]; then
                 echo "is-release=true" >> "$GITHUB_OUTPUT"
@@ -161,7 +176,7 @@ jobs:
           ACTOR: ${{ github.actor }}
           REPOSITORY: ${{ github.repository }}
           HEAD_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
-          BASE_SHA: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+          BASE_REF: ${{ github.event_name == 'merge_group' && github.event.merge_group.base_ref || '' }}
 
   # Issue #2677: release-please is the sole owner of the version, changelog,
   # and manifest files. This job intentionally runs for ordinary PRs,

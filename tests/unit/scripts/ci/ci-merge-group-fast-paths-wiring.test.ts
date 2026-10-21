@@ -55,7 +55,15 @@ describe('docs-only merge-group fast path wiring', () => {
 		const env = jobs['detect-release'].steps.find(
 			(s: any) => s.id === 'check',
 		).env;
-		expect(env.BASE_SHA).toContain('github.event.merge_group.base_sha');
+		expect(env.BASE_REF).toContain('github.event.merge_group.base_ref');
+		expect(env.BASE_SHA).toBeUndefined();
+	});
+
+	test('detect-release checks out full history so the base branch ref exists', () => {
+		const checkout = jobs['detect-release'].steps.find((s: any) =>
+			String(s.uses ?? '').startsWith('actions/checkout@'),
+		);
+		expect(checkout.with['fetch-depth']).toBe(0);
 	});
 
 	test('every release-guarded step of a skipped job also honors docs-only', () => {
