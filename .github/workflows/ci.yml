@@ -255,6 +255,13 @@ jobs:
     if: always()
     runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - name: Release-owner guard dependency check
         if: ${{ always() && !cancelled() }}
         shell: bash
@@ -460,9 +467,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.event_name == 'merge_group' && matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","Linux","X64"]') || github.event_name == 'merge_group' && matrix.os == 'macos-latest' && fromJSON('["self-hosted","macOS","ARM64"]') || matrix.os }}
     timeout-minutes: 10
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: needs.detect-release.outputs.is-release != 'true'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -502,7 +516,7 @@ jobs:
       matrix:
         os: ${{ (github.event_name == 'merge_group' || needs.detect-paths.outputs.touches-platform-paths == 'true') && fromJSON('["ubuntu-latest","macos-latest","windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
         shard: [1, 2, 3, 4, 5, 6]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.event_name == 'merge_group' && matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","Linux","X64"]') || github.event_name == 'merge_group' && matrix.os == 'macos-latest' && fromJSON('["self-hosted","macOS","ARM64"]') || matrix.os }}
     # 40m: was 90m before sharding (PR #1245). Issue #1778 H4 wired the
     # previously-orphaned src/** + tests/adversarial trees into this job (~1666
     # files total), so shards went 4→6 to keep per-shard file counts (~278) at or
@@ -510,6 +524,13 @@ jobs:
     # ubuntu/macOS and ~20-25 min on Windows (4-7× slower runners). 40m headroom.
     timeout-minutes: 40
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: needs.detect-release.outputs.is-release != 'true'
         with:
@@ -924,6 +945,13 @@ jobs:
     # cheaper than that (issue #2341).
     timeout-minutes: 30
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true'
         with:
@@ -1029,9 +1057,16 @@ jobs:
   coverage:
     needs: [coverage-shard, detect-release]
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -1113,9 +1148,16 @@ jobs:
   # tests/unit/scripts/ci/ci-merge-queue-critical-path.test.ts pins this.
   integration:
     needs: [detect-release, quality]
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -1240,6 +1282,13 @@ jobs:
     needs: [detect-release, quality]
     runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: needs.detect-release.outputs.is-release != 'true'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -1272,6 +1321,13 @@ jobs:
     needs: [detect-release, quality]
     runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: needs.detect-release.outputs.is-release != 'true'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
@@ -1398,9 +1454,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ github.event_name == 'merge_group' && matrix.os == 'ubuntu-latest' && fromJSON('["self-hosted","Linux","X64"]') || github.event_name == 'merge_group' && matrix.os == 'macos-latest' && fromJSON('["self-hosted","macOS","ARM64"]') || matrix.os }}
     timeout-minutes: 15
     steps:
+      # Self-hosted runners persist between jobs; point the temp root at the
+      # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
+      # an earlier job, such as a stray .swarm directory, cannot leak in.
+      - name: Isolate temp dir on self-hosted runners
+        if: runner.environment == 'self-hosted'
+        shell: bash
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true'
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0

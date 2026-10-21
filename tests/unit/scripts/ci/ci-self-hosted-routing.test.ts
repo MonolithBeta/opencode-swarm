@@ -48,7 +48,7 @@ function declaredEvents(workflow: any): string[] {
 function runsOnOf(job: any): string {
 	const runsOn = job?.['runs-on'];
 	if (typeof runsOn === 'string') return runsOn;
-	if (Array.isArray(runsOn)) return runsOn.join(', ');
+	if (Array.isArray(runsOn)) return `[${runsOn.join(', ')}]`;
 	return '';
 }
 
@@ -78,10 +78,15 @@ function canUseGitHubHosted(runsOn: string): boolean {
  * rejected. Adding a third shape must be a deliberate edit here.
  */
 const RUNNER_LABELS = `fromJSON('["self-hosted","Linux","X64"]')`;
+const MAC_RUNNER_LABELS = `fromJSON('["self-hosted","macOS","ARM64"]')`;
 
 const SANCTIONED_ROUTER_SHAPES: string[] = [
 	`github.event_name == 'merge_group' && ${RUNNER_LABELS} || 'ubuntu-latest'`,
 	`github.event_name == 'pull_request' && 'ubuntu-latest' || ${RUNNER_LABELS}`,
+	// Per-OS matrix jobs: only the merge_group legs of the Linux and macOS
+	// matrix cells move; every other leg (pull_request, and Windows always)
+	// falls through to the GitHub-hosted matrix.os label.
+	`github.event_name == 'merge_group' && matrix.os == 'ubuntu-latest' && ${RUNNER_LABELS} || github.event_name == 'merge_group' && matrix.os == 'macos-latest' && ${MAC_RUNNER_LABELS} || matrix.os`,
 ];
 
 function usesSanctionedRouterShape(runsOn: string): boolean {
@@ -89,14 +94,36 @@ function usesSanctionedRouterShape(runsOn: string): boolean {
 }
 
 /*
- * The org's self-hosted pool mixes operating systems (a macOS ARM64 runner
- * carries the `self-hosted` label too), and every routed job assumes a Linux
- * X64 host — coverage partition parity in particular. A route that asks for
- * `self-hosted` alone can land on the Mac, so every route must also require
- * the `Linux` and `X64` labels.
+ * The org's self-hosted pool mixes operating systems, and every runner carries
+ * the `self-hosted` label regardless of OS. A route that asks for
+ * `self-hosted` alone can land on any machine, so every self-hosted label set
+ * must name exactly one of the supported OS/arch pairs.
  */
-function requiresLinuxX64(runsOn: string): boolean {
-	return /\bLinux\b/.test(runsOn) && /\bX64\b/.test(runsOn);
+const ALLOWED_LABEL_SETS = new Set([
+	'self-hosted,Linux,X64',
+	'self-hosted,macOS,ARM64',
+]);
+
+/** Every self-hosted label set named in a runs-on value, normalized. */
+function selfHostedLabelSets(runsOn: string): string[] {
+	const sets: string[] = [];
+	for (const m of runsOn.matchAll(/\[([^[\]]*self-hosted[^[\]]*)\]/g)) {
+		sets.push(
+			m[1]
+				.split(',')
+				.map((s) => s.trim().replace(/^["']|["']$/g, ''))
+				.join(','),
+		);
+	}
+	// A bare `self-hosted` (string runs-on, or a label outside any array).
+	const outside = runsOn.replace(/\[[^[\]]*\]/g, '');
+	if (outside.includes('self-hosted')) sets.push('self-hosted');
+	return sets;
+}
+
+function pinsOsAndArch(runsOn: string): boolean {
+	const sets = selfHostedLabelSets(runsOn);
+	return sets.length > 0 && sets.every((s) => ALLOWED_LABEL_SETS.has(s));
 }
 
 describe('self-hosted runner routing — security invariant (issue #3404)', () => {
@@ -137,7 +164,7 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 		expect(offenders).toEqual([]);
 	});
 
-	test('every route to the self-hosted pool also requires Linux and X64', () => {
+	test('every route to the self-hosted pool pins a supported OS and arch', () => {
 		const fs = require('node:fs') as typeof import('node:fs');
 		const offenders: string[] = [];
 		let routed = 0;
@@ -153,7 +180,7 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 				const runsOn = runsOnOf(job);
 				if (!canUseSelfHosted(runsOn)) continue;
 				routed++;
-				if (!requiresLinuxX64(runsOn)) {
+				if (!pinsOsAndArch(runsOn)) {
 					offenders.push(`${file}:${jobName} -> ${runsOn}`);
 				}
 			}
@@ -230,37 +257,58 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 	});
 
 	test('the runner-routed ci.yml jobs are the declared set', () => {
-		// Guards the migration's scope: only the four heavy single-OS jobs move.
-		// A new runner-routed job in ci.yml must be a deliberate edit here.
+		// Guards the migration's scope. A new runner-routed job in ci.yml must be
+		// a deliberate edit here.
 		const jobs = Object.entries<any>(parseWorkflow('ci.yml').jobs ?? {});
 		const routed = jobs
 			.filter(([, job]) => canUseSelfHosted(runsOnOf(job)))
 			.map(([name]) => name)
 			.sort();
 		expect(routed).toEqual([
+			'coverage',
 			'coverage-shard',
+			'integration',
+			'memory-recall-regression',
 			'package-check',
 			'quality',
 			'security',
+			'smoke',
+			'unit',
 		]);
 	});
 
-	test('per-OS matrix jobs and the Windows sandbox runner stay GitHub-hosted', () => {
-		// One Linux runner cannot serve a three-OS matrix, and the sandbox
-		// runner is built for Windows. Moving either would deadlock them.
+	test('Windows legs and the sandbox runner stay GitHub-hosted', () => {
+		// No Windows self-hosted runner is online yet, so a Windows leg routed to
+		// the pool would queue forever. The matrix route must fall through to the
+		// GitHub-hosted matrix.os label for windows-latest, and must not name a
+		// Windows label set.
 		const jobs = Object.entries<any>(parseWorkflow('ci.yml').jobs ?? {});
 		for (const name of ['unit', 'memory-recall-regression', 'smoke']) {
-			const job = jobs.find(([jobName]) => jobName === name)?.[1];
-			expect(job, `ci.yml has a ${name} job`).toBeDefined();
-			expect(
-				canUseSelfHosted(runsOnOf(job)),
-				`${name} stays GitHub-hosted`,
-			).toBe(false);
+			const runsOn = runsOnOf(jobs.find(([jobName]) => jobName === name)?.[1]);
+			expect(runsOn, `${name} runs-on`).not.toBe('');
+			expect(runsOn).toMatch(/\|\| matrix\.os\s*}}$/);
+			expect(runsOn).not.toMatch(/windows/i);
 		}
 		const sandbox = jobs.find(
 			([jobName]) => jobName === 'rust-sandbox-runner',
 		)?.[1];
 		expect(sandbox, 'ci.yml has a rust-sandbox-runner job').toBeDefined();
-		expect(runsOnOf(sandbox)).toContain('windows-latest');
+		expect(runsOnOf(sandbox)).toBe('windows-latest');
+	});
+
+	test('every runner-routed ci.yml job isolates its temp dir on self-hosted runners', () => {
+		// Self-hosted machines persist between jobs, and several runner instances
+		// share each host. Each routed job must point TMPDIR at its own per-job
+		// RUNNER_TEMP before any other step runs.
+		const jobs = Object.entries<any>(parseWorkflow('ci.yml').jobs ?? {});
+		for (const [name, job] of jobs) {
+			if (!canUseSelfHosted(runsOnOf(job))) continue;
+			const first = (job.steps ?? [])[0] ?? {};
+			expect(first.name, `${name} first step`).toBe(
+				'Isolate temp dir on self-hosted runners',
+			);
+			expect(first.if).toContain("runner.environment == 'self-hosted'");
+			expect(first.run).toContain('TMPDIR=$RUNNER_TEMP');
+		}
 	});
 });
