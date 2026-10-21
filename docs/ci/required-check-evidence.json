@@ -114,7 +114,7 @@
     }
   },
   "localWorkflowHashes": {
-    ".github/workflows/ci.yml": "424e21570c8e94b26579509ba142b1c6d3b9a9b35aba59db4288df1b613195e2",
+    ".github/workflows/ci.yml": "28a7b49179a28e49733dfa0064591274c81cd9e299d652a9b85104a6d2fe0233",
     ".github/workflows/pr-standards.yml": "cdb6fcd783a8cf6ff67bbfa5aa84d8a4faa6510404ab9bec7b53b21a722ff081",
     ".github/workflows/drift-check.yml": "40465c6e47fc7f511c6735660d2165d3a291fe7907446b339ed9823cb10cd66c"
   },
