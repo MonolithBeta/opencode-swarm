@@ -240,6 +240,10 @@ function isolatedEnv(scratchRoot) {
   return {
     ...process.env,
     OPENCODE_SWARM_DEBUG: '1',
+    // The init banner's raw stderr leg is opt-in since #3405 (the default leg
+    // is the debug-gated logger's stdout line, which v2 does not relay). The
+    // harness's banner-detection regexes grep host stderr, so keep the leg on.
+    OPENCODE_SWARM_VERSION_BANNER: '1',
     XDG_CONFIG_HOME: path.join(scratchRoot, 'cfg'),
   };
 }

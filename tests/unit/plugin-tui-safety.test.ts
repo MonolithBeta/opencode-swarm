@@ -131,4 +131,35 @@ describe('Plugin TUI safety', () => {
 		expect(source).toContain('intentionally always emitted as raw');
 		expect(rawConsoleViolations(source)).toEqual([]);
 	});
+
+	test('init path (#3405): ownership hints carry no raw console leg and keep their advisory legs', () => {
+		const source = readRepoFile('src/index.ts');
+		// Statement-anchored pins: comment prose can never satisfy or break
+		// them (a `//`-prefixed line fails the ^\s* anchor).
+		expect(/^\s*console\.warn\(redirectHint\);?\s*$/m.test(source)).toBe(false);
+		expect(/^\s*console\.warn\(failClosedHint\);?\s*$/m.test(source)).toBe(
+			false,
+		);
+		// Retention: the buffered advisory legs must survive any future edit
+		// that touches these branches (partial-deletion mutant must fail).
+		expect(/^\s*advisoryWarn\(redirectHint\);/m.test(source)).toBe(true);
+		expect(/^\s*advisoryWarn\(failClosedHint\);/m.test(source)).toBe(true);
+	});
+
+	test('init path (#3405): the version banner warn exists exactly once and is gated by the opt-in env var', () => {
+		const source = readRepoFile('src/index.ts');
+		const lines = source.split(/\r?\n/);
+		const bannerWarnLines: number[] = [];
+		for (let i = 0; i < lines.length; i += 1) {
+			if (/^\s*console\.warn\(/.test(lines[i]) && /running v/.test(lines[i])) {
+				bannerWarnLines.push(i);
+			}
+		}
+		// The opt-in leg legitimately exists — this is a block-aware pin, not
+		// an absence check.
+		expect(bannerWarnLines).toHaveLength(1);
+		const windowStart = Math.max(0, bannerWarnLines[0] - 8);
+		const gateWindow = lines.slice(windowStart, bannerWarnLines[0]).join('\n');
+		expect(gateWindow).toContain('OPENCODE_SWARM_VERSION_BANNER');
+	});
 });

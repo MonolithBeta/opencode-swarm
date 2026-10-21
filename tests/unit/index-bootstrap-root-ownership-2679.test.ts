@@ -35,6 +35,7 @@ import * as fs from 'node:fs';
 import path from 'node:path';
 import { closeAllProjectDbs } from '../../src/db/project-db';
 import OpenCodeSwarm from '../../src/index';
+import { getDeferredWarnings } from '../../src/services/warning-buffer';
 import { resetSwarmState } from '../../src/state';
 import { resetTelemetryForTesting } from '../../src/telemetry';
 import { safeRmRecursive } from '../helpers/safe-test-dir';
@@ -154,21 +155,34 @@ function norm(p: string): string {
 }
 
 /**
- * The redirect-hint contract: some console line mentions BOTH the
+ * The redirect-hint contract: some buffered advisory line mentions BOTH the
  * 'project-root ownership' marker AND the owning parent root — after masking
  * occurrences of the CHILD path, so a child-path mention (which lexically
  * contains the parent) cannot fake a parent-root hint (c1 hygiene).
+ *
+ * #3405: the operator-visible hint channel is the deferred-warning buffer
+ * (`/swarm diagnose`), NOT raw console output — a plugin console.warn
+ * renders as a full-width overlay over the bubbletea TUI. The raw legs are
+ * asserted ABSENT at each call site (both captured streams).
  */
 function hasParentRootHint(
 	captured: ConsoleCapture,
 	parent: string,
 	child: string,
 ): boolean {
-	const lines = [...captured.warn, ...captured.log].map((line) => norm(line));
+	void captured;
+	const lines = getDeferredWarnings().map((line) => norm(line));
 	return lines.some(
 		(line) =>
 			line.includes('project-root ownership') &&
 			line.split(norm(child)).join('<CHILD>').includes(norm(parent)),
+	);
+}
+
+/** #3405: no hint text may ride raw stderr/stdout (either captured stream). */
+function hasNoRawHintLine(captured: ConsoleCapture): boolean {
+	return ![...captured.warn, ...captured.log].some((line) =>
+		line.includes('project-root ownership'),
 	);
 }
 
@@ -257,8 +271,10 @@ describe('bootstrap project-root ownership — ordinary child redirect (#2679, A
 		const parentEntries = dirEntryCount(path.join(parent, '.swarm'));
 		expect(parentEntries).toBeGreaterThanOrEqual(1);
 
-		// Operator hint: one console line names the parent root.
+		// Operator hint: a buffered /swarm diagnose line names the parent root.
 		expect(hasParentRootHint(captured, parent, child)).toBe(true);
+		// #3405: the hint must not ride raw stderr/stdout on either stream.
+		expect(hasNoRawHintLine(captured)).toBe(true);
 
 		// Durable redirect record under the owning parent.
 		const advisoryPath = path.join(
@@ -405,6 +421,8 @@ describe('bootstrap project-root ownership — rehydration and attribution (#267
 		const { captured } = await bootAndSettle(child);
 
 		expect(hasParentRootHint(captured, parent, child)).toBe(true);
+		// #3405: attribution rides the buffered channel, never raw console.
+		expect(hasNoRawHintLine(captured)).toBe(true);
 	});
 
 	test('telemetry latches to the owning parent, never to the ordinary child', async () => {

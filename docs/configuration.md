@@ -44,6 +44,7 @@ Most behavior is controlled by `opencode-swarm.json`. Environment variables are 
 | `TAVILY_API_KEY` | General Council web search | Tavily credential used when `council.general.searchApiKey` is unset and `searchProvider` is `tavily`. |
 | `BRAVE_SEARCH_API_KEY` | General Council web search | Brave Search credential used when `council.general.searchApiKey` is unset and `searchProvider` is `brave`. |
 | `OPENCODE_SWARM_DEBUG=1` | Debug logger | Enables debug-gated log output. Keep disabled for normal use. |
+| `OPENCODE_SWARM_VERSION_BANNER=1` | Startup version banner | Restores the raw stderr `[opencode-swarm] running vX.Y.Z` startup line (default off; the banner otherwise appears only under `OPENCODE_SWARM_DEBUG=1` in the debug log). Use for headless/CLI stale-cache diagnosis — identifying which cached plugin version actually loaded (issue #2236). The raw stderr leg is off by default because the TUI renders plugin stderr as an overlay (issue #3405). |
 | `DEBUG_SWARM=1` | Startup and hook diagnostics | Enables additional startup, hook, and plan-manager diagnostics. Keep disabled unless debugging plugin behavior. |
 | `OPENCODE_SWARM_ID` | Diagnose service | Identifies the active swarm in diagnostic checks; `/swarm diagnose` reports mismatches between this value and local plan state. |
 | `SWARM_LANG_BACKEND=legacy` | `test_runner` | Opts out of the dispatch language backend. Dispatch is the default. |
