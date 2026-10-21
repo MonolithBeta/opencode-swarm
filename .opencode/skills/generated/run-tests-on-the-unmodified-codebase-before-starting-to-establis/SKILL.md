@@ -1,10 +1,8 @@
 ---
 name: run-tests-on-the-unmodified-codebase-before-starting-to-establis
 description: run tests on the unmodified codebase before starting to establish a failure baseline
-triggers:
-  - pre-existing test failures
-  - baseline before change
 metadata:
+  triggers: '["pre-existing test failures","baseline before change"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.911Z"

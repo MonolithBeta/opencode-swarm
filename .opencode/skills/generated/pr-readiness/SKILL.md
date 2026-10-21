@@ -1,9 +1,8 @@
 ---
 name: pr-readiness
 description: "Legacy compatibility shim — use swarm-pr-feedback instead"
-triggers:
-  - pr-readiness
 metadata:
+  triggers: '["pr-readiness"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:50.054Z"

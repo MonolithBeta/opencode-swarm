@@ -1,19 +1,8 @@
 ---
 name: bundle-safety
 description: Bundle transform safety — minification variant selection, consumer-constraint verification, identifier preservation, and namespace re-export coverage for build output.
-triggers:
-  - minify
-  - minification
-  - bundle
-  - esbuild
-  - build size
-  - re-export
-  - identifier
-  - namespace re-export
-  - exportLines
-  - exportRanges
-  - dist/index.js
 metadata:
+  triggers: '["minify","minification","bundle","esbuild","build size","re-export","identifier","namespace re-export","exportLines","exportRanges","dist/index.js"]'
   generated_from_knowledge: '["5746c5c9-1330-4fbe-b62e-f564deb1ff77", "5d99affe-bdd1-4945-8cd8-fcf37abb8c84", "9323a8f0-c07e-41c2-9857-11a24c55dca2"]'
   source_knowledge_ids: '["5746c5c9-1330-4fbe-b62e-f564deb1ff77", "5d99affe-bdd1-4945-8cd8-fcf37abb8c84", "9323a8f0-c07e-41c2-9857-11a24c55dca2"]'
   generated_at: "2026-07-02T20:47:50.522Z"

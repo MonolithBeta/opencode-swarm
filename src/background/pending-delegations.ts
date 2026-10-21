@@ -419,7 +419,12 @@ export type BackgroundDelegationWorkflowLaneFailureClass =
 	| 'contract'
 	| 'resource'
 	| 'liveness'
-	| 'operator_cancelled';
+	| 'operator_cancelled'
+	// Issue #3311: verdict-lane (swarm-pr-review:reviewer|critic) contract
+	// and transport-validation failures carry their OWN class so widened
+	// N-of-M admission can type them as dead evidence without colliding with
+	// the discovery-lane 'contract' guards keyed on that label (#2865).
+	| 'verdict_contract';
 
 /**
  * Legacy failure class retired from lane results by #2615 (its last producer
@@ -656,6 +661,9 @@ const ResultSchema = z
 				'liveness',
 				'operator_cancelled',
 				'deadline',
+				// Issue #3311: verdict-lane producers stamp this; the persisted
+				// enum must read it or the settle itself is refused.
+				'verdict_contract',
 			])
 			.optional(),
 		// Issue #2382: must be declared here (schema is .strict()) — see the

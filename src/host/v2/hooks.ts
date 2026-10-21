@@ -53,8 +53,11 @@ const V2_HOOK_TIMEOUT_MS = 60_000;
  * stays untouched.
  */
 
-/** Mirrors `isTaskToolId`'s shape (dotted SDK form OR normalized base name). */
-function isV2SubagentToolId(toolName: string | null | undefined): boolean {
+/** Mirrors `isTaskToolId`'s shape (dotted SDK form OR normalized base name).
+ * Exported for the event pump's progress-event gating (issue #3401). */
+export function isV2SubagentToolId(
+	toolName: string | null | undefined,
+): boolean {
 	if (!toolName) return false;
 	if (toolName.includes('.')) {
 		return /^tool\.[^.:]+\.subagent$/i.test(toolName);
@@ -70,7 +73,11 @@ function isV2SubagentToolId(toolName: string | null | undefined): boolean {
  * keep them dead — every recognized form collapses to `task`.
  */
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Plain-object shape guard (arrays/instances rejected); exported for the
+ * event pump's progress-metadata validation (issue #3401 / PR #3402). */
+export function isPlainObject(
+	value: unknown,
+): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
@@ -378,6 +385,15 @@ async function onV2Prompt(
 		sessionID: event.sessionID,
 	};
 	const parts = [{ type: 'text', text }];
+	// #3320 review round (PRR-006/010/016): the v1 chat.message chain's
+	// agent-less branch already restores the session's PRIMARY owner (the
+	// delegation tracker reads the record directly), so the prompt event must
+	// NOT synthesize an `agent` field — doing so routed v2 prompts through the
+	// tracker's NAMED branch, which flipped `delegationActive` to true for
+	// native build/plan sessions and armed the PRM detector, the trajectory
+	// logger, and the chat-visible non-architect advisory on surfaces this PR
+	// exists to leave alone. An agent-less prompt keeps the named-branch side
+	// effects off while the owner restore preserves the native identity.
 	const input = {
 		sessionID: event.sessionID,
 		message: { ...message },

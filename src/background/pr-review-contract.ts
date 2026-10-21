@@ -800,6 +800,24 @@ export const PrReviewReviewerVerdictFieldsSchema = z
 				message: 'DISPROVED reviewer severity must be NONE',
 			});
 		}
+		// #3310: a CONFIRMED finding with no severity is incoherent — it is
+		// the one classification for which even DOWNGRADED is impossible.
+		// #3336 in-flight replay: lane artifacts persist RAW text (no
+		// write-time row validation; validation happens at read), so a
+		// reviewer artifact written BEFORE this tightening re-parses under
+		// the live schema on every composition — the CONFIRMED+NONE row now
+		// FAILS validation, its item stays unclaimed, and the phase settles
+		// fail-closed ("items lack an authenticated verdict", forced re-run).
+		// That fail-closed replay is the documented, tested contract; a
+		// verdict-semantic version gate is deliberately out of scope here
+		// (tracked in #3358 AC3).
+		if (fields[2] === 'CONFIRMED' && fields[4] === 'NONE') {
+			ctx.addIssue({
+				code: 'custom',
+				path: [4],
+				message: 'CONFIRMED reviewer severity must not be NONE',
+			});
+		}
 	});
 
 export const PrReviewCriticVerdictFieldsSchema = z
@@ -828,16 +846,29 @@ export const PrReviewCriticVerdictFieldsSchema = z
 				message: 'DISPROVED critic severity must be NONE',
 			});
 		}
-		if (
-			status === 'UPHELD' &&
-			!(['CRITICAL', 'HIGH', 'MEDIUM'] as const).includes(
-				severity as 'CRITICAL' | 'HIGH' | 'MEDIUM',
-			)
-		) {
+		if (status === 'UPHELD' && severity === 'NONE') {
+			// #3310: UPHELD is a truthful agreement at the reviewer's own
+			// severity — allowed at LOW and INFO too, never at NONE (a
+			// zero-severity agreement carries no verdict to uphold). The
+			// rank-equality rule itself lives in the adapter
+			// (validateCriticVerdictFields), which also enforces that UPHELD
+			// keeps the reviewer's exact severity rank.
+			//
+			// #3336 in-flight replay — the ACCEPTING direction: artifacts
+			// persist raw text with no write-time row validation, so a
+			// pre-upgrade critic artifact CAN hold an `UPHELD | LOW/INFO` row
+			// the pre-#3310 read schema rejected (its item was unclaimed and
+			// the phase blocked). After this widening, the same persisted row
+			// becomes CLAIMABLE on the first composition with no re-run —
+			// provided its bound reviewer row still validates under the live
+			// schema. Both replay directions (this acceptance, and the
+			// CONFIRMED+NONE fail-closed flip above) are the documented,
+			// tested consequence of re-parsing durable artifacts through the
+			// live schema with no verdict-semantic version gate (#3358).
 			ctx.addIssue({
 				code: 'custom',
 				path: [3],
-				message: 'UPHELD critic severity must be CRITICAL, HIGH, or MEDIUM',
+				message: 'UPHELD critic severity must not be NONE',
 			});
 		}
 		if (status === 'DOWNGRADED' && severity === 'CRITICAL') {
@@ -1049,6 +1080,9 @@ export function buildPrReviewContractCard(): string {
 		'- Emit exactly one live REVIEWED row per assigned item in reviewer lanes.',
 		'- Emit exactly one live CRITIC row per assigned item in critic lanes.',
 		'- DISPROVED requires severity NONE.',
+		// #3310: state the cross-row severity rules the transport enforces.
+		"- UPHELD keeps the reviewer's severity exactly and is not permitted at NONE.",
+		"- DOWNGRADED must be strictly lower than the reviewer's severity and never CRITICAL.",
 		'- NEEDS_MORE_EVIDENCE is not a terminal critic transport row.',
 		'- risk_impact/risk_tags are REQUIRED on every CONFIRMED REVIEWED row; malformed or unknown values fail the row.',
 		'- Critic routing is typed (issue #2383): CRITICAL/HIGH always; MEDIUM only when HIGH_IMPACT or any risk tag; UNKNOWN always; ORDINARY MEDIUMs with no tags are not critic-routed.',
@@ -1061,7 +1095,10 @@ export function buildPrReviewContractCard(): string {
 		'Transition matrix:',
 		'- reviewer lane: assigned item -> exactly one REVIEWED row -> critic routing or terminal disposition.',
 		'- critic lane: assigned reviewer claim -> exactly one CRITIC row -> final finding disposition.',
-		'- malformed, duplicate, missing, or discarded rows -> contract failure and bounded retry; never acceptance.',
+		// #3310: illegal-arity marker rows are quarantined into diagnostics and
+		// never settle a claim; malformed rows for ASSIGNED ids still fail.
+		'- Malformed rows for an assigned item fail that item and may be retried within the controller retry bound.',
+		'- A marker row whose field count is illegal for its marker is quarantined into diagnostics: it carries no verdict and never settles a claim.',
 		'Retry and deadline semantics:',
 		'- Malformed live rows fail closed and may be retried only within the controller retry bound.',
 		'- A waited collection deadline is an OBSERVER deadline: it bounds the collect call only, never cancels or terminalizes child work (issue #2381); poll, explicitly cancel, or rely on the presumed-stale sweep.',
@@ -1089,6 +1126,25 @@ export function encodePrReviewVerdictRow(
 		);
 	}
 	return parsed.data.map(encodePrReviewVerdictField).join(' | ');
+}
+
+/**
+ * Issue #3335: does any LINE of `text` parse as a live verdict row of `kind`?
+ * The reference grammar is `parsePrReviewVerdictRow` itself (fields are
+ * pipe-split and `.trim()`-ed — Unicode whitespace — and the marker matches by
+ * equality), so prompt-side guards derive their verdict-row detection from
+ * THIS function instead of reimplementing a regex that drifts from the parser.
+ * Splits lines exactly like the transport consumer (`indexVerdictRows`:
+ * `/\r?\n/`), so a lone `\r` stays in-line, exactly as the parser sees it.
+ */
+export function firstPrReviewVerdictRowTemplateLine(
+	text: string,
+	kind: PrReviewVerdictKind,
+): string | null {
+	for (const line of text.split(/\r?\n/)) {
+		if (parsePrReviewVerdictRow(line, kind) !== null) return line;
+	}
+	return null;
 }
 
 export function parsePrReviewVerdictRow(
