@@ -16,6 +16,7 @@ import { randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { OpencodeClient } from '@opencode-ai/sdk';
+import { ALL_AGENT_NAMES, ALL_SUBAGENT_NAMES } from './config/agent-names';
 import { ORCHESTRATOR_NAME } from './config/constants';
 import { loadPluginConfig, loadPluginConfigWithMeta } from './config/loader';
 import { type Plan, PlanSchema, type TaskStatus } from './config/plan-schema';
@@ -1005,6 +1006,15 @@ export const swarmState = {
 	/** Active agent per session — keyed by sessionID, updated by chat.message hook */
 	activeAgent: defaultRunContext.activeAgent,
 
+	/**
+	 * Primary owner per session — keyed by sessionID (#3320). The last PRIMARY
+	 * agent identity recorded through chat.message / the v2 seed: the swarm
+	 * architect (plain or prefixed) or any non-swarm agent (build/plan/general).
+	 * Swarm SUBAGENT names never become the primary owner; handoffs restore
+	 * `getPrimaryOwner(sessionID) ?? ORCHESTRATOR_NAME`.
+	 */
+	primaryOwnerBySession: new Map<string, string>(),
+
 	/** Delegation chains per session — keyed by sessionID */
 	delegationChains: defaultRunContext.delegationChains,
 
@@ -1181,6 +1191,7 @@ export function resetSwarmState(): void {
 	swarmState.activeToolCalls.clear();
 	swarmState.toolAggregates.clear();
 	swarmState.activeAgent.clear();
+	swarmState.primaryOwnerBySession.clear();
 	swarmState.delegationChains.clear();
 	swarmState.pendingEvents = 0;
 	swarmState.lastBudgetBySession.clear();
@@ -2311,6 +2322,11 @@ export function sweepStaleSessions(
 		// timestamp, so an interrupted turn would make its session permanently
 		// unevictable — a worse leak than the one this pass closes.
 		swarmState.activeAgent.delete(id);
+		// #3320 review round: the primary-owner record is session-keyed like the
+		// maps above — sweep it in the same pass so owner entries cannot outlive
+		// the sessions they key (they would otherwise reach the FIFO cap sooner
+		// and evict live sessions' owners via recordPrimaryOwner's refresh).
+		swarmState.primaryOwnerBySession.delete(id);
 	}
 	return staleIds;
 }
@@ -2663,6 +2679,9 @@ export function endAgentSession(sessionId: string, directory?: string): void {
 	// persist in memory and in every state.json snapshot until process exit.
 	swarmState.activeAgent.delete(sessionId);
 	swarmState.delegationChains.delete(sessionId);
+	// #3320 review round: the primary-owner record is a session-keyed satellite
+	// like the two above — drop it in the same pass.
+	swarmState.primaryOwnerBySession.delete(sessionId);
 	// Issue #3036: dispatch lineage is a session-keyed satellite too — clear
 	// this session's child entry and any children keyed to it as parent.
 	clearDispatchLineageForSession(sessionId);
@@ -2987,6 +3006,102 @@ export function ensureAgentSession(
 		adoptPendingDispatchAuthorization(sessionId, agentName);
 	}
 	return session;
+}
+
+/**
+ * Registered swarm agent name sets (#3320), derived from the dependency-free
+ * agent-name registry leaf. Membership is checked AFTER stripKnownSwarmPrefix
+ * so prefixed names (mega_coder, mega_architect) resolve to their base roles.
+ */
+const SWARM_AGENT_NAME_SET: ReadonlySet<string> = new Set(ALL_AGENT_NAMES);
+const SWARM_SUBAGENT_NAME_SET: ReadonlySet<string> = new Set(
+	ALL_SUBAGENT_NAMES,
+);
+
+/** Bounded size of the primary-owner map (invariant 8: bounded, FIFO-evicted). */
+const MAX_TRACKED_PRIMARY_OWNERS = 1000;
+
+/**
+ * Identities that may observe a session transiently (host housekeeping and
+ * helper agents) but can never OWN it (#3320 review round): recording one as
+ * the primary owner would let a title/summary/compaction/explore observation
+ * permanently demote a swarm architect session via the owner-restore sites.
+ */
+const NON_OWNABLE_AGENT_NAMES: ReadonlySet<string> = new Set([
+	'compaction',
+	'title',
+	'summary',
+	'explore',
+]);
+
+/**
+ * Record a session's PRIMARY owner (#3320).
+ *
+ * PRIMARY identities: the swarm architect (plain or swarm-prefixed) and
+ * non-swarm agent names (OpenCode native primaries such as build/plan/general,
+ * plus custom non-swarm primaries). Two exclusion classes never become the
+ * owner — the owner is who the session belongs to, not who is currently
+ * driving it:
+ * - swarm SUBAGENT names (coder, reviewer, ... after prefix-strip) —
+ *   delegation workers;
+ * - host housekeeping/helper identities (compaction, title, summary,
+ *   explore) — transient observers, not owners.
+ *
+ * Note the classification uses the shared `stripKnownSwarmPrefix` role scan,
+ * so a CUSTOM agent whose name merely suffix-collides with a swarm role
+ * (e.g. `helper_coder`) is also excluded and fails toward the architect
+ * default at handoffs — the same restricted treatment such names received at
+ * base (where unknown agents were denied file authority outright).
+ */
+export function recordPrimaryOwner(sessionId: string, agentName: string): void {
+	if (!sessionId || !agentName) return;
+	if (isRegisteredSwarmSubagent(agentName)) return;
+	if (NON_OWNABLE_AGENT_NAMES.has(agentName.toLowerCase())) return;
+	// Delete THIS key first so a size-neutral refresh of an already-tracked
+	// session never evicts an unrelated live session's owner (review finding
+	// PRR-009: the eviction loop used to run before the same-key delete).
+	swarmState.primaryOwnerBySession.delete(sessionId);
+	while (swarmState.primaryOwnerBySession.size >= MAX_TRACKED_PRIMARY_OWNERS) {
+		const oldest = swarmState.primaryOwnerBySession.keys().next().value;
+		if (typeof oldest !== 'string') break;
+		swarmState.primaryOwnerBySession.delete(oldest);
+	}
+	swarmState.primaryOwnerBySession.set(sessionId, agentName);
+}
+
+/**
+ * The session's last recorded PRIMARY agent identity (#3320), or undefined
+ * when none is recorded (fresh session, plugin restart, or subagent-only
+ * activity). Handoff sites restore `getPrimaryOwner(id) ?? ORCHESTRATOR_NAME`.
+ */
+export function getPrimaryOwner(sessionId: string): string | undefined {
+	return swarmState.primaryOwnerBySession.get(sessionId);
+}
+
+/**
+ * True when `agentName` (after prefix-strip) names a registered swarm
+ * SUBAGENT — the identity class the stale-delegation revert exists to rescue.
+ * The architect is deliberately excluded (it is the revert TARGET, not a
+ * state to revert FROM).
+ */
+export function isRegisteredSwarmSubagent(agentName: string): boolean {
+	const stripped = stripKnownSwarmPrefix(agentName);
+	return SWARM_SUBAGENT_NAME_SET.has(stripped);
+}
+
+/**
+ * True when the session's resolved identity is a registered swarm agent
+ * (#3320) — the ownership class swarm-only injections and enforcement gates
+ * key on. Resolution follows the isSessionBoundArchitect order
+ * (activeAgent first, then the agentSessions record). Unresolved sessions
+ * return false; message stages keep their own unresolved default.
+ */
+export function isSwarmOwnedSession(sessionID: string): boolean {
+	const resolved =
+		swarmState.activeAgent.get(sessionID) ??
+		swarmState.agentSessions.get(sessionID)?.agentName;
+	if (typeof resolved !== 'string' || !resolved) return false;
+	return SWARM_AGENT_NAME_SET.has(stripKnownSwarmPrefix(resolved));
 }
 
 /**

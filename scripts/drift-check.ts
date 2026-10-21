@@ -804,10 +804,91 @@ const SKILL_METADATA_NON_STRING_SCALAR =
 	/^(?:-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?|-?\.[0-9]+|true|false|null|yes|no|on|off|~|\d{4}-\d{2}-\d{2}(?:[T ].*)?)$/i;
 
 /**
- * Agent-Skills-spec conformance for tracked static SKILL.md frontmatter
+ * Strip a trailing YAML comment from a frontmatter value, quote-aware
+ * (PR #3387 follow-up, FB-027; hardened in the follow-up review): a `#`
+ * inside a BALANCED quoted scalar is content, so `[a, "b # c"] # note`
+ * strips to `[a, "b # c"]` — the previous first-char-only check escaped
+ * exactly that shape from the flow-collection and bare-scalar checks.
+ *
+ * A quote opens ONLY at a value start (after a flow-element boundary, or
+ * after `:` when a whitespace/EOL follows — the `:` in a plain flow scalar
+ * like `b:'c` is content, not a mapping separator, so its quote must not
+ * open). A doubled `''` inside a single-quoted scalar is the YAML escape
+ * for a literal quote, so `'it''s # x'` stays quoted through the `#`. If a
+ * quote is still open at end of value (malformed input), the strip falls
+ * back to the naive first-comment scan so those shapes keep firing the way
+ * the pre-quote-aware detector did. That fallback is the parity boundary,
+ * not a guarantee: a malformed value whose quotes CLOSE around the comment
+ * (e.g. `['a] # b' x`) stays unstripped — documented bounded-subset
+ * behavior, the same class as the skill-scoring flow parser. A `#` at
+ * value start is a comment-only value (strips to empty), and `#` must
+ * follow whitespace or start the value to count as a comment opener.
+ */
+function stripFrontmatterValueComment(value: string): string {
+	let quote: '"' | "'" | undefined;
+	let atValueStart = true;
+	for (let i = 0; i < value.length; i++) {
+		const ch = value[i] as string;
+		if (quote) {
+			if (quote === '"' && ch === '\\') {
+				i += 1;
+				continue;
+			}
+			if (ch === quote) {
+				if (quote === "'" && value[i + 1] === "'") {
+					// YAML doubled single-quote escape — content, stay quoted.
+					i += 1;
+					continue;
+				}
+				quote = undefined;
+			}
+			atValueStart = false;
+			continue;
+		}
+		if ((ch === '"' || ch === "'") && atValueStart) {
+			quote = ch;
+			atValueStart = false;
+			continue;
+		}
+		if (ch === '#' && (i === 0 || /\s/.test(value[i - 1] as string))) {
+			return value.slice(0, i).trim();
+		}
+		if (ch === '{' || ch === '[' || ch === ',') {
+			atValueStart = true;
+			continue;
+		}
+		if (ch === ':') {
+			// A mapping separator only when a space/EOL follows; the colon in
+			// `b:'c` sits inside a plain scalar, and the quote after it is
+			// content (follow-up review: base fired there, head must too).
+			const next = value[i + 1];
+			atValueStart = next === undefined || /\s/.test(next);
+			continue;
+		}
+		if (!/\s/.test(ch)) atValueStart = false;
+	}
+	if (quote !== undefined) {
+		// Unterminated quote (malformed YAML): fall back to the naive strip
+		// so those shapes keep firing. Parity boundary only — a malformed
+		// value whose quotes CLOSE around the comment stays unstripped (see
+		// the function docstring).
+		for (let i = 0; i < value.length; i++) {
+			if (value[i] === '#' && (i === 0 || /\s/.test(value[i - 1] as string))) {
+				return value.slice(0, i).trim();
+			}
+		}
+	}
+	return value.trim();
+}
+
+/**
+ * Agent-Skills-spec conformance for tracked SKILL.md frontmatter
  * (issue #2907): non-spec keys must live under the `metadata:` string map,
  * `name` must match the parent directory, and metadata children must be
- * string-typed scalars.
+ * string-typed scalars. The generated tree (`.opencode/skills/generated/`)
+ * is enforced by the skill-frontmatter detector (post-migration, issue
+ * #3216); `metadata:` values must use the block form — inline flow maps are
+ * non-canonical (issue #3217).
  */
 export function detectSkillFrontmatterSpecDrift(
 	root: string = REPO_ROOT,
@@ -816,128 +897,147 @@ export function detectSkillFrontmatterSpecDrift(
 	const findings: DriftFinding[] = [];
 	const category = 'skill-frontmatter';
 
+	const scanTargets: Array<[string, string]> = [];
 	for (const skillRoot of [
 		'.opencode/skills',
 		'.claude/skills',
 		'.agents/skills',
 	]) {
 		for (const slug of listDirNames(skillRoot)) {
-			// The generated tree stays exempt, matching detectSkillAudienceDrift
-			// (:743): generated SKILL.md files are machine-written by
-			// renderSkillMarkdown and their repository audience/provenance
-			// cannot be guessed safely (issue #2907 review — PRR-009).
-			if (skillRoot === '.opencode/skills' && slug === 'generated') {
-				continue;
-			}
-			const skillPath = `${skillRoot}/${slug}/SKILL.md`;
-			if (!fileExists(skillPath)) continue;
-			const content = readFile(skillPath).replace(/\r\n/g, '\n');
-			const lines = content.split('\n');
-			if (lines[0]?.trim() !== '---') continue;
-			const end = lines.findIndex(
-				(line, index) => index > 0 && line.trim() === '---',
-			);
-			if (end === -1) continue;
+			scanTargets.push([`${skillRoot}/${slug}/SKILL.md`, slug]);
+		}
+	}
+	// The generated tree is enforced (issue #3216) — the legacy-key
+	// migrations converged it onto the generator's spec emission; only the
+	// audience detector keeps its generated-tree skip (repository audience
+	// cannot be guessed safely, issue #2907 review — PRR-009).
+	const generatedRoot = '.opencode/skills/generated';
+	for (const child of listDirNames(generatedRoot)) {
+		scanTargets.push([`${generatedRoot}/${child}/SKILL.md`, child]);
+	}
+	for (const [skillPath, slug] of scanTargets) {
+		if (!fileExists(skillPath)) continue;
+		const content = readFile(skillPath).replace(/\r\n/g, '\n');
+		const lines = content.split('\n');
+		if (lines[0]?.trim() !== '---') continue;
+		const end = lines.findIndex(
+			(line, index) => index > 0 && line.trim() === '---',
+		);
+		if (end === -1) continue;
 
-			let inMetadata = false;
-			for (let i = 1; i < end; i++) {
-				const line = lines[i] ?? '';
-				if (!line.trim()) continue;
-				const indented = /^\s/.test(line);
-				if (inMetadata) {
-					if (!indented) {
-						inMetadata = false;
-					} else {
-						const child = line.match(
-							/^(\s+)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/,
-						);
-						if (child) {
-							// Strip a trailing YAML comment (unquoted scalars
-							// only — a quoted string may contain '#') so
-							// `key: true # note` is still judged as a bare
-							// scalar (PRR-011b).
-							let value = child[3].trim();
-							const startsQuoted =
-								value.startsWith('"') || value.startsWith("'");
-							if (!startsQuoted && value.includes(' #')) {
-								value = value.slice(0, value.indexOf(' #')).trim();
-							}
-							const quoted =
-								(value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
-								(value.startsWith("'") && value.endsWith("'") && value.length >= 2);
-							// A declared-but-empty child followed by `- item`
-							// lines is a YAML sequence — not a string (PRR-011c).
-							if (value === '') {
-								const childIndent = child[1].length;
-								for (let j = i + 1; j < end; j++) {
-									const next = lines[j] ?? '';
-									if (!next.trim()) continue;
-									if (!/^\s/.test(next)) break;
-									const nextIndent = next.length - next.trimStart().length;
-									if (nextIndent > childIndent && /^\s+-\s/.test(next)) {
-										findings.push({
-											category,
-											severity: 'error',
-											file: skillPath,
-											message: `metadata child "${child[2]}" is a YAML sequence — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
-										});
-									}
-									break;
+		let inMetadata = false;
+		for (let i = 1; i < end; i++) {
+			const line = lines[i] ?? '';
+			if (!line.trim()) continue;
+			const indented = /^\s/.test(line);
+			if (inMetadata) {
+				if (!indented) {
+					inMetadata = false;
+				} else {
+					const child = line.match(
+						/^(\s+)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/,
+					);
+					if (child) {
+						// Strip a trailing YAML comment, quote-aware (PR #3387
+						// follow-up, FB-027): a `#` inside a BALANCED quoted
+						// scalar is content, so `[a, "b # c"] # note` strips to
+						// `[a, "b # c"]` and still triggers the flow-collection
+						// check — the previous first-char-only check escaped
+						// it. A `#` at value start is a comment-only value
+						// (strips to empty), and `key: true # note` is still
+						// judged a bare scalar (PRR-011b).
+						const value = stripFrontmatterValueComment(child[3].trim());
+						const quoted =
+							(value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+							(value.startsWith("'") && value.endsWith("'") && value.length >= 2);
+						// A declared-but-empty child followed by `- item`
+						// lines is a YAML sequence — not a string (PRR-011c).
+						if (value === '') {
+							const childIndent = child[1].length;
+							for (let j = i + 1; j < end; j++) {
+								const next = lines[j] ?? '';
+								if (!next.trim()) continue;
+								if (!/^\s/.test(next)) break;
+								const nextIndent = next.length - next.trimStart().length;
+								if (nextIndent > childIndent && /^\s+-\s/.test(next)) {
+									findings.push({
+										category,
+										severity: 'error',
+										file: skillPath,
+										message: `metadata child "${child[2]}" is a YAML sequence — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
+									});
 								}
-							} else if (
-								!quoted &&
-								(/^\[.*\]$/.test(value) || /^\{.*\}$/.test(value))
-							) {
-								findings.push({
-									category,
-									severity: 'error',
-									file: skillPath,
-									message: `metadata child "${child[2]}" is a flow collection — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
-								});
-							} else if (
-								value !== '' &&
-								!quoted &&
-								SKILL_METADATA_NON_STRING_SCALAR.test(value)
-							) {
-								findings.push({
-									category,
-									severity: 'error',
-									file: skillPath,
-									message: `metadata child "${child[2]}" has a bare non-string scalar value "${value}" — the spec metadata map is string-typed (quote it)`,
-								});
+								break;
 							}
+						} else if (
+							!quoted &&
+							(/^\[.*\]$/.test(value) || /^\{.*\}$/.test(value))
+						) {
+							findings.push({
+								category,
+								severity: 'error',
+								file: skillPath,
+								message: `metadata child "${child[2]}" is a flow collection — the spec metadata map is string-typed (serialize lists as JSON array strings)`,
+							});
+						} else if (
+							value !== '' &&
+							!quoted &&
+							SKILL_METADATA_NON_STRING_SCALAR.test(value)
+						) {
+							findings.push({
+								category,
+								severity: 'error',
+								file: skillPath,
+								message: `metadata child "${child[2]}" has a bare non-string scalar value "${value}" — the spec metadata map is string-typed (quote it)`,
+							});
 						}
-						continue;
 					}
-				}
-				const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
-				if (!match) continue;
-				const key = match[1].toLowerCase();
-				if (key === 'metadata') {
-					inMetadata = true;
 					continue;
 				}
-				if (
-					!SKILL_SPEC_FRONTMATTER_KEYS.has(key) &&
-					!HOST_CONSUMED_TOP_LEVEL_KEYS.has(key)
-				) {
+			}
+			const match = line.match(/^([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*)$/);
+			if (!match) continue;
+			const key = match[1].toLowerCase();
+			if (key === 'metadata') {
+				// Strip a trailing comment (unquoted values only, PRR-011b
+				// pattern) so an empty-value `metadata: # note` is not
+				// treated as carrying an inline value — including the
+				// value-is-entirely-comment form (plan-critic Round 3).
+				// Quote-aware for the same reason as the child-value strip
+				// above (FB-027): a `#` inside a BALANCED quoted scalar is
+				// content.
+				const inline = stripFrontmatterValueComment(match[2].trim());
+				if (inline !== '') {
 					findings.push({
 						category,
 						severity: 'error',
 						file: skillPath,
-						message: `non-spec top-level frontmatter key "${match[1]}" — move it under the metadata: map (agentskills.io/specification)`,
+						message: `metadata key "${match[1]}" carries an inline value — use the block form (issue #3217; any non-empty inline value is non-canonical for this repo's writer)`,
 					});
 				}
-				if (key === 'name') {
-					const declared = match[2].trim().replace(/^["']|["']$/g, '');
-					if (declared && declared !== slug) {
-						findings.push({
-							category,
-							severity: 'error',
-							file: skillPath,
-							message: `frontmatter name "${declared}" does not match the parent directory "${slug}" (spec requirement)`,
-						});
-					}
+				inMetadata = true;
+				continue;
+			}
+			if (
+				!SKILL_SPEC_FRONTMATTER_KEYS.has(key) &&
+				!HOST_CONSUMED_TOP_LEVEL_KEYS.has(key)
+			) {
+				findings.push({
+					category,
+					severity: 'error',
+					file: skillPath,
+					message: `non-spec top-level frontmatter key "${match[1]}" — move it under the metadata: map (agentskills.io/specification)`,
+				});
+			}
+			if (key === 'name') {
+				const declared = match[2].trim().replace(/^["']|["']$/g, '');
+				if (declared && declared !== slug) {
+					findings.push({
+						category,
+						severity: 'error',
+						file: skillPath,
+						message: `frontmatter name "${declared}" does not match the parent directory "${slug}" (spec requirement)`,
+					});
 				}
 			}
 		}
@@ -1695,6 +1795,180 @@ export function detectRequiredCheckContractDrift(
 }
 
 // ---------------------------------------------------------------------------
+// Fragment path-class parity (issue #2955)
+// ---------------------------------------------------------------------------
+
+/**
+ * The legacy hand-maintained fragment-requirement predicate that used to be
+ * triplicated across the workflows. Detected as a literal substring on ANY
+ * line of ANY workflow file (including comments) so a re-introduced copy —
+ * or a comment quoting it — fails parity. Kept as a substring (not a full
+ * regex reconstruction) so partial re-introductions are caught too.
+ */
+export const LEGACY_FRAGMENT_REGEX_SUBSTRING =
+	'src/|bin/|scripts/|tests/|test/|runners/|examples/|binaries/';
+
+/**
+ * The legacy predicate's alternation tokens (issue #3291). The byte-exact
+ * substring above survives as one firing disjunct; this list powers the
+ * order/subset-tolerant purity arm: a maximal `token(|token)+` run fires
+ * when it has >= 2 members and ALL members are legacy tokens after stripping
+ * a leading `^` and a trailing `/` (so `src` == `src/`). A count-based
+ * threshold cannot work on this repo: ci.yml's path filter has 14 members
+ * (its run capture holds 13 — the backslash in the final `\.github/workflows/`
+ * member falls outside the run character class) and embeds exactly 2
+ * exact-member legacy hits, so count-2-by-members would fire the real tree.
+ * Accepted trade-off (issue #3291 round 2, F-7): the arm is a heuristic and
+ * also fires on legitimate non-classification text — a `case` statement or
+ * `grep -E` trigger over two legacy dirs — which surfaces as a false-positive
+ * drift error on an --enforced gate; fail-closed direction, deliberately
+ * accepted over a count rule that cannot distinguish the real filter.
+ */
+const LEGACY_FRAGMENT_TOKENS: readonly string[] =
+	LEGACY_FRAGMENT_REGEX_SUBSTRING.split('|').map((token) =>
+		token.replace(/\/$/, ''),
+	);
+
+// The lookbehind keeps matched runs maximal-left (linear scan; without it a
+// long pipe-free run of class characters rescans at ~n² — measured 433 s at
+// the 512 KiB read bound, 15 ms with the lookbehind). `^` is a run character
+// so per-member caret forms (`^src/|^bin/`) are captured and normalized.
+const LEGACY_ALTERNATION_RUN =
+	/(?<![A-Za-z0-9_.\-/*^])[A-Za-z0-9_.\-/*^]+(?:\|[A-Za-z0-9_.\-/*^]+)+/g;
+
+/**
+ * True when `text` carries a hand-maintained fragment-classification
+ * predicate under the tolerance rules above. Exported so the parity suite's
+ * workflow scan mirrors the detector exactly (issue #3291 NEW-1).
+ */
+export function isLegacyPredicateAlternation(text: string): boolean {
+	for (const run of text.match(LEGACY_ALTERNATION_RUN) ?? []) {
+		const members = run.split('|');
+		const allLegacy = members.every((member) => {
+			const normalized = member.replace(/^\^/, '').replace(/\/$/, '');
+			return LEGACY_FRAGMENT_TOKENS.includes(normalized);
+		});
+		if (allLegacy) return true;
+	}
+	return false;
+}
+
+/** Per-site minimum counts of shared-classifier invocations (issue #2955). */
+export const FRAGMENT_CLASSIFIER_ANCHOR_SITES: ReadonlyArray<{
+	file: string;
+	minInvocations: number;
+}> = [
+	{ file: '.github/workflows/pr-standards.yml', minInvocations: 2 },
+	{ file: '.github/workflows/release-and-publish.yml', minInvocations: 1 },
+];
+
+/** The full invocation form anchors a real consumer, not a comment mention. */
+const FRAGMENT_CLASSIFIER_ANCHOR =
+	'check-pending-fragment.ts --print-requirement';
+
+const WORKFLOW_READ_MAX_BYTES = 512 * 1024;
+
+function readWorkflowBounded(absolute: string): string | null {
+	try {
+		const stat = fs.statSync(absolute);
+		if (!stat.isFile()) return null;
+		if (stat.size > WORKFLOW_READ_MAX_BYTES) {
+			throw new Error(
+				`workflow exceeds the ${WORKFLOW_READ_MAX_BYTES}-byte read bound`,
+			);
+		}
+		return fs.readFileSync(absolute, 'utf8');
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Fragment-gate parity detector (#2955): the user-visible path verdict is
+ * single-sourced in scripts/user-visible-paths.ts and consumed via
+ * check-pending-fragment.ts --print-requirement. Errors when (a) the legacy
+ * hand-maintained regex reappears under .github/workflows/ (any file, any
+ * line, comments included) or (b) any pinned consumer file drops below its
+ * minimum classifier invocations (reverting a single arm trips this).
+ * Missing pinned files are notices (trimmed forks fail open), matching the
+ * absence-handling shape of the other detectors.
+ */
+export function detectFragmentPathParity(
+	root: string = REPO_ROOT,
+): DriftFinding[] {
+	const findings: DriftFinding[] = [];
+	const workflowsDir = path.join(root, '.github', 'workflows');
+	let entries: fs.Dirent[] = [];
+	try {
+		entries = fs.readdirSync(workflowsDir, { withFileTypes: true });
+	} catch {
+		return findings;
+	}
+	const contents = new Map<string, string | null>();
+	for (const entry of entries) {
+		if (!entry.isFile()) continue;
+		if (!entry.name.endsWith('.yml') && !entry.name.endsWith('.yaml')) continue;
+		const rel = `.github/workflows/${entry.name}`;
+		contents.set(rel, readWorkflowBounded(path.join(workflowsDir, entry.name)));
+	}
+	for (const [rel, text] of contents) {
+		if (text === null) continue;
+		if (
+			text.includes(LEGACY_FRAGMENT_REGEX_SUBSTRING) ||
+			isLegacyPredicateAlternation(text)
+		) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'error',
+				file: rel,
+				message:
+					'[FRAGMENT_PATH_PARITY] hand-maintained fragment-requirement path predicate re-introduced — path classification must consume scripts/user-visible-paths.ts via check-pending-fragment.ts --print-requirement (issue #2955)',
+			});
+		}
+	}
+	for (const site of FRAGMENT_CLASSIFIER_ANCHOR_SITES) {
+		const text = contents.get(site.file);
+		if (text === undefined) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'notice',
+				file: site.file,
+				message:
+					'[FRAGMENT_PATH_PARITY] pinned fragment-gate workflow absent; skipping anchor count',
+			});
+			continue;
+		}
+		if (text === null) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'error',
+				file: site.file,
+				message: '[FRAGMENT_PATH_PARITY] pinned fragment-gate workflow unreadable',
+			});
+			continue;
+		}
+		// Count only non-comment lines: a YAML comment quoting the full
+		// invocation form must not keep the count green after a real
+		// consumer is reverted (comment decoys are visible in review, but
+		// the counter should not depend on that).
+		let invocations = 0;
+		for (const line of text.split('\n')) {
+			if (line.trimStart().startsWith('#')) continue;
+			if (line.includes(FRAGMENT_CLASSIFIER_ANCHOR)) invocations++;
+		}
+		if (invocations < site.minInvocations) {
+			findings.push({
+				category: 'fragment-path-parity',
+				severity: 'error',
+				file: site.file,
+				message: `[FRAGMENT_PATH_PARITY] only ${invocations} shared-classifier invocations (minimum ${site.minInvocations}) — a fragment-gate arm was reverted to hand-maintained classification (issue #2955)`,
+			});
+		}
+	}
+	return findings;
+}
+
+// ---------------------------------------------------------------------------
 // User-global skill staleness (issue #2859 F6)
 // ---------------------------------------------------------------------------
 
@@ -1775,7 +2049,11 @@ export function detectUserGlobalSkillStaleness(
 				file: relativePath,
 				message: `stale ${SKILL_CONTRACT_DIGEST_KEY} stamp for skill '${slug}': frontmatter says ${stampedDigest ?? '<none>'}, body content hashes to ${actualDigest}; run 'bun run scripts/stamp-skill-contracts.ts --write'`,
 			});
-			continue;
+			// NO continue here (PR #3387 follow-up, FB-029): the user-global
+			// shadowing comparison below must run regardless of the repo-side
+			// stamp state — a missing or stale stamp is exactly when the
+			// canonical body is least vouched for, and the old `continue`
+			// let a stale user-global copy escape detection in that case.
 		}
 		for (const userRelative of [
 			`.opencode/skills/${slug}/SKILL.md`,
@@ -1884,6 +2162,7 @@ export const DETECTORS: Array<[string, () => DriftFinding[]]> = [
 	['config-docs', detectConfigDocsKeysDrift],
 	['gates-docs', detectGatesConfigDrift],
 	['required-check-contract', detectRequiredCheckContractDrift],
+	['fragment-path-parity', detectFragmentPathParity],
 	['user-global-skill-staleness', detectUserGlobalSkillStaleness],
 	['bundled-skill-staleness', detectBundledSkillStaleness],
 ];

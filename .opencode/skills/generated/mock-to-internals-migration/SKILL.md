@@ -1,11 +1,8 @@
 ---
 name: mock-to-internals-migration
 description: mock-to-internals-migration
-triggers:
-  - vitest to bun mock
-  - mock-to-internals
-  - _internals seam
 metadata:
+  triggers: '["vitest to bun mock","mock-to-internals","_internals seam"]'
   generated_from_knowledge: '[]'
   source_knowledge_ids: '[]'
   generated_at: "2026-07-02T02:35:49.991Z"

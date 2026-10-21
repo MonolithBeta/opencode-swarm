@@ -128,7 +128,7 @@ jobs:
         with:
           bun-version: "1.3.13"
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
@@ -210,7 +210,12 @@ jobs:
     needs: [release-please, update-release-notes]
     if: ${{ needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # Issue #2952: the three dispatched-run waits below declare 30 + 10 + 10 = 50 min
+    # of poll budget; at the observed ~1.2x per-iteration gh round-trip overhead the
+    # job needs ceil(50 x 1.2) + 5 min of margin = 65 min, so 70 min keeps 5 min of
+    # slack beyond the formula. The previous value (10) was below a single wait's own
+    # budget and killed the job mid-wait on every release.
+    timeout-minutes: 70
     concurrency:
       group: cleanup-release-fragments
       cancel-in-progress: false
@@ -224,6 +229,12 @@ jobs:
           ref: main
           fetch-depth: 0
           persist-credentials: false
+
+      # Classifier runtime for the cleanup self-check below (issue #2955);
+      # release-notes-fragments.mjs itself stays on node.
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.3.13"
 
       - name: Download exact-run cleanup plan
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -334,10 +345,31 @@ jobs:
             echo "::error::Cleanup PR body violates the PR contract."
             exit 1
           fi
-          if grep -Eq '^(src/|bin/|scripts/|tests/|test/|runners/|examples/|binaries/|package\.json|bun\.lock|bunfig\.toml)' <<< "$changed_paths"; then
-            echo "::error::Cleanup PR unexpectedly requires a pending release fragment."
-            exit 1
-          fi
+          # Path classification is owned by scripts/user-visible-paths.ts
+          # (issue #2955): the cleanup PR must NOT require a fragment, i.e.
+          # the shared classifier must report required=false over the
+          # cleanup's changed paths. rc 0|1 are both handled verdicts; the
+          # verdict line is parsed because with no --added inputs exit 0
+          # would also cover a (never expected) satisfied-required case.
+          cleanup_rc=0
+          cleanup_verdict="$(printf '%s\n' "$changed_paths" | bun scripts/check-pending-fragment.ts --print-requirement)" || cleanup_rc=$?
+          case "$cleanup_rc" in
+            0|1)
+              case "$cleanup_verdict" in
+                *'required=false'*)
+                  ;;
+                *)
+                  echo "::error::Cleanup PR unexpectedly requires a pending release fragment."
+                  echo "Classifier verdict: $cleanup_verdict"
+                  exit 1
+                  ;;
+              esac
+              ;;
+            *)
+              echo "::error::Fragment classifier unusable (exit $cleanup_rc): $cleanup_verdict"
+              exit 1
+              ;;
+          esac
 
           existing_pr="$(gh pr list --state open --head "$branch" --json url --jq '.[0].url // empty')"
           if [ -n "$existing_pr" ]; then
@@ -366,9 +398,16 @@ jobs:
           gh workflow run pr-standards.yml --ref "$branch" -f pr_number="$pr_number"
           gh workflow run drift-check.yml --ref "$branch"
 
+          # Issue #2952: the poll budget is per-call (iterations x sleep seconds);
+          # each call site below declares its target duration via a
+          # `# target-duration: <minutes>` comment, and
+          # scripts/check-workflow-timeouts.ts asserts the job timeout covers the
+          # sum of these budgets (with round-trip overhead and margin).
           wait_for_dispatched_run() {
             workflow="$1"
-            for _attempt in $(seq 1 120); do
+            max_attempts="${2:-120}"
+            poll_seconds="${3:-5}"
+            for _attempt in $(seq 1 "$max_attempts"); do
               record="$(gh run list \
                 --workflow "$workflow" \
                 --branch "$branch" \
@@ -387,15 +426,18 @@ jobs:
                   return 0
                 fi
               fi
-              sleep 5
+              sleep "$poll_seconds"
             done
             echo "::error::Timed out finding $workflow run for cleanup head $head_sha" >&2
             return 1
           }
 
-          ci_record="$(wait_for_dispatched_run ci.yml)"
-          standards_record="$(wait_for_dispatched_run pr-standards.yml)"
-          drift_record="$(wait_for_dispatched_run drift-check.yml)"
+          # target-duration: 30 — dispatched ci.yml observed 16m05s (workflow_dispatch runs the ubuntu-only 6-shard matrix, 40m per-shard ceiling)
+          ci_record="$(wait_for_dispatched_run ci.yml 360 5)"
+          # target-duration: 10 — dispatched pr-standards.yml observed 46s
+          standards_record="$(wait_for_dispatched_run pr-standards.yml 120 5)"
+          # target-duration: 10 — dispatched drift-check.yml observed 42s
+          drift_record="$(wait_for_dispatched_run drift-check.yml 120 5)"
           IFS=$'\t' read -r ci_run_id ci_run_url ci_run_sha ci_run_status ci_run_conclusion <<< "$ci_record"
           IFS=$'\t' read -r standards_run_id standards_run_url standards_run_sha standards_run_status standards_run_conclusion <<< "$standards_record"
           IFS=$'\t' read -r drift_run_id drift_run_url drift_run_sha drift_run_status drift_run_conclusion <<< "$drift_record"

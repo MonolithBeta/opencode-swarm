@@ -443,8 +443,15 @@ Each entry below points at a release note in `docs/releases/` and the invariant(
   chain, role-filtered and combined with the conditional command banner near
   the end, then appended as one fenced user-role carrier. The system hook still
   captures authoritative model/context metadata, but skips the architect
-  enhancer and command banner for that same request; non-architect and
-  sessionless agent-generation calls retain the system path.
+  enhancer and command banner for that same request; non-architect
+  agent-generation calls retain the system path. As of #3320, SESSIONLESS
+  system.transform calls (no `sessionID`) emit no swarm-specific text at all —
+  the sessionless HF-1b emission this entry originally described was
+  superseded by the sessionless early-return (`#3320` review round; the
+  contract is pinned by
+  `tests/integration/system-transform-sessionless-no-swarm-text.test.ts` and
+  the updated ATTACK-7 cases in
+  `tests/unit/hooks/system-enhancer-hf1b-adversarial.test.ts`).
 - **Ordering contract:** after legacy system materialization, guidance carriers
   are stably partitioned to the message-array tail in place, preserving relative
   order and object identity. Final context accounting runs after that partition
@@ -925,7 +932,7 @@ appendLedgerEvent({ type: 'plan-updated', payload: { ... } });
 - `tests/unit/plan/*.test.ts` — replay round-trip + projection tests.
 - `docs/plan-durability.md` is updated when the schema changes.
 
-**Settled-task re-open guard (FR-005):** `update_task_status` must not silently re-open a settled task (`completed` / `blocked` / `closed`) to `in_progress`. The tool and manager layers reject ordinary backward transitions; the only exception is the exact-task audited repair transaction with explicit force, reason, transition identity, expected state, and expected generation. The legacy `advanceTaskStateAndPersist` wrapper refuses coder and terminal boundaries so it cannot bypass that transaction.
+**Settled-task re-open guard (FR-005):** `update_task_status` must not silently re-open a settled task (`completed` / `blocked` / `closed`) to `in_progress`. The tool and manager layers reject ordinary backward transitions; the only exception is the exact-task audited repair transaction with explicit force, reason, transition identity, expected state, and expected generation. The legacy `advanceTaskStateAndPersist` wrapper refuses coder and terminal boundaries so it cannot bypass that transaction. One wedge-scoped `in_progress` admission shares that same audited transaction (issue #3389): when the durable coder-retry escalation record for the task's current retry epoch contains `user_escalation` (with `retryCount` at the threshold), the force repair is admitted; every other `in_progress` repair fails closed with `TASK_REPAIR_NOT_BACKWARD`, and an unreadable escalation index fails closed with `TASK_REPAIR_ESCALATION_INDEX_UNREADABLE` rather than guessing admission. Residual (conceded in code): retry epochs are not monotonic across a `repair_idle` reset — a stale escalation recorded at a colliding epoch number is indistinguishable from a live one, and only the `retryCount` conjunct bounds that residual.
 
 ### 6. test_runner safety
 
@@ -1128,7 +1135,7 @@ Two failures motivated the automated check:
 | `skill-mirror` | `.opencode`↔`.claude` byte identity / divergence / adapter / opencode-only; declared extra identical paths such as `.agents`; unclassified both-tree pairs | `src/config/skill-mirrors.ts` (shared with `tests/unit/skills/skill-mirrors.test.ts`) |
 | `bundled-skill` | `.opencode/skills/` ⊆ `BUNDLED_PROJECT_SKILLS`; no phantom entries; `package.json#files` coverage | `src/config/bundled-skills.ts`, `package.json` |
 | `skill-audience` | tracked static skills declare valid audience metadata (spec `metadata.audience` or legacy top-level, issue #2907); generated lifecycle skills are excluded | static skill frontmatter parsed by `src/hooks/skill-scoring.ts` |
-| `skill-frontmatter` | Agent-Skills-spec conformance (issue #2907): no non-spec top-level frontmatter keys outside the host-consumed allowlist (`disable-model-invocation`, `argument-hint`, `context`, `agent`) in tracked non-generated skills (the generated tree is exempt, matching `skill-audience`); `name` matches the parent directory; `metadata` children carry no bare scalar, flow-collection, or block-list values (string-typed map) | `scripts/drift-check.ts` `detectSkillFrontmatterSpecDrift` |
+| `skill-frontmatter` | Agent-Skills-spec conformance (issue #2907): no non-spec top-level frontmatter keys outside the host-consumed allowlist (`disable-model-invocation`, `argument-hint`, `context`, `agent`) in tracked skills (the generated tree is enforced post-#3216; only `skill-audience` exempts it); `name` matches the parent directory; `metadata` children carry no bare scalar, flow-collection, or block-list values (string-typed map); `metadata:` values use the block form — any non-empty inline value is non-canonical and flagged (issue #3217) | `scripts/drift-check.ts` `detectSkillFrontmatterSpecDrift` |
 | `tool` | metadata / handler / plugin-object / `TOOL_NAMES` / `AGENT_TOOL_MAP` / barrel-export coherence (issue #1643) | reuses `scripts/check-tool-registration.ts` |
 | `command` | `COMMAND_NAME_SET` parity; `subcommandOf` parents exist | `src/commands/registry.ts` |
 | `agent` | `ALL_AGENT_NAMES` ↔ `AGENT_TOOL_MAP`; opt-in maps only reference real agents | `src/config/agent-names.ts`, `src/config/constants.ts` |
