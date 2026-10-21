@@ -77,13 +77,26 @@ function canUseGitHubHosted(runsOn: string): boolean {
  * GitHub-hosted label reachable but puts the RUNNER on the untrusted leg — is
  * rejected. Adding a third shape must be a deliberate edit here.
  */
-const SANCTIONED_ROUTER_SHAPES: RegExp[] = [
-	/github\.event_name == 'merge_group' && 'self-hosted' \|\| 'ubuntu-latest'/,
-	/github\.event_name == 'pull_request' && 'ubuntu-latest' \|\| 'self-hosted'/,
+const RUNNER_LABELS = `fromJSON('["self-hosted","Linux","X64"]')`;
+
+const SANCTIONED_ROUTER_SHAPES: string[] = [
+	`github.event_name == 'merge_group' && ${RUNNER_LABELS} || 'ubuntu-latest'`,
+	`github.event_name == 'pull_request' && 'ubuntu-latest' || ${RUNNER_LABELS}`,
 ];
 
 function usesSanctionedRouterShape(runsOn: string): boolean {
-	return SANCTIONED_ROUTER_SHAPES.some((shape) => shape.test(runsOn));
+	return SANCTIONED_ROUTER_SHAPES.some((shape) => runsOn.includes(shape));
+}
+
+/*
+ * The org's self-hosted pool mixes operating systems (a macOS ARM64 runner
+ * carries the `self-hosted` label too), and every routed job assumes a Linux
+ * X64 host — coverage partition parity in particular. A route that asks for
+ * `self-hosted` alone can land on the Mac, so every route must also require
+ * the `Linux` and `X64` labels.
+ */
+function requiresLinuxX64(runsOn: string): boolean {
+	return /\bLinux\b/.test(runsOn) && /\bX64\b/.test(runsOn);
 }
 
 describe('self-hosted runner routing — security invariant (issue #3404)', () => {
@@ -121,6 +134,33 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 				}
 			}
 		}
+		expect(offenders).toEqual([]);
+	});
+
+	test('every route to the self-hosted pool also requires Linux and X64', () => {
+		const fs = require('node:fs') as typeof import('node:fs');
+		const offenders: string[] = [];
+		let routed = 0;
+		for (const file of fs.readdirSync(WORKFLOWS_DIR)) {
+			if (!file.endsWith('.yml') && !file.endsWith('.yaml')) continue;
+			let workflow: any;
+			try {
+				workflow = yaml.load(readWorkflow(file)) as any;
+			} catch {
+				continue;
+			}
+			for (const [jobName, job] of Object.entries<any>(workflow?.jobs ?? {})) {
+				const runsOn = runsOnOf(job);
+				if (!canUseSelfHosted(runsOn)) continue;
+				routed++;
+				if (!requiresLinuxX64(runsOn)) {
+					offenders.push(`${file}:${jobName} -> ${runsOn}`);
+				}
+			}
+		}
+		expect(routed, 'some job routes to the self-hosted pool').toBeGreaterThan(
+			0,
+		);
 		expect(offenders).toEqual([]);
 	});
 

@@ -253,7 +253,7 @@ jobs:
     # step below turns either failed/skipped dependency into a failed quality
     # context before the release fast path can skip the expensive checks.
     if: always()
-    runs-on: ${{ github.event_name == 'merge_group' && 'self-hosted' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     steps:
       - name: Release-owner guard dependency check
         if: ${{ always() && !cancelled() }}
@@ -916,7 +916,7 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
-    runs-on: ${{ github.event_name == 'merge_group' && 'self-hosted' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     # 30m: a typical shard is ~12 min (cached install + build + ~278 per-file
     # coverage runs at ~1.6 s each); the per-file retry budget (2 retries at up
     # to 60 s each) can add minutes on a flaky window, and a false-positive
@@ -1238,7 +1238,7 @@ jobs:
   # Release-please PRs skip package-check (version bumps don't change the bundle).
   package-check:
     needs: [detect-release, quality]
-    runs-on: ${{ github.event_name == 'merge_group' && 'self-hosted' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: needs.detect-release.outputs.is-release != 'true'
@@ -1270,7 +1270,7 @@ jobs:
   # Release-please PRs skip security tests (version bumps don't affect security).
   security:
     needs: [detect-release, quality]
-    runs-on: ${{ github.event_name == 'merge_group' && 'self-hosted' || 'ubuntu-latest' }}
+    runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
         if: needs.detect-release.outputs.is-release != 'true'
