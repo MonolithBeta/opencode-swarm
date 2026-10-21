@@ -155,6 +155,22 @@ describe('commit-pr validation suite parity (issue #2131 4c)', () => {
 		expect(skill).toContain('bun run package:smoke');
 	});
 
+	test('the temp-isolation exemption stays justified by its own guard', () => {
+		// The exemption is legitimate only while the step is gated to
+		// self-hosted runners, where it is runner plumbing rather than a
+		// contributor-facing validation command. Matching on the command text
+		// alone would keep the exemption alive after the guard is deleted and
+		// the echo starts running on the pull_request leg.
+		const source = readFileSync(CI_WORKFLOW_PATH, 'utf-8');
+		const qualityStart = source.indexOf('  quality:');
+		const step =
+			/- name: Isolate temp dir on self-hosted runners\n([\s\S]*?)\n {6}- /.exec(
+				source.slice(qualityStart),
+			);
+		expect(step, 'quality job has the temp-isolation step').not.toBeNull();
+		expect(step?.[1]).toContain("if: runner.environment == 'self-hosted'");
+	});
+
 	test('indented YAML block-scalar run bodies remain in the parity surface', () => {
 		const source = readFileSync(CI_WORKFLOW_PATH, 'utf-8');
 		const blockScalar = source.replace(
