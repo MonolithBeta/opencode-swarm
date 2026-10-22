@@ -206,4 +206,21 @@ describe('PR_FEEDBACK scope-bound write floors (AC2)', () => {
 			),
 		).rejects.toThrow(/verification ownership is incomplete/i);
 	});
+
+	test('a ..-traversal target that prefix-matches the scope file resolves outside it and is refused (review round 1)', async () => {
+		await settleVerification();
+		await consumeCoderScope();
+		currentDigest = D1;
+
+		await expect(
+			enforcePrWorkflowToolBefore(
+				directory,
+				SESSION_ID,
+				'edit',
+				{ path: 'src/index.ts/../../outside.ts' },
+				[],
+				'call-traversal',
+			),
+		).rejects.toThrow(/verification ownership is incomplete/i);
+	});
 });

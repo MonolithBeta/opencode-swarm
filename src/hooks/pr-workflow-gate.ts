@@ -230,6 +230,7 @@ import {
 	canonicalForgePrUrl,
 	type ForgeContext,
 } from '../providers/forge-provider.js';
+import { isPathIdentityWithin } from '../scope/path-identity';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
 import { collectPrWorkflowGhReadinessAdvisory } from '../services/pr-workflow-gh-readiness.js';
 import {
@@ -13232,15 +13233,17 @@ async function prFeedbackConsumedScopeAuthorizesWrite(
 	if (resolution.status !== 'resolved' || resolution.paths.length === 0)
 		return false;
 	const coversTarget = (target: string): boolean => {
-		const normalizedTarget = target.replace(/\\/g, '/');
+		// Containment is RESOLVED-PATH identity, not a lexical prefix: a
+		// `..`-traversal target like `src/index.ts/../../outside.ts`
+		// prefix-matches the declared file but resolves outside it
+		// (implementation-review round 1). Absolute and `..`-bearing targets
+		// therefore only admit when their resolution sits inside a declared
+		// scope entry's own resolution.
+		const resolvedTarget = path.resolve(directory, target);
 		return consumed.some((entry) =>
-			entry.files.some((file) => {
-				const normalizedFile = file.replace(/\\/g, '/');
-				return (
-					normalizedTarget === normalizedFile ||
-					normalizedTarget.startsWith(`${normalizedFile}/`)
-				);
-			}),
+			entry.files.some((file) =>
+				isPathIdentityWithin(resolvedTarget, path.resolve(directory, file)),
+			),
 		);
 	};
 	return resolution.paths.every(coversTarget);

@@ -257,4 +257,38 @@ describe('PR_FEEDBACK continuation consent floors (AC19)', () => {
 			await fs.writeFile(handoffAbsolute, original, 'utf8');
 		}
 	});
+
+	test('a foreign session with a mismatched handoff digest is refused pre-write and the consent sidecar is unchanged (review round 1)', async () => {
+		_test_exports.resetTrackedStateCache();
+		const handoffAbsolute = path.join(tempDir, handoffPath);
+		const original = await fs.readFile(handoffAbsolute, 'utf8');
+		const consentAbsolute = path.join(
+			tempDir,
+			'.swarm',
+			'pr-review',
+			RUN_ID,
+			'feedback-consent.json',
+		);
+		const consentBefore = await fs.readFile(consentAbsolute, 'utf8');
+		try {
+			const edited = JSON.parse(original) as { summary: string };
+			edited.summary = 'tampered for the foreign session';
+			await fs.writeFile(handoffAbsolute, JSON.stringify(edited), 'utf8');
+			_test_exports.resetTrackedStateCache();
+			await expect(
+				transitionPrReviewToFeedback(tempDir, SESSION_B, {
+					runId: RUN_ID,
+					handoffPath,
+					prUrl: PR_URL,
+					exactCommand,
+					confirmedByUser: true,
+				}),
+			).rejects.toThrow();
+			// No silent rebind: the refused transition leaves the consent
+			// record byte-identical (still owned by the review session).
+			expect(await fs.readFile(consentAbsolute, 'utf8')).toBe(consentBefore);
+		} finally {
+			await fs.writeFile(handoffAbsolute, original, 'utf8');
+		}
+	});
 });
