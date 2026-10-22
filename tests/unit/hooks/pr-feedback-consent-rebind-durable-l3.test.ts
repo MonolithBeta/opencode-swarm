@@ -225,6 +225,17 @@ describe('PR_FEEDBACK consent rebind is durable and one-shot (PRR-002/005)', () 
 		).toBe(true);
 		const feedbackState = await readPrWorkflowGateState(tempDir, SESSION_B);
 		expect(feedbackState?.mode).toBe('PR_FEEDBACK');
+
+		// The audit event is part of the durable contract (PRR-002): renaming
+		// or deleting the pr_feedback_consent_rebound emit must fail here.
+		const events = (
+			await fs.readFile(path.join(tempDir, '.swarm', 'events.jsonl'), 'utf8')
+		)
+			.split(/\r?\n/)
+			.filter((line) => line.includes('pr_feedback_consent_rebound'))
+			.map((line) => JSON.parse(line) as { sessionID?: string });
+		expect(events.length).toBe(1);
+		expect(events[0]?.sessionID).toBe(SESSION_B);
 	});
 
 	test('a further foreign session is refused (one-shot) and the consent is untouched', async () => {
