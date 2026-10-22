@@ -5333,19 +5333,12 @@ function extractAssistantTranscript(
 	// leaves room for a still-unfetched later assistant reply, so the
 	// "there MAY be unfetched earlier messages" signal stays honest there.
 	const lastMessageInfo = messages[messages.length - 1]?.info;
-	const lastMessageFinish =
-		typeof lastMessageInfo?.finish === 'string'
-			? lastMessageInfo.finish.toLowerCase()
-			: '';
-	const lastMessageCompletedAt = lastMessageInfo?.time?.completed;
+	// When the window's final message IS an assistant message, the loop's
+	// lastAssistantInfo is that same message, so terminalAssistantProof
+	// already carries the full error-free terminal discriminator for it —
+	// reuse that derivation rather than re-reading the error channel here.
 	const windowEndsAtTerminalAssistant =
-		lastMessageInfo?.role === 'assistant' &&
-		typeof lastMessageCompletedAt === 'number' &&
-		Number.isFinite(lastMessageCompletedAt) &&
-		(lastMessageFinish === 'stop' ||
-			lastMessageFinish === 'length' ||
-			lastMessageFinish === 'content-filter') &&
-		lastMessageInfo.error === undefined;
+		lastMessageInfo?.role === 'assistant' && terminalAssistantProof;
 	return {
 		text: assistantTexts.join('\n\n'),
 		messageCount: assistantTexts.length,
