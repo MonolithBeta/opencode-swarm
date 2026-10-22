@@ -147,6 +147,7 @@ import {
 	PrReviewPartialBaseCoverageRecordSchema,
 	type PrReviewReportVerdict,
 	type PrReviewTerminalCoverageSettlement,
+	readAndVerifyCoverageDisclosure,
 	summarizePrReviewBaseDimensionAttempts,
 } from '../pr-review/completion.js';
 import {
@@ -1071,6 +1072,18 @@ export interface PrWorkflowGateState {
 	prReviewPartialBaseCoverage?: PrReviewPartialBaseCoverageRecord;
 	prReviewCoverageDisclosurePath?: string;
 	prReviewCoverageDisclosureDigest?: string;
+	/**
+	 * Issue #3312: durable validation-phase skip disclosure persisted by the
+	 * INCOMPLETE bypass arm in `completePrWorkflow` (a controller-derived
+	 * projection of derived state — never a lane/model assertion). Mirrors the
+	 * `PrReviewCompletionState` fields in `src/pr-review/completion.ts`; read by
+	 * the completion report projection's disclosed-degradation leg only.
+	 */
+	prReviewValidationSkipDisclosure?: PrReviewValidationSkipDisclosureRecord;
+	/** Issue #3312: durable path of the validation-skip-disclosure artifact. */
+	prReviewValidationSkipDisclosurePath?: string;
+	/** Issue #3312: sha256 of the validation-skip-disclosure artifact bytes. */
+	prReviewValidationSkipDisclosureDigest?: string;
 	/**
 	 * Explicit per-dimension cancellations (issue #2383), written only by the
 	 * audited armed-recovery operation. A cancelled dimension is terminal for
@@ -3467,7 +3480,8 @@ function isOpenPrWorkflowLane(
 /**
  * Issue #2506 (G2): optional lane-liveness watchdog options for the on-demand
  * settlement entry points. The two-argument call shape every existing caller
- * uses means "watchdog disabled" (the default-off config contract).
+ * uses means no policy is threaded — the config contract threaded by the tool
+ * wrappers applies (default-on since #3313 AC14).
  */
 export interface PrWorkflowLaneLivenessOptions {
 	laneLivenessWatchdog?: LaneLivenessWatchdogConfig;
@@ -14051,6 +14065,202 @@ export async function reserveActivePrReviewReentryAuthorization(
 // back. Function declarations hoist, so the reference is available here.
 bindPrReviewReentryBindingReader(readPrReviewReentryBindingContext);
 
+/**
+ * Issue #3312 (U1): one skipped-phase entry in the INCOMPLETE bypass's durable
+ * validation-skip disclosure. `unsettledItemIds` is bounded by
+ * {@link MAX_SKIP_DISCLOSURE_UNSETTLED_ITEM_IDS} with a final `+N more`
+ * marker when truncated.
+ */
+interface PrReviewValidationSkipPhaseEntry {
+	phase: 'reviewer' | 'critic' | 'council';
+	reason: string;
+	unsettledItemIds: string[];
+}
+
+/**
+ * Issue #3312 (U1): the durable shape of
+ * `.swarm/pr-review/<runId>/validation-skip-disclosure.json` and of the
+ * `prReviewValidationSkipDisclosure` gate-state mirror. Structurally identical
+ * to the `PrReviewCompletionState` mirror fields in `src/pr-review/completion.ts`
+ * (the state schema is `.passthrough()`, so the fields survive persistence).
+ */
+interface PrReviewValidationSkipDisclosureRecord {
+	schemaVersion: number;
+	runId: string;
+	prHeadSha: string;
+	revisionDigest: string;
+	createdAt: string;
+	coverageKind: 'COMPLETE' | 'PARTIAL';
+	reportVerdict: 'INCOMPLETE';
+	skippedPhases: PrReviewValidationSkipPhaseEntry[];
+}
+
+/** Bounded-discipline cap for disclosed unsettled item ids (mirrors the
+ * `MAX_LANE_LIVENESS_DISCLOSED_IDS` discipline applied to the skip record). */
+const MAX_SKIP_DISCLOSURE_UNSETTLED_ITEM_IDS = 25;
+
+/** Issue #3312 (U1): write bound for the validation-skip disclosure artifact
+ * (same 4 KiB discipline as the coverage disclosure in completion.ts). */
+const PR_REVIEW_VALIDATION_SKIP_DISCLOSURE_MAX_BYTES = 4_096;
+
+/** The pinned skip reason recorded for every skipped phase. */
+const PR_REVIEW_VALIDATION_SKIP_REASON =
+	'unsettled validation phase at INCOMPLETE completion';
+
+function boundSkipDisclosureItemIds(ids: readonly string[]): string[] {
+	const bounded = ids.slice(0, MAX_SKIP_DISCLOSURE_UNSETTLED_ITEM_IDS);
+	const overflow = ids.length - bounded.length;
+	return overflow > 0 ? [...bounded, `+${overflow} more`] : [...bounded];
+}
+
+/**
+ * Issue #3312 (U1): read-only per-phase settlement probe backing the INCOMPLETE
+ * bypass arm. A phase is SETTLED when composition claims its whole inventory;
+ * when items are unclaimed, the same N-of-M admissibility derivation
+ * `assertPrReviewValidationSettled` uses decides between `admissible` (the
+ * phase would settle through the ladder's admission path — the arm persists
+ * its receipt exactly as the ladder would) and genuinely `unsettled` (the only
+ * kind of phase the bypass skips). The probe itself NEVER persists anything,
+ * so a fully-settled run keeps byte-identical ladder behavior.
+ */
+type IncompleteBypassPhaseProbe = {
+	phase: 'reviewer' | 'critic' | 'council';
+	settled: boolean;
+	admissible: boolean;
+	unsettledItemIds: string[];
+};
+
+function probeIncompleteBypassComposablePhase(
+	directory: string,
+	state: PrWorkflowGateState,
+	ctx: PrReviewGateContext,
+	phase: 'reviewer' | 'critic',
+	window: ReturnType<typeof prReviewPhaseWindow>,
+): IncompleteBypassPhaseProbe {
+	let composed: PrReviewPhaseComposition | null = null;
+	try {
+		composed = composePrReviewPhaseVerdicts(directory, state, phase, ctx);
+	} catch {
+		// Composition itself failed (missing artifact/provenance): the phase
+		// cannot be settled, and the ladder would surface the same error for
+		// non-INCOMPLETE verdicts. Disclose it as unsettled over its declared
+		// ownership instead of blocking the INCOMPLETE exit.
+		composed = null;
+	}
+	if (composed && composed.unclaimed.length === 0) {
+		return { phase, settled: true, admissible: false, unsettledItemIds: [] };
+	}
+	const unsettledItemIds = composed?.unclaimed ?? [
+		...new Set(
+			window.flatMap((batch) =>
+				batch.lanes.flatMap((lane) => lane.reviewItemIds ?? []),
+			),
+		),
+	];
+	if (composed && state.prHeadSha) {
+		const admission = deriveVerdictSettlementAdmission({
+			directory,
+			prHeadSha: state.prHeadSha,
+			phase,
+			window,
+			unclaimed: composed.unclaimed,
+			parentSessionId: state.sessionID,
+		});
+		if (admission.admitted) {
+			return { phase, settled: false, admissible: true, unsettledItemIds };
+		}
+	}
+	return { phase, settled: false, admissible: false, unsettledItemIds };
+}
+
+/**
+ * Issue #3312 (U1): probe every validation phase the terminal-ready ladder
+ * would settle — council only when a council batch is declared, reviewer
+ * always (declared-required), critic only when a critic inventory exists over
+ * the reviewer verdicts (the ladder's `criticInventory.length > 0` condition;
+ * the inventory is derived only once the reviewer phase is settled or
+ * N-of-M-admissible, because critic coverage is defined over surviving
+ * reviewer claims — the ladder's coverage-gate wrapper throws on an unsettled
+ * reviewer phase precisely to avoid silently skipping critic coverage, while
+ * this arm discloses the unsettled reviewer phase instead).
+ */
+function probeIncompleteBypassValidationPhases(
+	directory: string,
+	state: PrWorkflowGateState,
+	ctx: PrReviewGateContext,
+): IncompleteBypassPhaseProbe[] {
+	const probes: IncompleteBypassPhaseProbe[] = [];
+	const validationBatches = state.prReviewValidationBatches ?? [];
+	if (validationBatches.some((batch) => batch.phase === 'council')) {
+		// Council has no N-of-M admission route: its obligations need successful
+		// exact artifacts (same derivation the settlement assert uses).
+		const councilBatches = validationBatches.filter(
+			(batch) => batch.phase === 'council',
+		);
+		const settledObligations = new Set<string>();
+		for (const batch of councilBatches) {
+			for (const obligation of successfulObligationsFromExactBatch(
+				directory,
+				state,
+				batch.batchId,
+				batch.lanes,
+				'swarm-pr-review:council',
+				batch.validatedAt,
+				true,
+				new Set(),
+				ctx.revisionDigest,
+			)) {
+				settledObligations.add(obligation);
+			}
+		}
+		const missing = [
+			...new Set(
+				councilBatches.flatMap((batch) =>
+					batch.lanes.map((lane) => lane.workflowLane),
+				),
+			),
+		].filter((obligation) => !settledObligations.has(obligation));
+		probes.push({
+			phase: 'council',
+			settled: missing.length === 0,
+			admissible: false,
+			unsettledItemIds: missing,
+		});
+	}
+	const reviewerProbe = probeIncompleteBypassComposablePhase(
+		directory,
+		state,
+		ctx,
+		'reviewer',
+		prReviewPhaseWindow(state, 'reviewer'),
+	);
+	probes.push(reviewerProbe);
+	if (reviewerProbe.settled || reviewerProbe.admissible) {
+		let criticInventory: string[] = [];
+		try {
+			// The pure derivation (docblock: usable on unsettled states) — the
+			// coverage-gate wrapper's settled-reviewer invariant is the ladder's
+			// silent-skip defense, which this arm replaces with an explicit
+			// disclosure of the unsettled phase.
+			criticInventory = derivePrReviewCriticInventory(directory, state, ctx);
+		} catch {
+			criticInventory = [];
+		}
+		if (criticInventory.length > 0) {
+			probes.push(
+				probeIncompleteBypassComposablePhase(
+					directory,
+					state,
+					ctx,
+					'critic',
+					prReviewPhaseWindow(state, 'critic'),
+				),
+			);
+		}
+	}
+	return probes;
+}
+
 export async function completePrWorkflow(
 	directory: string,
 	sessionID: string,
@@ -14199,6 +14409,23 @@ export async function completePrWorkflow(
 		// every blocked attempt either leads to a re-dispatch (consuming
 		// budget) or to an explicit operator-confirmed abandonment.
 		if (settlement.kind === 'PARTIAL' || settlement.kind === 'NO_COVERAGE') {
+			// Issue #3312 (U2/AC13): dimensions whose (dimension, terminalState,
+			// failureClass) tuple is covered by the ADMITTED coverage disclosure
+			// were already disclosed to the operator — the retry-first refusal
+			// must not re-demand them (that re-demand was the F-class wedge that
+			// kept a truthfully disclosed run uncompletable). An absent
+			// disclosure reads as null → no exclusion (load-bearing for the
+			// undisclosed-dimension refusal below, which keeps firing).
+			const admittedCoverageDisclosure = await readAndVerifyCoverageDisclosure(
+				directory,
+				state,
+			);
+			const disclosedTuples = new Set(
+				(admittedCoverageDisclosure?.unresolvedDimensions ?? []).map(
+					(entry) =>
+						`${entry.dimension} ${entry.terminalState} ${entry.failureClass ?? ''}`,
+				),
+			);
 			const stagedPolicyEnabled =
 				state.prReviewResilience?.policy?.enabled === true;
 			const consumedLegacyContractRetry = new Set(
@@ -14211,6 +14438,16 @@ export async function completePrWorkflow(
 			const retryableRemainder = settlement.unresolvedDimensions.filter(
 				(entry) => {
 					if (entry.failureClass === 'operator_cancelled') return false;
+					if (
+						disclosedTuples.has(
+							`${entry.dimension} ${entry.terminalState} ${entry.failureClass ?? ''}`,
+						)
+					) {
+						// Covered by the admitted disclosure — see the U2/AC13
+						// comment above. The staged/legacy budget predicates below
+						// are otherwise untouched.
+						return false;
+					}
 					if (stagedPolicyEnabled) {
 						return (
 							entry.failureClass === 'contract' ||
@@ -14254,6 +14491,26 @@ export async function completePrWorkflow(
 			}
 		}
 		dispatchCoverageFinalization(settlement);
+		// Issue #3312 (U1): the honest INCOMPLETE bypass probe. Read-only per-
+		// phase settlement probe (see probeIncompleteBypassValidationPhases) —
+		// computed only for an INCOMPLETE verdict over COMPLETE/PARTIAL
+		// coverage, so APPROVE/REQUEST_CHANGES and NO_COVERAGE completions are
+		// untouched. A run whose every phase settles (directly or through the
+		// N-of-M admission the ladder itself would run) leaves this null-or-
+		// fully-settled and falls through to the unchanged ladder below.
+		let incompleteBypass: {
+			coverageKind: 'COMPLETE' | 'PARTIAL';
+			phases: IncompleteBypassPhaseProbe[];
+		} | null = null;
+		if (
+			verdict === 'INCOMPLETE' &&
+			(settlement.kind === 'COMPLETE' || settlement.kind === 'PARTIAL')
+		) {
+			incompleteBypass = {
+				coverageKind: settlement.kind,
+				phases: probeIncompleteBypassValidationPhases(directory, state, ctx),
+			};
+		}
 		if (settlement.kind === 'NO_COVERAGE') {
 			// NO_COVERAGE settles at completion (issue #2383): zero covered
 			// dimensions means no candidate inventory, no findings ladder, and
@@ -14269,6 +14526,7 @@ export async function completePrWorkflow(
 			// audit line. A run with zero artifacts may have no reserved run
 			// id, so one is generated in that case.
 			const noCoverageRunId =
+				state.prReviewPartialBaseCoverage?.runId ??
 				state.prReviewArtifactRunId ??
 				state.prReviewReservedRunId ??
 				generatePrReviewRunId();
@@ -14280,10 +14538,12 @@ export async function completePrWorkflow(
 			);
 			// The admission bumped the durable revision; the terminal clear below
 			// must CAS against the post-admission revision. If that clear itself
-			// fails, the gate keeps the admitted (immutable) disclosure and a
-			// retry re-admission throws — a deliberate fail-closed wedge; the
-			// operator re-reads state and recovers via armed recovery rather
-			// than silently re-crediting a zero-coverage settlement.
+			// fails, the gate keeps the admitted disclosure and the run-id chain
+			// above prefers its run id (issue #3312 AC14), so a retry re-admits
+			// through the idempotent byte-identical replay path instead of minting
+			// a fresh id and colliding with the existing disclosure. A same-tuple
+			// change still routes through the audited supersession arm; a
+			// different disclosure keeps being refused there.
 			terminalClearRevision = admittedState.revision;
 			try {
 				appendCoreEventSync(directory, {
@@ -14303,6 +14563,170 @@ export async function completePrWorkflow(
 				// Non-fatal audit trail (same discipline as abort).
 			}
 			// Fall through to the shared terminal clear below.
+		} else if (
+			incompleteBypass?.phases.some(
+				(probe) => !probe.settled && !probe.admissible,
+			)
+		) {
+			// Issue #3312 (U1): the honest INCOMPLETE bypass arm. The settlement
+			// is COMPLETE or PARTIAL (head-bound above, every launched lane
+			// terminal, coverage disclosed) but at least one declared validation
+			// phase cannot settle; instead of wedging the completion on the
+			// terminal-ready ladder's settlement assertions, complete with the
+			// pinned INCOMPLETE verdict and a durable skip disclosure naming
+			// the skipped phases and their unsettled item ids. APPROVE and
+			// REQUEST_CHANGES never enter this arm (the verdict is fixed
+			// INCOMPLETE by the probe guard); the head-binding and
+			// lane-settlement checks above already ran (AC6/AC7 floors).
+			// (a) AC21 floor: base coverage (and the PARTIAL disclosure
+			// requirement) must still settle — the arm discloses unsettled
+			// PHASES, never unsettled coverage.
+			await assertPrReviewBaseCoverageSettled(directory, sessionID, ctx);
+			// Admissible-but-unclaimed phases settle through the exact N-of-M
+			// admission the ladder would run — persist their receipts here so
+			// settled-phase behavior is identical on the bypass path. A
+			// throwing assert (e.g. a concurrent mutation) demotes the phase to
+			// a disclosed skip rather than blocking the INCOMPLETE exit.
+			const skippedPhases: PrReviewValidationSkipPhaseEntry[] = [];
+			for (const probe of incompleteBypass.phases) {
+				if (probe.settled) continue;
+				if (probe.admissible) {
+					try {
+						await assertPrReviewValidationSettled(
+							directory,
+							sessionID,
+							probe.phase,
+							ctx,
+						);
+						continue;
+					} catch {
+						// Fall through: disclose the phase as skipped.
+					}
+				}
+				skippedPhases.push({
+					phase: probe.phase,
+					reason: PR_REVIEW_VALIDATION_SKIP_REASON,
+					unsettledItemIds: boundSkipDisclosureItemIds(probe.unsettledItemIds),
+				});
+			}
+			// (c) Run id: prefer the persisted skip disclosure (a retry after a
+			// failed terminal clear re-derives and overwrites the artifact
+			// idempotently under the same run id — the run-id-reuse discipline
+			// U3 gives the NO_COVERAGE arm), then the artifact/reserved ids,
+			// then the trigger-eval binding (a COMPLETE run may carry no
+			// artifact or reserved id), else generate one.
+			const skipRunId = PrReviewRunIdSchema.parse(
+				state.prReviewValidationSkipDisclosure?.runId ??
+					state.prReviewArtifactRunId ??
+					state.prReviewReservedRunId ??
+					state.prReviewTriggerEvalRunId ??
+					generatePrReviewRunId(),
+			);
+			const skipRelativePath = path
+				.join('pr-review', skipRunId, 'validation-skip-disclosure.json')
+				.split(path.sep)
+				.join('/');
+			// (d)+(e)+(f): persist the durable artifact, then the gate-state
+			// mirror fields, rolling the artifact back when the state write
+			// fails — mirroring the admission's removeNewDisclosure discipline
+			// (no orphan artifact). The write runs under the session mutation
+			// lock with a fresh disk read, so admissible-phase receipt persists
+			// above are folded into the CAS baseline.
+			const disclosedState = await withSessionStateMutation(
+				directory,
+				normalizeSessionID(sessionID),
+				async () => {
+					const fresh = await readPrWorkflowGateStateFromDisk(
+						directory,
+						sessionID,
+					);
+					if (!fresh || fresh.mode !== 'PR_REVIEW') {
+						throw new Error(
+							'BLOCKED: PR_REVIEW validation skip disclosure requires the active head-bound gate state',
+						);
+					}
+					const record: PrReviewValidationSkipDisclosureRecord = {
+						schemaVersion: 1,
+						runId: skipRunId,
+						prHeadSha: state.prHeadSha ?? 'unknown',
+						revisionDigest: ctx.revisionDigest,
+						createdAt: isoNow(),
+						coverageKind: incompleteBypass.coverageKind,
+						reportVerdict: 'INCOMPLETE',
+						skippedPhases,
+					};
+					const absolutePath = validateSwarmPath(directory, skipRelativePath);
+					const raw = JSON.stringify(record, null, 2);
+					if (
+						Buffer.byteLength(raw, 'utf8') >
+						PR_REVIEW_VALIDATION_SKIP_DISCLOSURE_MAX_BYTES
+					) {
+						throw new Error(
+							'BLOCKED: PR_REVIEW validation skip disclosure exceeds its write bound',
+						);
+					}
+					// Retry-after-failed-clear semantics: the skip disclosure is
+					// a controller-derived PROJECTION of derived state (never a
+					// lane/model assertion), so a retry re-derives and overwrites
+					// the same artifact idempotently under the same run id — no
+					// immutability guard, unlike the PARTIAL coverage disclosure
+					// which pins lane evidence.
+					await writeAtomicJson(directory, absolutePath, record);
+					const digest = createHash('sha256').update(raw, 'utf8').digest('hex');
+					// Bind the reserved run id when nothing else pinned it (e.g. a
+					// COMPLETE run whose only run identity is the trigger-eval
+					// binding): the completion report projection reads the
+					// disclosure's run binding through prReviewArtifactRunId ??
+					// prReviewReservedRunId, and one run's artifacts must share
+					// one .swarm/pr-review/<runId>/ directory.
+					const bindReservedRunId =
+						!fresh.prReviewArtifactRunId && !fresh.prReviewReservedRunId;
+					try {
+						return await writeStateWhileLocked(directory, {
+							...fresh,
+							updatedAt: isoNow(),
+							...(bindReservedRunId
+								? { prReviewReservedRunId: skipRunId }
+								: {}),
+							prReviewValidationSkipDisclosure: record,
+							prReviewValidationSkipDisclosurePath: skipRelativePath,
+							prReviewValidationSkipDisclosureDigest: digest,
+						});
+					} catch (error) {
+						try {
+							if ((await fsp.readFile(absolutePath, 'utf8')) === raw) {
+								await fsp.rm(absolutePath, { force: true });
+							}
+						} catch {
+							// Best-effort rollback; the original error wins.
+						}
+						throw error;
+					}
+				},
+			);
+			// (h) The disclosure write bumped the durable revision; the shared
+			// terminal clear below must CAS against the post-write revision.
+			terminalClearRevision = disclosedState.revision;
+			// (g) Non-fatal audit event naming the disclosed skip.
+			try {
+				appendCoreEventSync(directory, {
+					type: 'pr_review_validation_skip_disclosed',
+					timestamp: isoNow(),
+					sessionID: state.sessionID,
+					prHeadSha: state.prHeadSha,
+					revisionDigest: ctx.revisionDigest,
+					runId: skipRunId,
+					coverageKind: incompleteBypass.coverageKind,
+					skippedPhases: skippedPhases.map(
+						(entry) => `${entry.phase}: ${entry.unsettledItemIds.length} items`,
+					),
+				});
+			} catch {
+				// Non-fatal audit trail (same discipline as the NO_COVERAGE arm).
+			}
+			// (i) Fall through to the shared terminal clear below —
+			// _test_exports.beforeTerminalClear fires AFTER the disclosure
+			// write by construction.
 		} else {
 			// Fail fast on an illegal verdict BEFORE the expensive terminal
 			// ladder, then re-validate against the post-ladder settlement in

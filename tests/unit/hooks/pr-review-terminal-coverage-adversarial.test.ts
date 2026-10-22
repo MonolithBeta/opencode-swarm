@@ -148,6 +148,34 @@ async function writePartial(
 	return JSON.parse(raw) as { success: boolean; [key: string]: unknown };
 }
 
+/**
+ * #3312 AC10 supersedes #2383's unconsumed-budget admission pins in the three
+ * post-admission legs below: the partial disclosure admission now refuses a
+ * contract-class dimension while its legacy retry budget remains, so each leg
+ * first consumes the ONE legacy contract retry for every unresolved dimension
+ * (the enforcePrReviewBaseDimensions prReviewContractRetry mechanism — one
+ * singleton lane per dimension; the unlaunched retry dispatch contributes no
+ * lane evidence, so the derived FAILED/contract settlement is unchanged and
+ * the admission is legitimate).
+ */
+async function consumeLegacyContractRetries(
+	unresolved: readonly Dimension[],
+): Promise<void> {
+	for (const [index, workflowLane] of unresolved.entries()) {
+		await enforcePrReviewBaseDimensions(
+			directory,
+			PR_ARTIFACT_SESSION_ID,
+			[{ laneId: `contract-retry-${index}`, workflowLane }],
+			{
+				batchId: `contract-retry-${index}`,
+				prHeadSha: PR_ARTIFACT_HEAD_SHA,
+				prReviewContractRetry: true,
+				prReviewResiliencePolicy: LEGACY_PR_REVIEW_RESILIENCE_POLICY,
+			},
+		);
+	}
+}
+
 describe('terminal N-of-6 adversarial cases (issue #2383)', () => {
 	test('duplicate declared dimensions are rejected by the arg schema', async () => {
 		const { records } = await establishNOfSix(5);
@@ -422,6 +450,7 @@ describe('terminal N-of-6 adversarial cases (issue #2383)', () => {
 		// dimensions, so the re-derived unresolved set no longer matches the
 		// immutable disclosure — settlement BLOCKs instead of re-crediting.
 		const { unresolved, records } = await establishNOfSix(4);
+		await consumeLegacyContractRetries(unresolved);
 		const admitted = await writePartial(records, unresolved);
 		expect(admitted.success).toBe(true);
 		const lateLane = [
@@ -452,6 +481,7 @@ describe('terminal N-of-6 adversarial cases (issue #2383)', () => {
 		// Complementary case: the late success is the LAST dimension, so the
 		// stale disclosure is irrelevant and settlement reports COMPLETE.
 		const { unresolved, records } = await establishNOfSix(5);
+		await consumeLegacyContractRetries(unresolved);
 		const admitted = await writePartial(records, unresolved);
 		expect(admitted.success).toBe(true);
 		const lateLane = [
@@ -482,6 +512,7 @@ describe('terminal N-of-6 adversarial cases (issue #2383)', () => {
 
 	test('a revision-digest drift fails closed as uncreditable live coverage', async () => {
 		const { unresolved, records } = await establishNOfSix(5);
+		await consumeLegacyContractRetries(unresolved);
 		const admitted = await writePartial(records, unresolved);
 		expect(admitted.success).toBe(true);
 		// Worktree drift: revision-aware coverage stops crediting the stale

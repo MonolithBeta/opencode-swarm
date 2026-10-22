@@ -494,12 +494,12 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/hooks/pr-workflow-gate.ts',
 		],
 		writerCitations: [
-			'src/background/pending-delegations.ts:3258 appendRecord — SQLite coordination event+state transaction with post-commit JSON projection',
-			'src/background/pending-delegations.ts:1527 writeDurableFileSync — fsync+rename-with-retry for legacy checkpoint/manifest/rolled-tail compatibility',
+			'src/background/pending-delegations.ts:3263 appendRecord — SQLite coordination event+state transaction with post-commit JSON projection',
+			'src/background/pending-delegations.ts:1532 writeDurableFileSync — fsync+rename-with-retry for legacy checkpoint/manifest/rolled-tail compatibility',
 		],
 		readerCitations: [
-			'src/background/pending-delegations.ts:3147 readDelegations — SQLite authority with bounded legacy compatibility, sync',
-			'src/background/pending-delegations.ts:3162 scanDelegationsForRecovery — strict, fails closed',
+			'src/background/pending-delegations.ts:3152 readDelegations — SQLite authority with bounded legacy compatibility, sync',
+			'src/background/pending-delegations.ts:3167 scanDelegationsForRecovery — strict, fails closed',
 			'pr-workflow-session-resolver / pr-workflow-gate / init-orphan-recovery / delegation-gate worktree-collision-ownership — via readDelegations',
 		],
 		schemaVersion:
@@ -609,12 +609,12 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		canonicalRoot: 'project-swarm',
 		writerModules: ['src/background/pending-delegations.ts'],
 		writerCitations: [
-			'src/background/pending-delegations.ts:5871 writeDelegationFallback / :5922 removeDelegationFallback',
-			'src/background/pending-delegations.ts:6373 writeBackgroundCoderReservations',
+			'src/background/pending-delegations.ts:6185 writeDelegationFallback / :6236 removeDelegationFallback',
+			'src/background/pending-delegations.ts:6687 writeBackgroundCoderReservations',
 		],
 		readerCitations: [
-			'src/background/pending-delegations.ts:5726 readDelegationFallback / :5738 listDelegationFallbacks / :5772 scanDelegationFallbacksForRecovery',
-			'src/background/pending-delegations.ts:6351 scanBackgroundCoderReservationsForAdmission',
+			'src/background/pending-delegations.ts:6040 readDelegationFallback / :6052 listDelegationFallbacks / :6086 scanDelegationFallbacksForRecovery',
+			'src/background/pending-delegations.ts:6665 scanBackgroundCoderReservationsForAdmission',
 		],
 		schemaVersion: 'fallback schemaVersion 1 (:1038)',
 		stateClass: 'authoritative',
@@ -624,7 +624,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			reviewedIssue: 2034,
 		},
 		writeLimits: {
-			bound: 'MAX_LIVE_BACKGROUND_FALLBACKS 256 (:102); per-file 1 MiB (:118); reservations ≤256 entries / 2 MiB store (:103, :6373), enforced on write/scan (:5786, :6351)',
+			bound: 'MAX_LIVE_BACKGROUND_FALLBACKS 256 (:102); per-file 1 MiB (:118); reservations ≤256 entries / 2 MiB store (:103, :6687), enforced on write/scan (:5786, :6665)',
 			scope: 'global',
 			citation: 'src/background/pending-delegations.ts:102-118,5786',
 		},
@@ -1086,7 +1086,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 			'src/tools/write-pr-review-trigger-eval.ts createTriggerReceipt — trigger-eval receipt atomic write (temp+link; refuses overwrite on EEXIST)',
 			'src/tools/pr-review-submission.ts executePrReviewSubmission writeFileSync — a run-scoped submission-payload.json provenance copy, overwritten per attempt (validateSwarmPath-contained, run_id-charset-bounded path; direct write, not temp+rename)',
 			'src/tools/export-pr-review-partial-results.ts executeExportPrReviewPartialResults — a run-scoped post-abort-export.json partial-salvage artifact (issue #3097) written through the canonical atomicWriteSwarmFile (fsync + bounded rename retry + cache invalidation), byte-capped (findings cap + 24 MiB margin; typed artifact-too-large refusal beyond), idempotent re-export; the gate re-check runs immediately before the write',
-			'src/hooks/pr-workflow-gate.ts:11956 tryCreatePrReviewRunReservation — create-only (wx) run-reservation.json owned by the reserving session',
+			'src/hooks/pr-workflow-gate.ts:11946 tryCreatePrReviewRunReservation — create-only (wx) run-reservation.json owned by the reserving session',
 			'src/pr-review/completion.ts:1441 — coverage-disclosure.json atomic write via coverageDisclosureRelativePath (:1097), ≤4 KiB',
 			'src/pr-review/verdict-settlement.ts persistVerdictSettlementReceipt — per-phase verdict-settlement.{reviewer,critic}.json atomic write via writeAtomicJson, ≤64 KiB (writer-side byte guard mirrors the bounded reader), ≤128 items, rename-overwritten on re-admission (issue #3101)',
 			'src/background/pr-feedback-event-queue.ts:455 writeQueueRecord — feedback-handoff lock/content writes',
