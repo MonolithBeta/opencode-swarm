@@ -243,4 +243,49 @@ describe('PR_FEEDBACK scope-bound writes survive the coder revision change (AC1)
 			);
 		expect(childWrite).toBe('admitted');
 	});
+
+	test('a directory scope entry keeps admitting a nested file after the digest changes (containment order)', async () => {
+		await settleVerification();
+		const prepared = JSON.parse(
+			await executePreparePrFeedbackScope(
+				{ task_id: '1.2', files: ['src'] },
+				directory,
+				{ sessionID: SESSION_ID },
+			),
+		) as { success: boolean };
+		expect(prepared.success).toBe(true);
+		const delegation = createDelegationGateHook(makeConfig(), directory);
+		await delegation.toolBefore(
+			{ tool: 'Task', sessionID: SESSION_ID, callID: 'l3-dir-scope-call' },
+			{
+				args: {
+					subagent_type: 'coder',
+					task_id: '1.2',
+					prompt: 'TASK: 1.2\nFILE: src/nested.ts\nACCEPTANCE: close FB-001',
+				},
+			},
+		);
+		await delegation.taskMetadata({
+			callID: 'l3-dir-scope-call',
+			parentSessionID: SESSION_ID,
+			childSessionID: 'l3-dir-coder-child',
+		});
+		currentDigest = D1;
+
+		// A nested file inside a directory entry stays admitted — pinning the
+		// containment argument order (swapped isPathIdentityWithin arguments
+		// would refuse it; mutant SWAP2 goes red here).
+		const nestedWrite = await enforcePrWorkflowToolBefore(
+			directory,
+			SESSION_ID,
+			'edit',
+			{ path: 'src/nested.ts' },
+			[],
+			'call-nested',
+		).then(
+			() => 'admitted',
+			(error: unknown) => `rejected: ${(error as Error).message}`,
+		);
+		expect(nestedWrite).toBe('admitted');
+	});
 });
