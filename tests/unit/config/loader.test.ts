@@ -203,8 +203,14 @@ describe('config/loader', () => {
 		});
 		it('returns defaults when no config files exist', () => {
 			const result = loadPluginConfig(tempDir);
-			// repo_graph and retention prefault nested defaults (#2483 §4, repo_graph precedent).
-			const { repo_graph: _rg, retention: _rt, ...legacyDefaults } = result;
+			// repo_graph and retention prefault nested defaults (#2483 §4, repo_graph precedent);
+			// lane_liveness_watchdog prefaults default-on since #3313 AC14 (same class).
+			const {
+				repo_graph: _rg,
+				retention: _rt,
+				lane_liveness_watchdog: _lw,
+				...legacyDefaults
+			} = result;
 			expect(legacyDefaults).toEqual({
 				config_format_version: 1,
 				max_iterations: 5,
