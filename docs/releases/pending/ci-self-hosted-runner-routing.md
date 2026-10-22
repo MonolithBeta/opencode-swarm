@@ -6,13 +6,14 @@ CI has been rebalanced onto the organization's self-hosted runner pool (Linux X6
 
 - **Merge-queue legs** (`ci.yml` on `merge_group` events):
   - `quality`, `coverage-shard`, `coverage`, `integration`, `package-check` and `security` run on `[self-hosted, Linux, X64]`.
-  - The per-OS matrix jobs `unit`, `memory-recall-regression` and `smoke` send their `ubuntu-latest` cells to `[self-hosted, Linux, X64]` and their `macos-latest` cells to `[self-hosted, macOS, ARM64]`. Their `windows-latest` cells stay on GitHub-hosted runners until self-hosted Windows runners are online.
+  - The per-OS matrix job `memory-recall-regression` sends its `ubuntu-latest` cells to `[self-hosted, Linux, X64]` and its `macos-latest` cells to `[self-hosted, macOS, ARM64]`.
+  - The `unit` and `smoke` matrices stay on GitHub-hosted runners for every OS. In the first routed queue run the self-hosted Linux hosts ran `unit` shards at 29-40+ minutes against this job's 40-minute ceiling (two of six shards were killed at the limit) and could not finish `smoke` inside its 15-minute window, while the self-hosted macs failed a broad class of subprocess-spawning suites (spawned children exited before the bounds under test could fire). Both stay GitHub-hosted until those are root-caused on the pool.
   - `php-validation`, the Windows `rust-sandbox-runner`, and the small gate jobs (`detect-release`, `release-owner-guard`, `detect-paths`, `unit-passed`) stay on GitHub-hosted runners.
 - **Trusted-event jobs**: all non-matrix jobs in `release-and-publish.yml` (which only ever runs on `push` to `main`), plus `stale.yml`, `quarantine-aging.yml`, and the scheduled/`workflow_dispatch` legs of `host-contract-check.yml`, run on `[self-hosted, Linux, X64]`.
 
 Routing is expressed per job, so one job definition keeps every leg on the right runner. Every route names an explicit OS and architecture: every self-hosted runner carries the `self-hosted` label whatever its OS, so a bare `self-hosted` could land on the wrong machine. Matrix values are unchanged, so required-check names such as `unit (macos-latest, 3)` are unchanged.
 
-Self-hosted machines persist between jobs and run several runner instances per host, so the nine routed `ci.yml` jobs each begin by pointing `TMPDIR` at their per-job `RUNNER_TEMP` (emptied by the runner for every job). Files left behind by an earlier job, such as a stray `.swarm` directory, cannot leak into the next one.
+Self-hosted machines persist between jobs and run several runner instances per host, so the seven routed `ci.yml` jobs each begin by pointing `TMPDIR` at their per-job `RUNNER_TEMP` (emptied by the runner for every job). Files left behind by an earlier job, such as a stray `.swarm` directory, cannot leak into the next one.
 
 The jobs in `release-and-publish.yml`, `stale.yml`, `quarantine-aging.yml` and `host-contract-check.yml` keep the runner's default temp root. None of them runs the repository test suite, which is what creates the `.swarm` scratch state the isolation above guards against; `publish-npm` is the largest of them at eleven steps, running a build and the package smoke check. If any of them later gains a test-suite step, it needs the isolation step too.
 

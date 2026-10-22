@@ -258,7 +258,12 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 
 	test('the runner-routed ci.yml jobs are the declared set', () => {
 		// Guards the migration's scope. A new runner-routed job in ci.yml must be
-		// a deliberate edit here.
+		// a deliberate edit here. `unit` and `smoke` are deliberately NOT routed:
+		// in the first routed queue run the self-hosted Linux hosts ran unit
+		// shards at 29-40+ min against the 40-minute ceiling (two of six shards
+		// were killed at the limit) and could not finish smoke inside its
+		// 15-minute window, and the self-hosted macs fail a broad class of
+		// subprocess-spawning suites. Both stay GitHub-hosted until root-caused.
 		const jobs = Object.entries<any>(parseWorkflow('ci.yml').jobs ?? {});
 		const routed = jobs
 			.filter(([, job]) => canUseSelfHosted(runsOnOf(job)))
@@ -272,9 +277,19 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 			'package-check',
 			'quality',
 			'security',
-			'smoke',
-			'unit',
 		]);
+	});
+
+	test('the unit and smoke matrices stay fully GitHub-hosted', () => {
+		// No per-event routing at all: every OS cell of both jobs uses the
+		// GitHub-hosted label on every trigger. A routed cell here reintroduces
+		// the 40-minute-ceiling kills (Linux unit shards) and the subprocess
+		// test-class failures (mac unit shards) observed in the first routed run.
+		const jobs = Object.entries<any>(parseWorkflow('ci.yml').jobs ?? {});
+		for (const name of ['unit', 'smoke']) {
+			const runsOn = runsOnOf(jobs.find(([jobName]) => jobName === name)?.[1]);
+			expect(runsOn, `${name} runs-on`).toBe('${{ matrix.os }}');
+		}
 	});
 
 	test('Windows legs and the sandbox runner stay GitHub-hosted', () => {
@@ -283,12 +298,11 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 		// GitHub-hosted matrix.os label for windows-latest, and must not name a
 		// Windows label set.
 		const jobs = Object.entries<any>(parseWorkflow('ci.yml').jobs ?? {});
-		for (const name of ['unit', 'memory-recall-regression', 'smoke']) {
-			const runsOn = runsOnOf(jobs.find(([jobName]) => jobName === name)?.[1]);
-			expect(runsOn, `${name} runs-on`).not.toBe('');
-			expect(runsOn).toMatch(/\|\| matrix\.os\s*}}$/);
-			expect(runsOn).not.toMatch(/windows/i);
-		}
+		const name = 'memory-recall-regression';
+		const runsOn = runsOnOf(jobs.find(([jobName]) => jobName === name)?.[1]);
+		expect(runsOn, `${name} runs-on`).not.toBe('');
+		expect(runsOn).toMatch(/\|\| matrix\.os\s*}}$/);
+		expect(runsOn).not.toMatch(/windows/i);
 		const sandbox = jobs.find(
 			([jobName]) => jobName === 'rust-sandbox-runner',
 		)?.[1];
