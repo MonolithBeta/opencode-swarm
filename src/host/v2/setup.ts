@@ -43,7 +43,7 @@ async function deferredV2StartupModelPreflight(
 			//    quiet-gated exactly like the v1 preflight's console.warn.
 			addDeferredWarning(warning);
 			if (!quiet) {
-				// biome-ignore lint/suspicious/noConsole: #3022 AC4 startup roster warning must be visible without OPENCODE_SWARM_DEBUG (same rationale as the index.ts version banner), gated on config.quiet like the v1 preflight
+				// biome-ignore lint/suspicious/noConsole: #3022 AC4 startup roster warning must be visible without OPENCODE_SWARM_DEBUG, gated on config.quiet like the v1 preflight
 				console.warn(warning);
 			}
 		}

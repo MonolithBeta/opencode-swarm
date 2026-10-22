@@ -4714,7 +4714,7 @@ export const EXEMPT_WRITER_MODULES: Readonly<Record<string, string>> = Object.fr
 	'src/retention/jsonl-cap.ts': 'shared retention plumbing (appendCappedJsonl/readTailJsonl, issue #2483 §1) — callers own the streams; their rows carry the cap citations',
 	'src/evaluation/retrieval-quality.ts': 'temporary bounded evaluation artifacts under os.tmpdir — always removed in finally and never durable project state',
 	'src/epic/residue-commit.ts': 'Epic residue-commit --pathspec-from-file input: one transient file under the git dir (git rev-parse --git-path), removed in finally — never durable project state, no reader',
-	'src/index.ts': 'bootstrap-root redirect advisory record (#2679): one bounded best-effort .swarm/advisories/bootstrap-root-redirect.json per redirected boot, mirrored to console + /swarm diagnose — no durable stream, no reader, never enumerated',
+	'src/index.ts': 'bootstrap-root redirect advisory record (#2679): one bounded best-effort .swarm/advisories/bootstrap-root-redirect.json per redirected boot, surfaced through the /swarm diagnose advisory buffer (the raw console leg was removed in issue #3405) — no durable stream, no reader, never enumerated',
 });
 
 /** Sequence window for fix-in-issue dispositions (issue #2036 amendment clause). */
