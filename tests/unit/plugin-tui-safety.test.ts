@@ -141,9 +141,13 @@ describe('Plugin TUI safety', () => {
 		// Node sidecar console.trace writes to stderr), the
 		// bracket-notated form, and both raw process streams, in the
 		// `if (...)` / trailing-comment / multi-line call shapes.
-		// Residual (disclosed): an ALIASED emitter (`const w = console.warn;
-		// w(hint)`) is not detectable by a source scan; the boot-suite
-		// capture is the backstop for that shape.
+		// Residual (disclosed): this SOURCE scan cannot see an emitter whose
+		// method is reached indirectly — an aliased binding (`const w =
+		// console.warn; w(hint)`) or a bracket-notated process stream
+		// (`process["stdout"]["write"](hint)`). The boot-suite capture is
+		// the backstop for an alias bound at CALL time; an IMPORT-time
+		// binding (captured before the capture installs) defeats both
+		// layers, and no test can observe it.
 		const RAW_HINT_EMITTER =
 			/(?:console\.\w+|console\s*\[\s*['"](?:warn|error|log|info|debug|trace)['"]\s*\]|process\.(?:stdout|stderr)\.write)\s*\([\s\S]{0,240}?\b(?:redirectHint|failClosedHint)\b/;
 		expect(RAW_HINT_EMITTER.test(source)).toBe(false);
