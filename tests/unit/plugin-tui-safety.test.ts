@@ -135,12 +135,17 @@ describe('Plugin TUI safety', () => {
 	test('init path (#3405): ownership hints carry no raw console leg and keep their advisory legs', () => {
 		const source = readRepoFile('src/index.ts');
 		// Statement-anchored absence pin: a comment naming the call cannot
-		// satisfy it, and the bounded window also catches the
-		// `if (...) console.warn(hint)` form, a trailing-comment call, a
-		// multi-line call, console.error, and process.stderr.write — every
-		// form that would render the hint as a TUI overlay.
+		// satisfy it. The scan covers EVERY console method (warn, error,
+		// log, info, debug, trace — debug and trace are NOT covered by the
+		// repo's console.(warn|error|log) rationale scan, and under the
+		// Node sidecar console.trace writes to stderr), the
+		// bracket-notated form, and both raw process streams, in the
+		// `if (...)` / trailing-comment / multi-line call shapes.
+		// Residual (disclosed): an ALIASED emitter (`const w = console.warn;
+		// w(hint)`) is not detectable by a source scan; the boot-suite
+		// capture is the backstop for that shape.
 		const RAW_HINT_EMITTER =
-			/(?:console\.(?:warn|error|log|info)|process\.stderr\.write)\s*\([\s\S]{0,240}?\b(?:redirectHint|failClosedHint)\b/;
+			/(?:console\.\w+|console\s*\[\s*['"](?:warn|error|log|info|debug|trace)['"]\s*\]|process\.(?:stdout|stderr)\.write)\s*\([\s\S]{0,240}?\b(?:redirectHint|failClosedHint)\b/;
 		expect(RAW_HINT_EMITTER.test(source)).toBe(false);
 		// Retention: the buffered advisory legs must survive any future edit
 		// that touches these branches (partial-deletion mutant must fail).

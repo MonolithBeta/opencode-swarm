@@ -132,34 +132,66 @@ function fixtureRoot(prefix: string): string {
 	return dir;
 }
 
+/**
+ * Every console method the plugin could use to emit a message — the silence
+ * contract covers all of them, so the oracle must observe all of them.
+ * (process.stdout/stderr.write are not wrapped: the test runner writes its
+ * own report there; the source-shape pin in plugin-tui-safety covers those
+ * two forms for the ownership hints.)
+ */
+const CONSOLE_METHODS = [
+	'warn',
+	'error',
+	'log',
+	'info',
+	'debug',
+	'trace',
+] as const;
+
+type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
+
 interface ConsoleCapture {
 	warn: string[];
+	error: string[];
 	log: string[];
+	info: string[];
+	debug: string[];
+	trace: string[];
+	/** Every captured stream, concatenated. */
+	all: string[];
 }
 
 function captureConsole(): { captured: ConsoleCapture; restore: () => void } {
-	const captured: ConsoleCapture = { warn: [], log: [] };
-	const originalWarn = console.warn;
-	const originalLog = console.log;
-	console.warn = (...args: unknown[]) => {
-		captured.warn.push(
-			args
-				.map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
-				.join(' '),
-		);
+	const captured: ConsoleCapture = {
+		warn: [],
+		error: [],
+		log: [],
+		info: [],
+		debug: [],
+		trace: [],
+		all: [],
 	};
-	console.log = (...args: unknown[]) => {
-		captured.log.push(
-			args
+	const originals = new Map<ConsoleMethod, (...args: unknown[]) => void>();
+	for (const method of CONSOLE_METHODS) {
+		originals.set(method, console[method] as (...args: unknown[]) => void);
+		const sink = captured[method];
+		console[method] = (...args: unknown[]) => {
+			const line = args
 				.map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
-				.join(' '),
-		);
-	};
+				.join(' ');
+			sink.push(line);
+			captured.all.push(line);
+		};
+	}
 	return {
 		captured,
 		restore: () => {
-			console.warn = originalWarn;
-			console.log = originalLog;
+			for (const method of CONSOLE_METHODS) {
+				const original = originals.get(method);
+				if (original) {
+					(console[method] as (...args: unknown[]) => void) = original;
+				}
+			}
 		},
 	};
 }
@@ -190,9 +222,7 @@ function hasParentRootHint(parent: string, child: string): boolean {
 
 /** #3405: no hint text may ride raw stderr/stdout (either captured stream). */
 function hasNoRawHintLine(captured: ConsoleCapture): boolean {
-	return ![...captured.warn, ...captured.log].some((line) =>
-		line.includes('project-root ownership'),
-	);
+	return !captured.all.some((line) => line.includes('project-root ownership'));
 }
 
 function swarmExists(dir: string): boolean {

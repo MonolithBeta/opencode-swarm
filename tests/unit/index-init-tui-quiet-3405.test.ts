@@ -151,26 +151,65 @@ afterAll(() => {
 	}
 });
 
+/**
+ * Every console method the plugin could use to emit a message. The silence
+ * contract is "no raw console output on the init path", so the oracle must
+ * observe every stream a message could arrive on — not just warn/log.
+ * (process.stdout/stderr.write are deliberately NOT wrapped: the test runner
+ * writes its own report there; the source-shape pin in plugin-tui-safety
+ * covers those two forms for the ownership hints.)
+ */
+const CONSOLE_METHODS = [
+	'warn',
+	'error',
+	'log',
+	'info',
+	'debug',
+	'trace',
+] as const;
+
+type ConsoleMethod = (typeof CONSOLE_METHODS)[number];
+
 interface ConsoleCapture {
 	warn: string[];
+	error: string[];
 	log: string[];
+	info: string[];
+	debug: string[];
+	trace: string[];
+	/** Every captured stream, concatenated. */
+	all: string[];
 }
 
 function captureConsole(): { captured: ConsoleCapture; restore: () => void } {
-	const captured: ConsoleCapture = { warn: [], log: [] };
-	const originalWarn = console.warn;
-	const originalLog = console.log;
-	console.warn = (...args: unknown[]) => {
-		captured.warn.push(args.map((a) => String(a)).join(' '));
+	const captured: ConsoleCapture = {
+		warn: [],
+		error: [],
+		log: [],
+		info: [],
+		debug: [],
+		trace: [],
+		all: [],
 	};
-	console.log = (...args: unknown[]) => {
-		captured.log.push(args.map((a) => String(a)).join(' '));
-	};
+	const originals = new Map<ConsoleMethod, (...args: unknown[]) => void>();
+	for (const method of CONSOLE_METHODS) {
+		originals.set(method, console[method] as (...args: unknown[]) => void);
+		const sink = captured[method];
+		console[method] = (...args: unknown[]) => {
+			const line = args.map((a) => String(a)).join(' ');
+			sink.push(line);
+			captured.all.push(line);
+		};
+	}
 	return {
 		captured,
 		restore: () => {
-			console.warn = originalWarn;
-			console.log = originalLog;
+			for (const method of CONSOLE_METHODS) {
+				const original = originals.get(method);
+				if (original) {
+					(console[method] as (...args: unknown[]) => void) = original;
+				}
+			}
 		},
 	};
 }
@@ -220,9 +259,7 @@ function dirEntryCount(dir: string): number {
 }
 
 function hintLines(captured: ConsoleCapture): string[] {
-	return [...captured.warn, ...captured.log].filter((l) =>
-		l.includes('project-root ownership'),
-	);
+	return captured.all.filter((l) => l.includes('project-root ownership'));
 }
 
 function bufferedHintLines(): string[] {
@@ -237,6 +274,11 @@ function bannerWarnLines(captured: ConsoleCapture): string[] {
 
 function bannerLogLines(captured: ConsoleCapture): string[] {
 	return captured.log.filter((l) => l.includes('[opencode-swarm] running v'));
+}
+
+/** The banner on ANY captured stream. */
+function bannerLines(captured: ConsoleCapture): string[] {
+	return captured.all.filter((l) => l.includes('[opencode-swarm] running v'));
 }
 
 /** parent(.git + .swarm + .opencode config) + ordinary child. */
@@ -333,8 +375,7 @@ describe('init-path raw console silence (#3405)', () => {
 
 			const captured = await bootAndSettle(root, BANNER_SETTLE_MS);
 
-			expect(bannerWarnLines(captured)).toEqual([]);
-			expect(bannerLogLines(captured)).toEqual([]);
+			expect(bannerLines(captured)).toEqual([]);
 		},
 		TEST_TIMEOUT_MS,
 	);
@@ -349,7 +390,7 @@ describe('init-path raw console silence (#3405)', () => {
 			const captured = await bootAndSettle(root, BANNER_SETTLE_MS);
 
 			expect(bannerWarnLines(captured)).toHaveLength(1);
-			expect(bannerLogLines(captured)).toEqual([]);
+			expect(bannerLines(captured)).toHaveLength(1);
 		},
 		TEST_TIMEOUT_MS,
 	);
@@ -364,7 +405,7 @@ describe('init-path raw console silence (#3405)', () => {
 			const captured = await bootAndSettle(root, BANNER_SETTLE_MS);
 
 			expect(bannerLogLines(captured)).toHaveLength(1);
-			expect(bannerWarnLines(captured)).toEqual([]);
+			expect(bannerLines(captured)).toHaveLength(1);
 		},
 		TEST_TIMEOUT_MS,
 	);
@@ -383,6 +424,10 @@ describe('init-path raw console silence (#3405)', () => {
 			).toEqual([]);
 			expect(
 				captured.log.filter((l) => l.includes('project-root ownership')),
+			).toHaveLength(1);
+			// Exactly one raw emission overall: the debug stdout leg only.
+			expect(
+				captured.all.filter((l) => l.includes('project-root ownership')),
 			).toHaveLength(1);
 		},
 		TEST_TIMEOUT_MS,

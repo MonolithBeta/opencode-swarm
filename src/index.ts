@@ -5795,8 +5795,9 @@ async function initializeOpenCodeSwarm(
 					// `DrainSummary`'s counters were computed and discarded here, which
 					// made `deferred` and `failed` — the two that say the drain did NOT
 					// finish its work — unobservable in production (issue #1821).
-					// `log` is gated on OPENCODE_SWARM_DEBUG and writes to stderr, never
-					// to a chat-visible stream (AGENTS.md invariant 10). `undefined`
+					// `log` is gated on OPENCODE_SWARM_DEBUG and writes to stdout
+					// (src/utils/logger.ts), never to a chat-visible stream
+					// (AGENTS.md invariant 10). `undefined`
 					// means a gate short-circuited before any drain ran, which is the
 					// overwhelmingly common case on the hot path and must stay silent.
 					if (summary) {
