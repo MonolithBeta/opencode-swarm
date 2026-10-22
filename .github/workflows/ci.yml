@@ -338,7 +338,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Use the preinstalled Bun when it is present
-        if: needs.detect-release.outputs.is-release != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
@@ -545,7 +545,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
       - name: Use the preinstalled Bun when it is present
-        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
@@ -1031,7 +1031,7 @@ jobs:
           # correct.
           fetch-depth: 0
       - name: Use the preinstalled Bun when it is present
-        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
@@ -1146,7 +1146,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
       - name: Use the preinstalled Bun when it is present
-        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
@@ -1243,7 +1243,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
       - name: Use the preinstalled Bun when it is present
-        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
@@ -1380,7 +1380,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
       - name: Use the preinstalled Bun when it is present
-        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
@@ -1424,7 +1424,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
       - name: Use the preinstalled Bun when it is present
-        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
         run: command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
