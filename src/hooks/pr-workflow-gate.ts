@@ -254,6 +254,7 @@ import {
 } from './lane-liveness-watchdog.js';
 import { normalizeToolName } from './normalize-tool-name.js';
 import { validateSwarmPath } from './utils.js';
+import { resolveWriteTargets } from './write-target-resolver.js';
 
 export type {
 	PrReviewDimensionCancellationRecord,
@@ -5456,6 +5457,10 @@ export async function rebindPrFeedbackHead(
 			prFeedbackStageA: undefined,
 			prFeedbackVerifications: undefined,
 			prFeedbackGateBatches: undefined,
+			// Issue #3316 (D5): a consumed scope must never authorize writes
+			// against the rebound ancestry — clear it exactly like invalidation
+			// does (pinned by pr-feedback-scope-rebind-clear-l3.test.ts).
+			prFeedbackScopes: undefined,
 			prFeedbackRebindCount: (state.prFeedbackRebindCount ?? 0) + 1,
 			updatedAt: isoNow(),
 		};
@@ -8479,9 +8484,27 @@ export async function enforcePrFeedbackVerificationOwnership(
 	)) {
 		claimedByItemId.set(itemId, laneId);
 	}
+	// Issue #3316 (D7a): ownership is exclusive only per item the batch actually
+	// covers at the CURRENT revision digest. A batch whose lanes never settled —
+	// or whose artifacts bind an older digest so it can never contribute
+	// coverage again — releases its items, so a re-dispatch under a different
+	// lane id is accepted instead of wedging the run on "owned by both". The
+	// sanctioned recovery reuses the same lane ids anyway; retired ownership
+	// above keeps GC-pruned bindings exclusive.
+	const currentDigestForOwnership = await currentPrFeedbackRevisionDigest(
+		directory,
+		state,
+	);
 	for (const record of previous) {
+		const batchCovered = prFeedbackBatchCoveredItems(
+			directory,
+			state,
+			record,
+			currentDigestForOwnership,
+		);
 		for (const lane of record.ownership) {
 			for (const itemId of lane.ownedItemIds) {
+				if (!batchCovered.has(itemId)) continue;
 				claimedByItemId.set(itemId, lane.laneId);
 			}
 		}
@@ -8603,7 +8626,7 @@ async function assertPrFeedbackVerificationSettledState(
 	const missing = inventory.filter((itemId) => !covered.has(itemId));
 	if (missing.length > 0 || covered.size !== inventory.length) {
 		throw new Error(
-			`BLOCKED: PR_FEEDBACK verification ownership is incomplete; missing inventory items: ${missing.join(', ') || '(none)'}`,
+			`BLOCKED: PR_FEEDBACK verification ownership is incomplete; missing inventory items: ${missing.join(', ') || '(none)'} — re-dispatch swarm-pr-feedback:verification on the edited tree (new batch_id, same lane ids) to re-settle coverage, then declare a fresh scope for further coder writes`,
 		);
 	}
 	return currentDigest;
@@ -12342,20 +12365,44 @@ function assertMatchingPrReviewFeedbackConsent(
 		sourceWorkflowInstanceId: string;
 	},
 ): void {
-	if (
-		record.session_id !== input.sessionID ||
-		record.run_id !== input.runId ||
-		record.handoff_path !== input.handoffPath ||
-		record.handoff_digest !== input.handoffDigest ||
-		canonicalGitHubPrUrl(record.pr_url) !== canonicalGitHubPrUrl(input.prUrl) ||
-		record.pr_head_sha.toLowerCase() !== input.prHeadSha.toLowerCase() ||
-		record.finding_ids_digest !== input.findingIdsDigest ||
-		record.source_workflow_instance_id !== input.sourceWorkflowInstanceId
-	) {
+	if (record.session_id !== input.sessionID) {
+		throw new Error(
+			'BLOCKED: PR_REVIEW feedback consent artifact belongs to a different session; repeat the exact continuation offer',
+		);
+	}
+	if (!prReviewFeedbackConsentFieldsMatch(record, input)) {
 		throw new Error(
 			'BLOCKED: PR_REVIEW feedback consent artifact does not match the requested handoff; remove the stale sidecar or repeat the exact continuation offer',
 		);
 	}
+}
+
+/**
+ * Issue #3316 (D7c): the consent fields that must match for BOTH the owning
+ * session and a user-confirmed foreign-session rebind (session_id exempt in
+ * the rebind arm — the rebind rewrites it under the lock).
+ */
+function prReviewFeedbackConsentFieldsMatch(
+	record: z.infer<typeof PrReviewFeedbackConsentSchema>,
+	input: {
+		runId: string;
+		handoffPath: string;
+		handoffDigest: string;
+		prUrl: string;
+		prHeadSha: string;
+		findingIdsDigest: string;
+		sourceWorkflowInstanceId: string;
+	},
+): boolean {
+	return (
+		record.run_id === input.runId &&
+		record.handoff_path === input.handoffPath &&
+		record.handoff_digest === input.handoffDigest &&
+		canonicalGitHubPrUrl(record.pr_url) === canonicalGitHubPrUrl(input.prUrl) &&
+		record.pr_head_sha.toLowerCase() === input.prHeadSha.toLowerCase() &&
+		record.finding_ids_digest === input.findingIdsDigest &&
+		record.source_workflow_instance_id === input.sourceWorkflowInstanceId
+	);
 }
 
 function workflowIdentity(state: PrWorkflowGateState): string {
@@ -12724,6 +12771,10 @@ export async function transitionPrReviewToFeedback(
 	let expectedConsentSourceIdentity: string;
 	let sourceRevision = 0;
 	let provenance: PrFeedbackReviewHandoffRecord['provenance'];
+	// Issue #3316 (D7c): a foreign-session continuation whose consent record
+	// matches on every field except session_id may rebind the consent to the
+	// current session — only after the explicit user-confirmation gates below.
+	let consentRebindFromSession: string | null = null;
 	if (preliminary) {
 		if (preliminary.mode !== 'PR_REVIEW') {
 			throw wrongModeError(preliminary, 'PR_REVIEW');
@@ -12772,11 +12823,7 @@ export async function transitionPrReviewToFeedback(
 			directory,
 			request.runId,
 		);
-		if (
-			!reservation ||
-			reservation.session_id !== normalizedSessionID ||
-			reservation.run_id !== request.runId
-		) {
+		if (!reservation || reservation.run_id !== request.runId) {
 			throw new Error(
 				'BLOCKED: completed PR_REVIEW continuation requires the matching durable run reservation for this session',
 			);
@@ -12784,6 +12831,9 @@ export async function transitionPrReviewToFeedback(
 		expectedConsentSourceIdentity = reservation.workflow_instance_id;
 		sourceIdentity = expectedConsentSourceIdentity;
 		provenance = 'external-v1';
+		if (reservation.session_id !== normalizedSessionID) {
+			consentRebindFromSession = reservation.session_id;
+		}
 	}
 
 	const consent = await readPrReviewFeedbackConsent(directory, request.runId);
@@ -12792,8 +12842,7 @@ export async function transitionPrReviewToFeedback(
 			'BLOCKED: PR_FEEDBACK continuation requires explicit confirmation; repeat the exact continuation command first',
 		);
 	}
-	assertMatchingPrReviewFeedbackConsent(consent, {
-		sessionID: normalizedSessionID,
+	const consentFieldsInput = {
 		runId: request.runId,
 		handoffPath: normalizedHandoff.relativePath,
 		handoffDigest: preliminaryRead.digest,
@@ -12801,7 +12850,21 @@ export async function transitionPrReviewToFeedback(
 		prHeadSha: artifact.pr_head_sha,
 		findingIdsDigest: hashPrReviewFindingIds(artifact.finding_ids),
 		sourceWorkflowInstanceId: expectedConsentSourceIdentity,
-	});
+	};
+	if (consentRebindFromSession !== null) {
+		// Foreign session: every field except session_id must match; the
+		// rebind itself happens under the lock, after the confirmation gates.
+		if (!prReviewFeedbackConsentFieldsMatch(consent, consentFieldsInput)) {
+			throw new Error(
+				'BLOCKED: PR_REVIEW feedback consent artifact does not match the requested handoff; remove the stale sidecar or repeat the exact continuation offer',
+			);
+		}
+	} else {
+		assertMatchingPrReviewFeedbackConsent(consent, {
+			sessionID: normalizedSessionID,
+			...consentFieldsInput,
+		});
+	}
 	const exactCommand = request.exactCommand?.trim();
 	const acceptedContinuationCommands =
 		buildAcceptedPrFeedbackContinuationCommands(
@@ -12862,7 +12925,12 @@ export async function transitionPrReviewToFeedback(
 				);
 				if (
 					!lockedReservation ||
-					lockedReservation.session_id !== normalizedSessionID ||
+					// Issue #3316 (D7c): for a user-confirmed foreign-session rebind the
+					// reservation still belongs to the ORIGINAL review session — pin the
+					// instance identity (and that the session did not churn to a third
+					// value) rather than the current session.
+					lockedReservation.session_id !==
+						(consentRebindFromSession ?? normalizedSessionID) ||
 					lockedReservation.workflow_instance_id !==
 						expectedConsentSourceIdentity
 				) {
@@ -12900,8 +12968,7 @@ export async function transitionPrReviewToFeedback(
 					'BLOCKED: PR_REVIEW feedback consent artifact disappeared during transition',
 				);
 			}
-			assertMatchingPrReviewFeedbackConsent(lockedConsent, {
-				sessionID: normalizedSessionID,
+			const lockedConsentFieldsInput = {
 				runId: request.runId,
 				handoffPath: normalizedHandoff.relativePath,
 				handoffDigest: lockedRead.digest,
@@ -12911,6 +12978,50 @@ export async function transitionPrReviewToFeedback(
 					lockedRead.artifact.finding_ids,
 				),
 				sourceWorkflowInstanceId: expectedConsentSourceIdentity,
+			};
+			let effectiveLockedConsent = lockedConsent;
+			if (
+				consentRebindFromSession !== null &&
+				lockedConsent.session_id !== normalizedSessionID
+			) {
+				// Issue #3316 (D7c): execute the audited consent rebind under the
+				// lock — every field except session_id must still match, and the
+				// user-confirmation gates already ran outside. The rewrite goes
+				// through the confirmed-state atomic-replace branch (offers are
+				// create-only by design), so the offered→confirmed flip below is
+				// a no-op for the rebound record.
+				if (
+					!prReviewFeedbackConsentFieldsMatch(
+						lockedConsent,
+						lockedConsentFieldsInput,
+					)
+				) {
+					throw new Error(
+						'BLOCKED: PR_REVIEW feedback consent artifact does not match the requested handoff; remove the stale sidecar or repeat the exact continuation offer',
+					);
+				}
+				effectiveLockedConsent = {
+					...lockedConsent,
+					state: 'confirmed',
+					session_id: normalizedSessionID,
+					confirmed_at: isoNow(),
+				};
+				await writePrReviewFeedbackConsent(directory, effectiveLockedConsent);
+				try {
+					appendCoreEventSync(directory, {
+						type: 'pr_feedback_consent_rebound',
+						timestamp: isoNow(),
+						sessionID: normalizedSessionID,
+						previousSessionId: lockedConsent.session_id,
+						runId: request.runId,
+					});
+				} catch {
+					// Non-fatal audit trail.
+				}
+			}
+			assertMatchingPrReviewFeedbackConsent(effectiveLockedConsent, {
+				sessionID: normalizedSessionID,
+				...lockedConsentFieldsInput,
 			});
 			if (
 				!buildAcceptedPrFeedbackContinuationCommands(
@@ -12923,9 +13034,9 @@ export async function transitionPrReviewToFeedback(
 					'BLOCKED: PR_FEEDBACK continuation command changed during transition',
 				);
 			}
-			if (lockedConsent.state === 'offered') {
+			if (effectiveLockedConsent.state === 'offered') {
 				await writePrReviewFeedbackConsent(directory, {
-					...lockedConsent,
+					...effectiveLockedConsent,
 					state: 'confirmed',
 					confirmed_at: isoNow(),
 				});
@@ -13071,6 +13182,70 @@ export async function consumePrFeedbackScopeDeclaration(
 	});
 }
 
+/**
+ * Issue #3316 (D5): a CONSUMED declaration stays authoritative for the coder
+ * child's bound writes across the digest moves its own edits cause. Unlike
+ * `resolvePrFeedbackScopeDeclaration` this does not re-assert settled
+ * verification and does not compare the current digest — the declaration was
+ * validated at consume time, and scopes are cleared on invalidation and
+ * rebind, so survival implies the same generation.
+ */
+async function resolveConsumedPrFeedbackScopeDeclaration(
+	directory: string,
+	sessionID: string,
+	taskId: string,
+): Promise<PrFeedbackScopeDeclarationRecord | null> {
+	const state = await readPrWorkflowGateState(directory, sessionID);
+	if (state?.mode !== 'PR_FEEDBACK') return null;
+	const declaration = (state.prFeedbackScopes ?? []).find(
+		(entry) => entry.taskId === taskId && entry.consumedByCallId,
+	);
+	return declaration ?? null;
+}
+
+/**
+ * Issue #3316 (D5): direct write tools are admitted inside a consumed scope's
+ * file list on the strength of the bound head, the immutable inventory and the
+ * consumed declaration itself — not the moving dirty-tree digest. Fail-closed
+ * on any unreadable state, unbound head, empty inventory, unverifiable write
+ * target, or target outside every consumed declaration.
+ */
+async function prFeedbackConsumedScopeAuthorizesWrite(
+	directory: string,
+	sessionID: string,
+	toolName: string,
+	args: Record<string, unknown>,
+): Promise<boolean> {
+	let state: PrWorkflowGateState | null;
+	try {
+		state = await readPrWorkflowGateState(directory, sessionID);
+	} catch {
+		return false;
+	}
+	if (!state || state.mode !== 'PR_FEEDBACK') return false;
+	if (!state.prHeadSha || !state.prFeedbackInventory?.length) return false;
+	const consumed = (state.prFeedbackScopes ?? []).filter(
+		(entry) => entry.consumedByCallId,
+	);
+	if (consumed.length === 0) return false;
+	const resolution = resolveWriteTargets(toolName, args, { directory });
+	if (resolution.status !== 'resolved' || resolution.paths.length === 0)
+		return false;
+	const coversTarget = (target: string): boolean => {
+		const normalizedTarget = target.replace(/\\/g, '/');
+		return consumed.some((entry) =>
+			entry.files.some((file) => {
+				const normalizedFile = file.replace(/\\/g, '/');
+				return (
+					normalizedTarget === normalizedFile ||
+					normalizedTarget.startsWith(`${normalizedFile}/`)
+				);
+			}),
+		);
+	};
+	return resolution.paths.every(coversTarget);
+}
+
 export async function validatePrFeedbackScopeBinding(
 	directory: string,
 	binding: {
@@ -13083,7 +13258,7 @@ export async function validatePrFeedbackScopeBinding(
 ): Promise<boolean> {
 	if (!binding.workflowSessionId || !binding.workflowRevisionDigest)
 		return false;
-	const declaration = await resolvePrFeedbackScopeDeclaration(
+	const declaration = await resolveConsumedPrFeedbackScopeDeclaration(
 		directory,
 		binding.workflowSessionId,
 		binding.taskId,
@@ -13489,10 +13664,17 @@ export async function enforcePrWorkflowToolBefore(
 		if (
 			(normalizedTool === 'bash' || normalizedTool === 'shell') &&
 			command.length > 0 &&
+			// Issue #3316 (D7b): the exact bound tracking fetch stays available
+			// in the armed window (mirroring the non-armed envelope above) so
+			// the operator can re-sync the bound ref without leaving the armed
+			// state. Every other fetch form still falls to the push-only refusal.
 			isAllowedPrWorkflowReadOnlyShell(command, {
 				allowCheckout: false,
 				allowFetch: false,
-				allowTrackingFetch: false,
+				allowTrackingFetch: Boolean(state.prHeadSha),
+				trackingFetchTarget: state.prHeadSha
+					? await _test_exports.resolveCurrentUpstreamPushTargetAsync(directory)
+					: null,
 			})
 		)
 			return;
@@ -13566,6 +13748,46 @@ export async function enforcePrWorkflowToolBefore(
 		}
 		await assertPrFeedbackReadyToPublish(directory, sessionID);
 		return;
+	}
+	if (
+		isShellCommandRequiringVerification &&
+		isSanctionedSoftResetToHead(command, state.prHeadSha)
+	) {
+		// Issue #3316 (D6): one sanctioned `git reset --soft <intake head>` so
+		// an invalidated generation can return HEAD to the immutable intake
+		// head and the mechanical ladder can restart (verification dispatch and
+		// Stage A both require HEAD == intake). Five fail-closed conditions;
+		// every other reset form falls through to the existing fail-closed
+		// refusal with its byte-identical message.
+		const currentHead = await _test_exports
+			.resolveCurrentGitHeadAsync(directory)
+			.catch(() => undefined);
+		const activeGeneration = state.prFeedbackPublication?.active;
+		if (
+			activeGeneration?.state === 'invalidated' &&
+			!state.prFeedbackReadyToPublish &&
+			currentHead &&
+			currentHead.trim().toLowerCase() !== state.prHeadSha!.toLowerCase() &&
+			currentHead.trim().length > 0 &&
+			(await _test_exports.resolveIsExactSingleChildCommitAsync(
+				directory,
+				state.prHeadSha!,
+				currentHead.trim(),
+			)) === true
+		) {
+			try {
+				appendPublicationEvent(directory, {
+					type: 'pr_feedback_publication_reset_soft',
+					sessionID: state.sessionID,
+					generation: activeGeneration.generation,
+					intakeHead: state.prHeadSha,
+					localHead: currentHead.trim(),
+				});
+			} catch {
+				// Non-fatal audit trail.
+			}
+			return;
+		}
 	}
 	if (isStandaloneGitAddShell) {
 		// Issue #3315 D3: the one sanctioned staging surface. Only an exact
@@ -13653,6 +13875,23 @@ export async function enforcePrWorkflowToolBefore(
 	// keeps the verification-settled requirement.
 	if (normalizedTool === 'rebind_pr_feedback_head' || isTrustedObserveTool)
 		return;
+	// Issue #3316 (D5): direct writes INSIDE a consumed scope's file list stay
+	// admitted after the digest moves — the scope declaration (bound head +
+	// immutable inventory + consumed file list) is the authority, not the
+	// moving dirty-tree digest. Everything else still requires settled
+	// verification at the current digest (Stage A, ordered gates and arming
+	// keep their own digest bindings).
+	if (
+		isDirectWrite &&
+		(await prFeedbackConsumedScopeAuthorizesWrite(
+			directory,
+			sessionID,
+			normalizedTool,
+			args ?? {},
+		))
+	) {
+		return;
+	}
 	await assertPrFeedbackVerificationSettled(directory, sessionID);
 }
 
@@ -16071,6 +16310,33 @@ function isSafeStandaloneGitCommit(command: string): boolean {
 	// fail-closed reject.
 	return /^[Gg][Ii][Tt](?:\s+-C(?:=|\s+)(?:"[^"\r\n]+"|'[^'\r\n]+'|[^\s;&|<>`]+))?\s+commit(?:\s+(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s;&|<>`]+))*\s*$/.test(
 		command.trim(),
+	);
+}
+
+/**
+ * Issue #3316 (D6): the ONE sanctioned reset form — exactly
+ * `git reset --soft <intake head>` (four whitespace-separated tokens, no `-C`,
+ * no other flags, no quoting tricks; the target must equal the bound intake
+ * head). Admission additionally requires an invalidated generation, no armed
+ * mirror, a resolvable current HEAD distinct from the intake head, and that
+ * HEAD is the single non-merge child of the intake head. Every other reset
+ * form falls through to the existing fail-closed refusal unchanged.
+ */
+function isSanctionedSoftResetToHead(
+	command: string,
+	intakeHead: string | undefined,
+): boolean {
+	if (!intakeHead) return false;
+	if (hasUnsafeShellControlSyntax(command)) return false;
+	const tokens = command.trim().split(/\s+/);
+	if (tokens.length !== 4) return false;
+	const [gitToken, subcommand, flag, target] = tokens;
+	return (
+		/^[Gg][Ii][Tt]$/.test(gitToken) &&
+		subcommand === 'reset' &&
+		flag === '--soft' &&
+		target === intakeHead &&
+		isSafeGitRefToken(target)
 	);
 }
 

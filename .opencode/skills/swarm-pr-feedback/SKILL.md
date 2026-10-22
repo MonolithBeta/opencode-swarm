@@ -13,7 +13,7 @@ description: >
   this process.
 metadata:
   audience: swarm-plugin
-  swarm-contract-digest: "e57e18e79789"
+  swarm-contract-digest: "52bff0bb9eea"
 ---
 
 # Swarm PR Feedback
@@ -475,7 +475,7 @@ Only exact positive verdict fields pass. A sentence containing â€œnot APPROVE,â€
 header without item rows, duplicate rows, missing IDs, degraded/truncated
 artifacts, wrong roles, stale content digests, parallel or out-of-order phases,
 and reused pre-edit approvals all fail closed. Any content change after Stage A
-invalidates Stage A and every later gate; restart at step 1. See
+invalidates Stage A and every later gate; restart at step 1. For an in-scope edit whose moved digest triggers the incomplete-ownership block, re-dispatch `swarm-pr-feedback:verification` on the edited tree (new batch_id, same lane ids) to re-settle coverage, then re-run Stage A. See
 "Re-recording Stage A on an unchanged revision" below for the one retention
 exception, which applies only when the revision digest itself did not change.
 Publication tools
