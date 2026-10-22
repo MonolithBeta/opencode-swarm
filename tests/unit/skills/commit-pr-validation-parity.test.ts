@@ -82,7 +82,7 @@ const CI_COMMAND_TO_SKILL_STRING: Record<string, string> = {
 const NON_QUALITY_SETUP_COMMANDS = new Set([
 	'bun install --frozen-lockfile',
 	'echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV',
-	'command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT',
+	'bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT',
 ]);
 
 /** YAML block-scalar indicators are syntax, not shell commands. */
