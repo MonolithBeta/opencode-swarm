@@ -915,7 +915,7 @@ jobs:
           echo "All unit matrix cells that ran succeeded."
       - name: Download unit validation reports
         if: always()
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: repository-validation-unit-*
           path: unit-reports
@@ -1058,7 +1058,7 @@ jobs:
           bash scripts/ci/run-coverage-gate.sh
       - name: Upload shard coverage report
         if: always() && github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
 
         with:
           name: coverage-shard-${{ matrix.shard }}
@@ -1079,7 +1079,7 @@ jobs:
       # collide on extraction.
       - name: Upload coverage flake annotations
         if: always() && github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
 
         with:
           name: flake-annotations-coverage-shard-${{ matrix.shard }}
@@ -1149,7 +1149,7 @@ jobs:
           echo "All coverage shard matrix cells that ran succeeded."
       - name: Download shard reports
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: coverage-shard-*
           path: shard-reports
@@ -1190,7 +1190,7 @@ jobs:
           echo "Coverage gate passed: ${coverage_value}% >= ${threshold}%"
       - name: Upload coverage report
         if: always() && github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
 
         with:
           name: coverage-report
@@ -1334,7 +1334,7 @@ jobs:
           exit $failed
       - name: Upload repository validation reports
         if: always() && github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
 
         with:
           name: repository-validation-integration
