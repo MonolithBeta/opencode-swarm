@@ -247,6 +247,16 @@ const FLOOR_LEGS: readonly FloorLeg[] = [
 		rows: `[STAGE-B-TEST] | ${ITEM_ID} | SKIPPED | evidence`,
 	},
 	{
+		name: 'SKIPPED on stage-b-reviewer (never a positive verdict)',
+		phase: 'stage-b-reviewer',
+		rows: `[STAGE-B-REVIEW] | ${ITEM_ID} | SKIPPED | evidence`,
+	},
+	{
+		name: 'SKIPPED on closeout-critic (never a positive verdict)',
+		phase: 'closeout-critic',
+		rows: `[CLOSEOUT-CRITIC] | ${ITEM_ID} | SKIPPED | evidence`,
+	},
+	{
 		name: 'non-verdict prose on stage-b-reviewer',
 		phase: 'stage-b-reviewer',
 		rows: `[STAGE-B-REVIEW] | ${ITEM_ID} | not APPROVE yet | evidence`,
