@@ -66,22 +66,23 @@ const CI_COMMAND_TO_SKILL_STRING: Record<string, string> = {
 /**
  * Environment-setup commands in the quality job that are not quality gates.
  *
- * `bun install` prepares the toolchain. The TMPDIR echo is runner plumbing
- * added by the self-hosted routing work: it points the job's temp root at the
- * per-job RUNNER_TEMP on persistent hosts and is gated on
- * `runner.environment == 'self-hosted'`, so it never runs on the pull_request
- * leg and is neither taught by nor needed in the contributor-facing commit-pr
- * skill. Only runner-environment preparation belongs here; a new BLOCKING check
- * must still be taught by the skill.
+ * `bun install` prepares the toolchain. The TMPDIR echo and the preinstalled-bun
+ * probe are runner plumbing added by the self-hosted routing work: they only
+ * matter on persistent self-hosted hosts (the TMPDIR echo is gated on
+ * `runner.environment == 'self-hosted'`; the bun probe just decides whether
+ * setup-bun needs to download at all), so neither is taught by nor needed in
+ * the contributor-facing commit-pr skill. Only runner-environment preparation
+ * belongs here; a new BLOCKING check must still be taught by the skill.
  *
  * Entries are the POST-normalization forms `qualityJobCommands` produces. That
  * normalizer strips one leading and one trailing quote from every command, so
- * the TMPDIR echo reads `$GITHUB_ENV` without its closing quote here — a
- * verbatim copy of the ci.yml line will silently miss and fail the test.
+ * both echo commands read their final argument without the closing quote here —
+ * a verbatim copy of the ci.yml line will silently miss and fail the test.
  */
 const NON_QUALITY_SETUP_COMMANDS = new Set([
 	'bun install --frozen-lockfile',
 	'echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV',
+	'command -v bun >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT',
 ]);
 
 /** YAML block-scalar indicators are syntax, not shell commands. */
