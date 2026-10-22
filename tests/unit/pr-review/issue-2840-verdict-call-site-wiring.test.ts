@@ -71,9 +71,9 @@ describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet
 		);
 		expect(sites).toEqual([
 			'src/hooks/pr-workflow-gate.ts:12309', // readPrReviewFinalFindingPolicyForReport
-			'src/hooks/pr-workflow-gate.ts:14132', // dispatchCoverageFinalization message formatting
-			'src/hooks/pr-workflow-gate.ts:14267', // completion preflight
-			'src/hooks/pr-workflow-gate.ts:14308', // completion post-ladder finding-policy check
+			'src/hooks/pr-workflow-gate.ts:14178', // dispatchCoverageFinalization message formatting
+			'src/hooks/pr-workflow-gate.ts:14313', // completion preflight
+			'src/hooks/pr-workflow-gate.ts:14354', // completion post-ladder finding-policy check
 			'src/pr-review/completion.ts:1721', // readPrReviewTerminalCoverageForReport
 		]);
 	});

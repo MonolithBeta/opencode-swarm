@@ -230,7 +230,7 @@ import {
 	canonicalForgePrUrl,
 	type ForgeContext,
 } from '../providers/forge-provider.js';
-import { isPathIdentityWithin } from '../scope/path-identity';
+import { isPathIdentityWithin } from '../scope/path-identity.js';
 import { canonicalWorkspaceIdentity } from '../scope/scope-binding.js';
 import { collectPrWorkflowGhReadinessAdvisory } from '../services/pr-workflow-gh-readiness.js';
 import {
@@ -8627,7 +8627,7 @@ async function assertPrFeedbackVerificationSettledState(
 	const missing = inventory.filter((itemId) => !covered.has(itemId));
 	if (missing.length > 0 || covered.size !== inventory.length) {
 		throw new Error(
-			`BLOCKED: PR_FEEDBACK verification ownership is incomplete; missing inventory items: ${missing.join(', ') || '(none)'} — re-dispatch swarm-pr-feedback:verification on the edited tree (new batch_id, same lane ids) to re-settle coverage, then declare a fresh scope for further coder writes`,
+			`BLOCKED: PR_FEEDBACK verification ownership is incomplete; missing inventory items: ${missing.join(', ') || '(none)'} — re-dispatch swarm-pr-feedback:verification on the edited tree (new batch_id, same lane ids) to re-settle coverage; further coder writes need a fresh scope under a new task_id, and Stage A plus the ordered gates re-run on the new digest`,
 		);
 	}
 	return currentDigest;
@@ -12368,7 +12368,7 @@ function assertMatchingPrReviewFeedbackConsent(
 ): void {
 	if (record.session_id !== input.sessionID) {
 		throw new Error(
-			'BLOCKED: PR_REVIEW feedback consent artifact belongs to a different session; repeat the exact continuation offer',
+			'BLOCKED: PR_REVIEW feedback consent artifact belongs to a different session (it was already rebound, or another session owns it); remove the stale sidecar and repeat the exact continuation offer',
 		);
 	}
 	if (!prReviewFeedbackConsentFieldsMatch(record, input)) {
@@ -12990,7 +12990,16 @@ export async function transitionPrReviewToFeedback(
 				// user-confirmation gates already ran outside. The rewrite goes
 				// through the confirmed-state atomic-replace branch (offers are
 				// create-only by design), so the offered→confirmed flip below is
-				// a no-op for the rebound record.
+				// a no-op for the rebound record. The rebind is ONE-SHOT: only a
+				// consent still owned by the reservation's original session may
+				// be rebound, which is also the compare-and-swap — a second
+				// foreign session (or a racing one) observes the already-rebound
+				// owner and is refused instead of silently stealing the consent.
+				if (lockedConsent.session_id !== consentRebindFromSession) {
+					throw new Error(
+						`BLOCKED: PR_REVIEW feedback consent for run "${request.runId}" was already rebound to another session; the original continuation offer is spent`,
+					);
+				}
 				if (
 					!prReviewFeedbackConsentFieldsMatch(
 						lockedConsent,
@@ -13184,6 +13193,30 @@ export async function consumePrFeedbackScopeDeclaration(
 }
 
 /**
+ * Canonical containment identity for a path that may not fully exist yet:
+ * realpath the longest existing ancestor prefix, then append the remaining
+ * not-yet-existing segments lexically. A symlink/junction ancestor is
+ * therefore resolved to its target (a link inside the scope pointing outside
+ * canonicalizes OUTSIDE), while purely not-yet-created paths keep their
+ * lexical form under the canonical prefix. Unresolvable roots fall back to
+ * the lexically resolved path.
+ */
+function canonicalizeExistingPrefix(resolvedPath: string): string {
+	const suffix: string[] = [];
+	let current = resolvedPath;
+	while (true) {
+		try {
+			return [realpathSync(current), ...suffix.reverse()].join(path.sep);
+		} catch {
+			const parent = path.dirname(current);
+			if (parent === current) return path.resolve(resolvedPath);
+			suffix.push(path.basename(current));
+			current = parent;
+		}
+	}
+}
+
+/**
  * Issue #3316 (D5): a CONSUMED declaration stays authoritative for the coder
  * child's bound writes across the digest moves its own edits cause. Unlike
  * `resolvePrFeedbackScopeDeclaration` this does not re-assert settled
@@ -13206,10 +13239,16 @@ async function resolveConsumedPrFeedbackScopeDeclaration(
 
 /**
  * Issue #3316 (D5): direct write tools are admitted inside a consumed scope's
- * file list on the strength of the bound head, the immutable inventory and the
- * consumed declaration itself — not the moving dirty-tree digest. Fail-closed
- * on any unreadable state, unbound head, empty inventory, unverifiable write
- * target, or target outside every consumed declaration.
+ * file list on the strength of the consumed declaration itself within the
+ * head-bound PR_FEEDBACK gate state — not the moving dirty-tree digest. The
+ * head binding is structural (the state IS the bound workflow; scopes are
+ * cleared on rebind and invalidation), not a per-write HEAD comparison.
+ * Fail-closed on any unreadable state, unbound head, empty inventory,
+ * unverifiable write target, or target outside every consumed declaration.
+ * Containment is canonical: existing path components are resolved through the
+ * filesystem (a symlink/junction ancestor cannot redirect a write out of the
+ * declared scope), and not-yet-existing components compare lexically under
+ * the canonical existing prefix.
  */
 async function prFeedbackConsumedScopeAuthorizesWrite(
 	directory: string,
@@ -13233,16 +13272,23 @@ async function prFeedbackConsumedScopeAuthorizesWrite(
 	if (resolution.status !== 'resolved' || resolution.paths.length === 0)
 		return false;
 	const coversTarget = (target: string): boolean => {
-		// Containment is RESOLVED-PATH identity, not a lexical prefix: a
+		// Containment is CANONICAL path identity, not a lexical prefix: a
 		// `..`-traversal target like `src/index.ts/../../outside.ts`
 		// prefix-matches the declared file but resolves outside it
-		// (implementation-review round 1). Absolute and `..`-bearing targets
-		// therefore only admit when their resolution sits inside a declared
-		// scope entry's own resolution.
-		const resolvedTarget = path.resolve(directory, target);
+		// (implementation-review round 1), and a symlinked/junctioned
+		// directory inside the declared scope could redirect a write outside
+		// it while passing lexically (PR-review round). Both operands are
+		// canonicalized through the filesystem for their existing prefix, so
+		// only the canonical resolution of the target admits.
+		const canonicalTarget = canonicalizeExistingPrefix(
+			path.resolve(directory, target),
+		);
 		return consumed.some((entry) =>
 			entry.files.some((file) =>
-				isPathIdentityWithin(resolvedTarget, path.resolve(directory, file)),
+				isPathIdentityWithin(
+					canonicalTarget,
+					canonicalizeExistingPrefix(path.resolve(directory, file)),
+				),
 			),
 		);
 	};
