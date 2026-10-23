@@ -35,6 +35,34 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 const ORIGINAL_INTERNALS = { ..._internals };
 
+/**
+ * #3317: the ASYNC resolver entry probes through `_internals.asyncSpawn` —
+ * these synthetic probe shapes stub that seam (the #1952 async-twin
+ * delegation pattern) so resolver fixtures stay platform-independent (an
+ * un-stubbed probe would ACCEPT a real /usr/bin/git on linux runners).
+ */
+function rejectedAsyncProbe(): ReturnType<typeof bunSpawn> {
+	return {
+		stdout: { text: async () => '' },
+		stderr: { text: async () => '' },
+		exited: Promise.resolve(1),
+		spawnError: undefined,
+		signalCode: null,
+		kill() {},
+	} as unknown as ReturnType<typeof bunSpawn>;
+}
+
+function versionOkAsyncProbe(): ReturnType<typeof bunSpawn> {
+	return {
+		stdout: { text: async () => 'git version 2.43.0\n' },
+		stderr: { text: async () => '' },
+		exited: Promise.resolve(0),
+		spawnError: undefined,
+		signalCode: null,
+		kill() {},
+	} as unknown as ReturnType<typeof bunSpawn>;
+}
+
 function restoreInternals(): void {
 	_internals.spawnSync = ORIGINAL_INTERNALS.spawnSync;
 	_internals.asyncSpawn = ORIGINAL_INTERNALS.asyncSpawn;
@@ -421,21 +449,8 @@ describe('git-executable — resolveGitExecutableAsync', () => {
 		_internals.platform = () => 'linux';
 		_internals.env = () => ({ PATH: '' });
 		_internals.spawnSync = () => fakeSpawnResult({ status: 1 });
-		// #3317: the async entry probes through asyncSpawn — stub BOTH seams
-		// to a rejected probe so the all-rejected fallback holds on every
-		// platform (on a host where /usr/bin/git really exists and answers,
-		// an unstubbed async probe would ACCEPT it and resolve that path).
-		_internals.asyncSpawn = (() =>
-			({
-				stdout: { text: async () => '' },
-				stderr: { text: async () => '' },
-				exited: Promise.resolve(1),
-				spawnError: undefined,
-				signalCode: null,
-				kill() {},
-			}) as unknown as ReturnType<
-				typeof bunSpawn
-			>) as typeof _internals.asyncSpawn;
+		// #3317: stub the async seam to a rejected probe (platform-independent).
+		_internals.asyncSpawn = () => rejectedAsyncProbe();
 
 		await expect(resolveGitExecutableAsync()).resolves.toBe('git');
 		// One yield per probed candidate — 3 linux platform candidates. The
@@ -452,19 +467,8 @@ describe('git-executable — resolveGitExecutableAsync', () => {
 		};
 		_internals.env = () => ({ PATH: '' });
 		_internals.spawnSync = () => fakeSpawnResult({ status: 1 });
-		// #3317: same asyncSpawn rejection stub as above — platform-independent
-		// all-rejected outcome.
-		_internals.asyncSpawn = (() =>
-			({
-				stdout: { text: async () => '' },
-				stderr: { text: async () => '' },
-				exited: Promise.resolve(1),
-				spawnError: undefined,
-				signalCode: null,
-				kill() {},
-			}) as unknown as ReturnType<
-				typeof bunSpawn
-			>) as typeof _internals.asyncSpawn;
+		// #3317: same asyncSpawn rejection stub (platform-independent).
+		_internals.asyncSpawn = () => rejectedAsyncProbe();
 
 		const [a, b] = await Promise.all([
 			resolveGitExecutableAsync(),
@@ -484,29 +488,11 @@ describe('git-executable — resolveGitExecutableAsync', () => {
 		_internals.spawnSync = (cmd) =>
 			cmd === gitPath ? fakeSpawnResult({ status: 0 }) : enoentResult();
 		// #3317: the async entry probes through asyncSpawn, so both seams
-		// answer (the #1952 async-twin delegation pattern).
+		// answer — only the override candidate is healthy.
 		_internals.asyncSpawn = ((cmd: string[]) =>
 			cmd[0] === gitPath
-				? ({
-						stdout: { text: async () => 'git version 2.43.0\n' },
-						stderr: { text: async () => '' },
-						exited: Promise.resolve(0),
-						spawnError: undefined,
-						signalCode: null,
-						kill() {},
-					} as unknown as ReturnType<typeof bunSpawn>)
-				: ({
-						stdout: { text: async () => '' },
-						stderr: { text: async () => '' },
-						exited: Promise.resolve(-1),
-						spawnError: Object.assign(new Error('spawn ENOENT'), {
-							code: 'ENOENT',
-						}),
-						signalCode: null,
-						kill() {},
-					} as unknown as ReturnType<
-						typeof bunSpawn
-					>)) as typeof _internals.asyncSpawn;
+				? versionOkAsyncProbe()
+				: rejectedAsyncProbe()) as typeof _internals.asyncSpawn;
 
 		await expect(resolveGitExecutableAsync()).resolves.toBe(gitPath);
 	});
