@@ -29,21 +29,34 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import { LEGACY_PR_REVIEW_RESILIENCE_POLICY } from '../pr-review-test-policy.js';
 
 // Feedback F18a (issue #3312): the INCOMPLETE bypass arm's ADMISSIBLE-phase
-// branch had zero direct coverage — a reviewer phase whose unclaimed items are
-// N-of-M-ADMISSIBLE (typed liveness-dead owner lanes across 1+budget distinct
-// batches; the seeding shape of tests/unit/pr-review/n-of-m-verdict-settlement*)
-// settles through the ladder's exact admission path INSIDE the bypass arm: the
-// receipt persists under .swarm/pr-review/<runId>/verdict-settlement.reviewer.json
+// branch — the `if (probe.settled || !probe.admissible) continue; ...
+// assertPrReviewValidationSettled` loop in completePrWorkflow — must be the
+// ONLY writer of the reviewer verdict-settlement receipt in this world. A
+// reviewer phase whose unclaimed items are N-of-M-ADMISSIBLE (typed
+// liveness-dead owner lanes across 1+budget distinct batches; the seeding
+// shape of tests/unit/pr-review/n-of-m-verdict-settlement*) enters
+// completePrWorkflow UNSETTLED with NO persisted receipt; the arm's admissible
+// loop settles it through the ladder's exact admission path, the receipt
+// persists under .swarm/pr-review/<runId>/verdict-settlement.reviewer.json,
 // and the skip disclosure must NOT list the reviewer phase as skipped (it
-// settled via admission), while the auto-probed critic phase (non-empty critic
-// inventory over the surviving CONFIRMED/HIGH reviewer claims, no declared
-// critic batch) stays disclosed as the skipped phase.
+// settled via admission). The arm's entry condition (one probe neither
+// settled nor admissible) is supplied by a declared council batch whose
+// obligation's artifact is destroyed after the reviewer declarations; the
+// critic phase (no declared critic batch) joins the disclosure only in the
+// post-settlement re-probe, once the reviewer's surviving CONFIRMED/HIGH
+// claims project a non-empty critic inventory.
 
 const SESSION_ID = PR_ARTIFACT_SESSION_ID;
 const HEAD_SHA = PR_ARTIFACT_HEAD_SHA;
 const RUN_ID = 'i1-admissible-run';
 const LIVE_LANE = 'i1-live-reviewer';
 const DEAD_LANE = 'i1-dead-reviewer';
+const COUNCIL_LANE = 'i1-council-lane';
+const COUNCIL_BATCH_ID = `${RUN_ID}-cc-1`;
+const MICRO_HEADER =
+	'[CANDIDATE] | candidate_id | micro_lane | severity | category | file:line | claim | invariant_violated | evidence_summary | confidence | risk_impact | risk_tags';
+/** The council artifact's exact text — its sha256 locates the stored file. */
+const COUNCIL_ARTIFACT_TEXT = `${MICRO_HEADER}\n[CLEAN] | ${COUNCIL_LANE} | exact reviewed diff | council adjudicated no unresolved review question`;
 let directory = '';
 
 const ORIGINALS = {
@@ -146,8 +159,6 @@ async function establishPartialBase(): Promise<string[]> {
 		{ sessionID: SESSION_ID },
 	);
 	expect(disclosureWrite).toContain('"success": true');
-	const MICRO_HEADER =
-		'[CANDIDATE] | candidate_id | micro_lane | severity | category | file:line | claim | invariant_violated | evidence_summary | confidence | risk_impact | risk_tags';
 	const triggerRows: Array<Record<string, string>> = [];
 	for (const [
 		index,
@@ -247,25 +258,55 @@ async function seedLivenessDeadReviewerLane(batchId: string, laneId: string) {
 }
 
 /**
- * Declare the reviewer N-of-M world over the candidate inventory: the first
+ * Declare ONLY the reviewer N-of-M world over the candidate inventory: the first
  * batch's LIVE lane claims the first two items with real [REVIEWED] rows
  * while its DEAD lane covers the rest, and two retry batches re-declare the
  * dead lane's items (1 + PR_REVIEW_VERDICT_RETRY_BUDGET = 3 distinct owner
  * batches per dead item, each liveness-dead). The reviewer phase is thereby
- * N-of-M-ADMISSIBLE over its unclaimed items (deriveVerdictSettlementAdmission
- * admits — the exact seeding shape of the n-of-m-verdict-settlement suites).
+ * N-of-M-ADMISSIBLE over its unclaimed items but UNSETTLED — no receipt
+ * exists anywhere on disk (deriveVerdictSettlementAdmission admits; the exact
+ * seeding shape of the n-of-m-verdict-settlement suites).
  *
- * Declaring the critic batch afterwards runs the ladder's reviewer assert at
- * declaration time, which settles the reviewer phase THROUGH that admission
- * (persisting the verdict-settlement receipt + anchor) — the only production
- * order in which the critic inventory projects the surviving CONFIRMED/HIGH
- * claims. The critic batch itself is declared-but-never-run: no artifacts, no
- * delegation records, so it is the genuinely unsettled phase the bypass arm
- * discloses while the admission-settled reviewer phase is NOT skipped.
+ * F18a tautology guard: NO critic batch is declared. Recording a critic batch
+ * runs the ladder's reviewer settlement assert AT DECLARATION TIME
+ * (recordPrReviewValidationBatch's `phase === 'critic'` branch), which
+ * persists the verdict-settlement receipt before completePrWorkflow runs —
+ * the bypass arm's admissible loop then never executes its assert, and
+ * deleting that assert keeps the test green (the tautology this rework
+ * eliminates). Reviewer declarations run no reviewer assert (only the
+ * council and critic branches do), so the arm's admissible loop is the ONLY
+ * writer of the reviewer receipt in this world.
+ *
+ * The bypass arm still needs one probe that is neither settled nor
+ * admissible, and no critic probe can exist at entry: with an
+ * admissible-but-unreceipted reviewer, `authoritativeReviewerClaims` projects
+ * an empty map (claims flow only once unclaimed is empty or a receipt covers
+ * it), so the critic inventory is empty and the critic phase is not even
+ * probed. A declared-but-satisfied COUNCIL batch supplies that probe instead:
+ * it is declared FIRST (the reviewer window spans everything after the latest
+ * council batch) with a satisfying micro-family [CLEAN] artifact, so every
+ * reviewer declaration's ladder council assert PASSES; the artifact is then
+ * destroyed, leaving the council obligation missing at completion — the
+ * genuinely unsettled, non-admissible phase that admits the run into the
+ * bypass arm and stays disclosed as skipped.
  */
 async function seedAdmissibleReviewerWorld(itemIds: readonly string[]) {
 	const liveItems = itemIds.slice(0, 2);
 	const deadItems = itemIds.slice(2);
+	await recordPrReviewValidationBatch(
+		directory,
+		SESSION_ID,
+		'council',
+		[{ laneId: COUNCIL_LANE, workflowLane: COUNCIL_LANE }],
+		{ batchId: COUNCIL_BATCH_ID, prHeadSha: HEAD_SHA },
+	);
+	await persistPrReviewBatch(
+		directory,
+		COUNCIL_BATCH_ID,
+		'swarm-pr-review:council',
+		[{ laneId: COUNCIL_LANE, workflowLane: COUNCIL_LANE }],
+		{ textOverride: COUNCIL_ARTIFACT_TEXT },
+	);
 	await recordPrReviewValidationBatch(
 		directory,
 		SESSION_ID,
@@ -301,18 +342,21 @@ async function seedAdmissibleReviewerWorld(itemIds: readonly string[]) {
 		);
 		await seedLivenessDeadReviewerLane(batchId, DEAD_LANE);
 	}
-	await recordPrReviewValidationBatch(
-		directory,
-		SESSION_ID,
-		'critic',
-		[
-			{
-				laneId: 'i1-critic-lane',
-				workflowLane: 'i1-critic-lane',
-				reviewItemIds: liveItems,
-			},
-		],
-		{ batchId: `${RUN_ID}-ct-1`, prHeadSha: HEAD_SHA },
+	// Destroy the council lane's stored artifact (the store's ref layout is
+	// sha256(batchId)/sha256(laneId)/sha256(text).json): the obligation the
+	// council assert verified during the reviewer declarations is now missing
+	// evidence, so the completion probe sees the council phase as unsettled
+	// and non-admissible — the arm's entry condition.
+	await fs.rm(
+		path.join(
+			directory,
+			'.swarm',
+			'lane-results',
+			createHash('sha256').update(COUNCIL_BATCH_ID).digest('hex'),
+			createHash('sha256').update(COUNCIL_LANE).digest('hex'),
+			`${createHash('sha256').update(COUNCIL_ARTIFACT_TEXT).digest('hex')}.json`,
+		),
+		{ force: true },
 	);
 	return { liveItems, deadItems };
 }
@@ -322,6 +366,22 @@ describe('issue #3312 F18a — INCOMPLETE bypass settles an ADMISSIBLE reviewer 
 		const itemIds = await establishPartialBase();
 		const { liveItems, deadItems } = await seedAdmissibleReviewerWorld(itemIds);
 
+		const receiptPath = path.join(
+			directory,
+			'.swarm',
+			'pr-review',
+			RUN_ID,
+			'verdict-settlement.reviewer.json',
+		);
+		// (1) Sequencing floor: NO receipt exists before completion. The seeding
+		// declares reviewer batches only, so nothing ran the ladder's reviewer
+		// assert — the bypass arm's admissible loop must be the receipt's ONLY
+		// writer (delete that assert and step (3) fails: the file stays absent).
+		await expect(fs.access(receiptPath)).rejects.toThrow();
+
+		// (2) The INCOMPLETE completion succeeds through the bypass arm (the
+		// council phase's destroyed-artifact obligation is unsettled and
+		// non-admissible, which admits the run into the arm).
 		const status = await completePrWorkflow(
 			directory,
 			SESSION_ID,
@@ -332,16 +392,9 @@ describe('issue #3312 F18a — INCOMPLETE bypass settles an ADMISSIBLE reviewer 
 		expect(status).toBe('completed');
 		expect(await readPrWorkflowGateState(directory, SESSION_ID)).toBeNull();
 
-		// The admissible reviewer phase settled through the ladder's exact
-		// admission path INSIDE the bypass arm: the durable receipt exists and
-		// names exactly the liveness-dead items.
-		const receiptPath = path.join(
-			directory,
-			'.swarm',
-			'pr-review',
-			RUN_ID,
-			'verdict-settlement.reviewer.json',
-		);
+		// (3) The receipt NOW exists — persisted by the arm's admissible-phase
+		// assert (the ladder's exact admission path), naming exactly the
+		// liveness-dead items the retry budget exhausted.
 		const receipt = JSON.parse(await fs.readFile(receiptPath, 'utf-8')) as {
 			phase: string;
 			runId: string;
@@ -353,9 +406,13 @@ describe('issue #3312 F18a — INCOMPLETE bypass settles an ADMISSIBLE reviewer 
 			[...deadItems].sort(),
 		);
 
-		// The skip disclosure names the critic phase ONLY — the reviewer phase
-		// settled via its receipt, so disclosing it as skipped would understate
-		// the run's settlement (feedback F-7 tail).
+		// (4) The skip disclosure does NOT list the reviewer phase — it settled
+		// through the arm's admissible assert, so disclosing it as skipped would
+		// understate the run's settlement (feedback F-7 tail). The skipped phases
+		// are the council phase (destroyed artifact, the arm's entry condition)
+		// and — in the RE-probe only, now that the reviewer's surviving
+		// CONFIRMED/HIGH claims flow through the receipt-backed map — the critic
+		// phase over those claims with no declared critic batch.
 		const disclosurePath = path.join(
 			directory,
 			'.swarm',
@@ -370,10 +427,17 @@ describe('issue #3312 F18a — INCOMPLETE bypass settles an ADMISSIBLE reviewer 
 			skippedPhases: Array<{ phase: string; unsettledItemIds: string[] }>;
 		};
 		expect(disclosure.reportVerdict).toBe('INCOMPLETE');
+		expect(disclosure.skippedPhases.map((entry) => entry.phase)).not.toContain(
+			'reviewer',
+		);
 		expect(disclosure.skippedPhases.map((entry) => entry.phase)).toEqual([
+			'council',
 			'critic',
 		]);
-		expect(disclosure.skippedPhases[0]?.unsettledItemIds.sort()).toEqual(
+		expect(disclosure.skippedPhases[0]?.unsettledItemIds).toEqual([
+			COUNCIL_LANE,
+		]);
+		expect(disclosure.skippedPhases[1]?.unsettledItemIds.sort()).toEqual(
 			[...liveItems].sort(),
 		);
 	});

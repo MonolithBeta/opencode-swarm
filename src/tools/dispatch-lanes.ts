@@ -4037,11 +4037,15 @@ function extractLaneRejectionRowId(failure: {
 	// is still recoverable from the RAW string whenever the truncation cut it
 	// inside one of the id arrays — regex-scan the original (possibly
 	// truncated) text before degrading to the sentinel.
-	const rawEnvelopeId =
-		/"(?:unexpectedIds|invalidOrMissingIds)":\s*\[\s*"([^"]+)"/.exec(
-			failure.actual,
-		);
-	if (rawEnvelopeId) return rawEnvelopeId[1]!;
+	// Priority mirrors the JSON.parse branch (unexpectedIds first, then
+	// invalidOrMissingIds); envelope key order would otherwise surface
+	// invalidOrMissingIds first.
+	const strayId = /"unexpectedIds":\s*\[\s*"([^"]+)"/.exec(failure.actual);
+	if (strayId) return strayId[1]!;
+	const missingId = /"invalidOrMissingIds":\s*\[\s*"([^"]+)"/.exec(
+		failure.actual,
+	);
+	if (missingId) return missingId[1]!;
 	const discoveryRow = /\brow (\d+)\b/.exec(failure.actual);
 	if (discoveryRow) return discoveryRow[1]!;
 	return LANE_REJECTION_ROW_UNIDENTIFIED;

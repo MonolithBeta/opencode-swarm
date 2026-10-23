@@ -7,7 +7,6 @@ import {
 	type PrWorkflowMode,
 	readPrReviewFinalFindingPolicyForReport,
 	readPrReviewTerminalCoverageForReport,
-	readPrReviewValidationSkipDisclosureCarried,
 	readPrWorkflowGateState,
 	settlePresumedStalePrWorkflowLanes,
 } from '../hooks/pr-workflow-gate.js';
@@ -158,24 +157,7 @@ export async function executeCompletePrWorkflow(
 		// terminal clear so the response can carry it (read-before-clear, the
 		// same discipline as staleDisclosure above).
 		let terminalReport: Record<string, unknown> | undefined;
-		// Feedback F2/F-4 tail: capture whether the pre-completion state carries
-		// a run-bound validation-skip disclosure (read BEFORE completing — the
-		// completion clears the state that mirrors it). A skip-disclosed run's
-		// reported allowed_verdicts must end up INCOMPLETE-only; the projections
-		// below run before the gate's bypass arm can write/refresh the
-		// disclosure, so the override is applied post-completion.
-		let skipDisclosed = false;
 		if (parsed.data.mode === 'PR_REVIEW') {
-			try {
-				skipDisclosed =
-					await _internals.readPrReviewValidationSkipDisclosureCarried(
-						directory,
-						context.sessionID,
-					);
-			} catch {
-				// Observation only — the gate's completion checks stay
-				// authoritative and the projections below degrade gracefully.
-			}
 			let coverage: Awaited<
 				ReturnType<typeof readPrReviewTerminalCoverageForReport>
 			> | null = null;
@@ -255,11 +237,18 @@ export async function executeCompletePrWorkflow(
 			ReturnType<typeof listPendingPrWorkflowCheckoutRestores>
 		> = [];
 		if (status === 'completed') {
-			if (skipDisclosed && terminalReport) {
-				// Feedback F2/F-4: a skip-disclosed run never admits
-				// APPROVE/REQUEST_CHANGES regardless of the pre-completion policy
-				// projection (which ran before the gate's INCOMPLETE bypass arm
-				// could settle/persist its disclosure).
+			if (
+				parsed.data.mode === 'PR_REVIEW' &&
+				parsed.data.report_verdict === 'INCOMPLETE' &&
+				terminalReport
+			) {
+				// Feedback F2 round 2: a run that COMPLETED with report_verdict
+				// INCOMPLETE never admits APPROVE/REQUEST_CHANGES on any path —
+				// the bypass arm (which persists a skip disclosure), a
+				// fully-settled ladder INCOMPLETE, or NO_COVERAGE. The override
+				// is keyed on the completed verdict, not pre-completion state,
+				// so it is truthful for first-time bypass runs and cannot leak
+				// into an APPROVE/REQUEST_CHANGES ladder completion.
 				terminalReport.allowed_verdicts = ['INCOMPLETE'];
 			}
 			try {
@@ -319,7 +308,6 @@ export const _internals: {
 	readPrWorkflowGateState: typeof readPrWorkflowGateState;
 	readPrReviewTerminalCoverageForReport: typeof readPrReviewTerminalCoverageForReport;
 	readPrReviewFinalFindingPolicyForReport: typeof readPrReviewFinalFindingPolicyForReport;
-	readPrReviewValidationSkipDisclosureCarried: typeof readPrReviewValidationSkipDisclosureCarried;
 	settlePresumedStalePrWorkflowLanes: typeof settlePresumedStalePrWorkflowLanes;
 	verdictSettlementSummaryForReportSafe: typeof verdictSettlementSummaryForReportSafe;
 } = {
@@ -328,7 +316,6 @@ export const _internals: {
 	readPrWorkflowGateState,
 	readPrReviewTerminalCoverageForReport,
 	readPrReviewFinalFindingPolicyForReport,
-	readPrReviewValidationSkipDisclosureCarried,
 	settlePresumedStalePrWorkflowLanes,
 	verdictSettlementSummaryForReportSafe,
 };

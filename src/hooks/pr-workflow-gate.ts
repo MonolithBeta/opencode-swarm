@@ -14956,6 +14956,10 @@ export async function completePrWorkflow(
 			// terminal clear below must CAS against the post-write revision.
 			terminalClearRevision = disclosedState.revision;
 			// (g) Non-fatal audit event naming the disclosed skip.
+			// The event reports the FULL pre-degrade skippedPhases counts while
+			// the persisted record may be byte-degraded (truncated: true) — the
+			// audit trail is authoritative for counts, the record for the
+			// bounded disclosure.
 			try {
 				appendCoreEventSync(directory, {
 					type: 'pr_review_validation_skip_disclosed',
