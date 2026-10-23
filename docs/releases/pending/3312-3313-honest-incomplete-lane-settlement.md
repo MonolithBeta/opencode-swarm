@@ -50,3 +50,9 @@ and the lane-liveness watchdog is on by default.
   30-minute deadline is unchanged). To opt out, set
   `lane_liveness_watchdog.enabled: false` (the explicit opt-out path keeps
   working).
+- **The architect prompt budget ceiling rises 164,000 → 165,000 chars**: the
+  honest-INCOMPLETE completion guidance added here and the PR-feedback
+  verification re-dispatch recovery that shipped in #3419 each fit under the
+  old ceiling separately, but the merged prompt's feature-heavy cell measured
+  164,188 — over by 188. The deliberate 1,000-char step keeps the #1649
+  ratchet intact for unreviewed growth (docs/configuration.md updated).

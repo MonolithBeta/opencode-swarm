@@ -126,7 +126,13 @@ export const ARCHITECT_MEMORY_OUTCOME_GUIDANCE = `After using recalled memory or
 // (#3316 review round: the RESTART AFTER EDITS bullet gained the verification
 // re-dispatch recovery; the prefixed feature-heavy cell measured ~163745 —
 // ~255 chars of headroom under the unchanged 164000 ceiling.)
-export const ARCHITECT_PROMPT_BUDGET_CHARS = 164_000;
+// 164000 -> 165000 (#3312/#3313 rebase over #3419): the honest-INCOMPLETE
+// COMPLETE EXPLICITLY sentence (this branch) and the #3316 verification
+// re-dispatch recovery (#3419, already on main) each fit under the ceiling
+// alone but not together; the merged prefixed feature-heavy cell measured
+// 164188, so the allowance grows by the same deliberate 1000-char step
+// (docs/configuration.md states the ceiling).
+export const ARCHITECT_PROMPT_BUDGET_CHARS = 165_000;
 
 /**
  * Per-tool description cap for the architect prompt's AVAILABLE TOOLS line
