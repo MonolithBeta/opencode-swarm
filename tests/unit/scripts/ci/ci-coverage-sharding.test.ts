@@ -129,9 +129,14 @@ describe('ci.yml coverage sharding — CI-004 + issue #2341', () => {
 	});
 
 	test('coverage shards get a bounded timeout with requeue-priced headroom', () => {
-		// 30m: typical shard ~12 min; a false-positive cancellation costs the
-		// whole merge group a requeue (issue #2341 sizing decision).
-		expect(coverageShardJob).toContain('timeout-minutes: 30');
+		// 45m: typical shard ~24 min on hosted runners and the physical
+		// self-hosted host; the self-hosted VM's 8 concurrent slots ran shards
+		// past 30m (4 of 6 killed at the old ceiling in the first routed batch,
+		// cancelling the group). 45m covers a ~2x slot slowdown; a
+		// false-positive cancellation still costs the whole merge group a
+		// requeue (issue #2341 sizing decision, re-decided in
+		// docs/ci/merge-queue-policy.md "Coverage shard job ceiling").
+		expect(coverageShardJob).toContain('timeout-minutes: 45');
 	});
 
 	test('"Coverage gate enforcement" step runs the helper in shard mode', () => {
