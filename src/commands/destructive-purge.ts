@@ -25,14 +25,16 @@
  *    this) must only construct candidate sets from ownership-gated,
  *    base-scoped directories.
  */
-import { spawnSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { validateSwarmPath } from '../hooks/utils';
 import { atomicWriteSwarmFileSync } from '../utils/atomic-write';
-import { resolveGitExecutable } from '../utils/git-executable.js';
 import * as logger from '../utils/logger.js';
+import {
+	type GitStatusReadResult,
+	readGitStatusAsync,
+} from './git-status-read.js';
 
 // validateSwarmPath joins `.swarm/` itself — keep this filename-only.
 const PENDING_PURGE_PATH = 'pending-purge.json';
@@ -64,7 +66,28 @@ interface PendingPurgeRecord {
 	createdAt: number;
 }
 
-export const _internals = {
+export const _internals: {
+	readFileSync: (p: string, enc: BufferEncoding) => string;
+	rmSync: typeof fs.rmSync;
+	existsSync: typeof fs.existsSync;
+	atomicWriteSwarmFileSync: typeof atomicWriteSwarmFileSync;
+	now: () => number;
+	randomBytes: typeof randomBytes;
+	scopeDigest: typeof scopeDigest;
+	/**
+	 * #3317: the tracked-dirty status read is async, bounded, and killable
+	 * through the shared reader. Legacy sync stubs returning `string | null`
+	 * keep their original meaning (#2953's await-tolerant seam contract).
+	 */
+	runGitStatus: (
+		args: readonly string[],
+		cwd: string,
+	) =>
+		| string
+		| null
+		| GitStatusReadResult
+		| Promise<string | null | GitStatusReadResult>;
+} = {
 	readFileSync: fs.readFileSync as (p: string, enc: BufferEncoding) => string,
 	rmSync: fs.rmSync.bind(fs),
 	existsSync: fs.existsSync.bind(fs),
@@ -72,7 +95,7 @@ export const _internals = {
 	now: (): number => Date.now(),
 	randomBytes,
 	scopeDigest,
-	runGitStatus: runGitStatusSync,
+	runGitStatus: (args, cwd) => readGitStatusAsync(args, cwd),
 };
 
 /**
@@ -81,22 +104,27 @@ export const _internals = {
  * feed the same parser, so the two measurements parse identically. (The two
  * reads still go through separate spawn wrappers; equivalence is by
  * convention + review, not a single shared call site.)
+ * #3317: `--no-optional-locks` leads the argv — a read-only status must not
+ * contend on the index write lock. It is a top-level git option and therefore
+ * sits BEFORE the subcommand.
  */
-export const GIT_STATUS_ARGS = ['status', '--porcelain'] as const;
+export const GIT_STATUS_ARGS = [
+	'--no-optional-locks',
+	'status',
+	'--porcelain',
+] as const;
 
-/** Default bounded status read (invariant 3: array form, cwd, timeout, ignore
- * stdin, bounded stdout, windowsHide). Exposed via `_internals` for tests. */
-function runGitStatusSync(args: readonly string[], cwd: string): string | null {
-	const result = spawnSync(resolveGitExecutable(), args, {
-		cwd,
-		encoding: 'utf8',
-		timeout: 10_000,
-		maxBuffer: 1024 * 1024,
-		windowsHide: true,
-		stdio: ['ignore', 'pipe', 'pipe'],
-	});
-	if (result.error || result.status !== 0) return null;
-	return result.stdout ?? '';
+/** Default bounded status read (#3317: async, killable, through the shared
+ * reader). Legacy seam shapes keep their meaning: a sync `string` is stdout,
+ * a sync `null` is an unreadable read (#2953's await-tolerant stub contract). */
+async function runGitStatusRead(
+	args: readonly string[],
+	cwd: string,
+): Promise<string | null> {
+	const raw = await _internals.runGitStatus(args, cwd);
+	if (typeof raw === 'string') return raw;
+	if (raw === null) return null;
+	return raw.ok ? raw.stdout : null;
 }
 
 /**
@@ -136,16 +164,19 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
  * The close gate composes the same argv + parser directly through its own
  * long-standing `_closeGateInternals.runGit` seam rather than calling this
  * helper, so its existing #2508 fail-closed tests keep their injection point.
+ * #3317: async — the read is bounded and killable, and legacy sync stubs
+ * keep working (awaiting a plain value is a no-op).
  */
-export function readTrackedDirtyPaths(directory: string):
+export async function readTrackedDirtyPaths(directory: string): Promise<
 	| {
 			ok: true;
 			dirtyPaths: string[];
 	  }
 	| {
 			ok: false;
-	  } {
-	const statusOutput = _internals.runGitStatus(GIT_STATUS_ARGS, directory);
+	  }
+> {
+	const statusOutput = await runGitStatusRead(GIT_STATUS_ARGS, directory);
 	if (statusOutput === null) return { ok: false };
 	return { ok: true, dirtyPaths: parseTrackedDirtyPaths(statusOutput) };
 }
@@ -159,13 +190,14 @@ export function readTrackedDirtyPaths(directory: string):
  * "unchanged"). A file that got cleaner passes — strictly less destruction
  * than confirmed.
  */
-export function recheckBeforeDestructive(
+export async function recheckBeforeDestructive(
 	directory: string,
 	expectedDirtyPaths: readonly string[],
-):
+): Promise<
 	| { ok: true; dirtyPaths: string[] }
-	| { ok: false; reason: string; newDirtyPaths: string[] } {
-	const read = readTrackedDirtyPaths(directory);
+	| { ok: false; reason: string; newDirtyPaths: string[] }
+> {
+	const read = await readTrackedDirtyPaths(directory);
 	if (!read.ok) {
 		return {
 			ok: false,

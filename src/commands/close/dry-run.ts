@@ -5,6 +5,7 @@ import {
 	formatResidueInventoryLines,
 	inventorySwarmResidue,
 } from '../../services/swarm-residue';
+import { readGitRepositoryStatusAsync } from '../git-status-read.js';
 import {
 	ACTIVE_STATE_DIRS_TO_CLEAN,
 	ACTIVE_STATE_TO_CLEAN,
@@ -12,7 +13,6 @@ import {
 	TERMINAL_STATE_FILES,
 } from './constants.js';
 import type { PlanData } from './context.js';
-import { _internals } from './internals.js';
 
 /**
  * Builds the `/swarm finalize --dry-run` report. Purely READ-ONLY: inspects the
@@ -66,7 +66,10 @@ export async function runFinalizeDryRun(
 			!(TERMINAL_STATE_FILES as readonly string[]).includes(f),
 	);
 
-	const gitStatus = _internals.getGitRepositoryStatus(directory);
+	// #3317: ONE bounded async attempt through the shared git reader — the
+	// dry-run probe must never fall into the blocking sync transient-retry
+	// chain (a hung host would freeze the report for up to ~153 s).
+	const gitStatus = { isRepo: await readGitRepositoryStatusAsync(directory) };
 	const gitNote = gitStatus.isRepo
 		? 'would align the working tree to main/remote (git reset), pruning merged branches only with --prune-branches'
 		: 'would skip git alignment (not a git repository / git unavailable)';

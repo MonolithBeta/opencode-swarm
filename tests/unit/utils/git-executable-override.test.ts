@@ -15,6 +15,7 @@ import {
 	clearDeferredWarnings,
 	getDeferredWarnings,
 } from '../../../src/services/warning-buffer';
+import type { bunSpawn } from '../../../src/utils/bun-compat';
 import {
 	_internals,
 	describeGitResolution,
@@ -453,6 +454,30 @@ describe('git-executable — resolveGitExecutableAsync', () => {
 		_internals.env = () => ({ [GIT_BINARY_ENV_VAR]: gitPath, PATH: '' });
 		_internals.spawnSync = (cmd) =>
 			cmd === gitPath ? fakeSpawnResult({ status: 0 }) : enoentResult();
+		// #3317: the async entry probes through asyncSpawn, so both seams
+		// answer (the #1952 async-twin delegation pattern).
+		_internals.asyncSpawn = ((cmd: string[]) =>
+			cmd[0] === gitPath
+				? ({
+						stdout: { text: async () => 'git version 2.43.0\n' },
+						stderr: { text: async () => '' },
+						exited: Promise.resolve(0),
+						spawnError: undefined,
+						signalCode: null,
+						kill() {},
+					} as unknown as ReturnType<typeof bunSpawn>)
+				: ({
+						stdout: { text: async () => '' },
+						stderr: { text: async () => '' },
+						exited: Promise.resolve(-1),
+						spawnError: Object.assign(new Error('spawn ENOENT'), {
+							code: 'ENOENT',
+						}),
+						signalCode: null,
+						kill() {},
+					} as unknown as ReturnType<
+						typeof bunSpawn
+					>)) as typeof _internals.asyncSpawn;
 
 		await expect(resolveGitExecutableAsync()).resolves.toBe(gitPath);
 	});

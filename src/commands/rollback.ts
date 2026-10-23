@@ -205,9 +205,18 @@ async function restoreGitCheckpointGated(
 	selected: GitCheckpoint,
 	flags: { confirmToken?: string; yes?: boolean },
 ): Promise<string> {
-	const measurement = measureGitDestruction(directory, selected.sha);
+	const measurement = await measureGitDestruction(directory, selected.sha);
 	if (measurement.kind === 'unreadable') {
-		return 'Error: cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.';
+		// #3317: name WHY the read failed when the async reader could tell.
+		const cause =
+			measurement.code === 'ETIMEDOUT'
+				? 'the read timed out (ETIMEDOUT) — the host may be unable to complete child spawns while loaded; restart the host and retry'
+				: measurement.status !== null && measurement.status !== undefined
+					? `git status exited with status ${measurement.status}${measurement.stderrTail ? `: ${measurement.stderrTail}` : ''} — repair the repository state and retry`
+					: measurement.code
+						? `the read failed with code ${measurement.code} — retry, or inspect git status manually`
+						: 'retry, or inspect git status manually';
+		return `Error: cannot verify the working tree (git status unreadable; ${cause}) — refusing to restore without a preview.`;
 	}
 	if (flags.yes && flags.confirmToken) {
 		return 'Error: pass either --yes or --confirm=<token>, not both.';

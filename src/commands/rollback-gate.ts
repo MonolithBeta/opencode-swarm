@@ -15,54 +15,94 @@
  *    nonzero exit — e.g. index.lock contention) is NEVER a clean tree: the
  *    caller must refuse the destructive restore instead of proceeding.
  */
-import { spawnSync } from 'node:child_process';
 import * as fsSync from 'node:fs';
 import * as path from 'node:path';
-import { resolveGitExecutable } from '../utils/git-executable.js';
 import type { PurgeCandidate } from './destructive-purge';
+import {
+	type GitStatusReadResult,
+	readGitStatusAsync,
+} from './git-status-read';
 
 /** Destructive-surface kind for the git checkpoint restore path. */
 export const ROLLBACK_GIT_KIND = 'swarm-rollback-git';
 /** Destructive-surface kind for the legacy phase-overwrite restore path. */
 export const ROLLBACK_PHASE_KIND = 'swarm-rollback-phase';
 
-const GIT_STATUS_TIMEOUT_MS = 10_000;
 // `git ls-tree -r` / `git ls-files` on large repositories can exceed the
-// 1 MB spawnSync default; the scan is still bounded by this explicit cap.
+// 1 MB reader default; the scan is still bounded by this explicit cap
+// (#3317: the bound is per-call through the shared reader's maxBufferBytes).
 const GIT_LIST_MAX_BUFFER_BYTES = 32 * 1024 * 1024;
 
 /**
  * Test seam for the rollback gate (simulate git-status read failures without
  * spawning real git). Mirrors `_closeGateInternals.runGit`.
+ * #3317: the defaults are the async shared reader — bounded, killable, and
+ * detail-carrying. Legacy sync stubs returning `string | null` keep their
+ * original meaning (await-tolerant); the status argv leads with
+ * `--no-optional-locks` and the listing reads keep the 32 MB bound.
  */
 export const _rollbackGateInternals: {
-	runGit: (args: string[], cwd: string) => string | null;
-	runGitBuffered: (args: string[], cwd: string) => string | null;
+	runGit: (
+		args: string[],
+		cwd: string,
+	) =>
+		| string
+		| null
+		| GitStatusReadResult
+		| Promise<string | null | GitStatusReadResult>;
+	runGitBuffered: (
+		args: string[],
+		cwd: string,
+	) =>
+		| string
+		| null
+		| GitStatusReadResult
+		| Promise<string | null | GitStatusReadResult>;
 } = {
-	runGit: (args, cwd) => {
-		const result = spawnSync(resolveGitExecutable(), args, {
-			cwd,
-			encoding: 'utf-8',
-			timeout: GIT_STATUS_TIMEOUT_MS,
-			windowsHide: true,
-			stdio: ['ignore', 'pipe', 'pipe'],
-		});
-		if (result.error || result.status !== 0) return null;
-		return result.stdout ?? '';
-	},
-	runGitBuffered: (args, cwd) => {
-		const result = spawnSync(resolveGitExecutable(), args, {
-			cwd,
-			encoding: 'utf-8',
-			timeout: GIT_STATUS_TIMEOUT_MS,
-			windowsHide: true,
-			maxBuffer: GIT_LIST_MAX_BUFFER_BYTES,
-			stdio: ['ignore', 'pipe', 'pipe'],
-		});
-		if (result.error || result.status !== 0) return null;
-		return result.stdout ?? '';
-	},
+	runGit: (args, cwd) => readGitStatusAsync(args, cwd),
+	runGitBuffered: (args, cwd) =>
+		readGitStatusAsync(args, cwd, {
+			maxBufferBytes: GIT_LIST_MAX_BUFFER_BYTES,
+		}),
 };
+
+/** Normalize a seam result to stdout-or-null; legacy `string | null` stubs
+ * keep their meaning (#3317 await-tolerant contract). */
+async function readToString(
+	raw:
+		| string
+		| null
+		| GitStatusReadResult
+		| Promise<string | null | GitStatusReadResult>,
+): Promise<string | null> {
+	const value = await raw;
+	if (typeof value === 'string') return value;
+	if (value === null) return null;
+	return value.ok ? value.stdout : null;
+}
+
+/** Extract the structured failure detail when a seam result failed; a legacy
+ * sync `null` carries no detail, so it stays a plain unreadable. */
+async function readFailureDetail(
+	raw:
+		| string
+		| null
+		| GitStatusReadResult
+		| Promise<string | null | GitStatusReadResult>,
+): Promise<{
+	code: string | null;
+	status: number | null;
+	stderrTail: string;
+} | null> {
+	const value = await raw;
+	if (value === null || typeof value === 'string') return null;
+	if (value.ok) return null;
+	return {
+		code: value.code,
+		status: value.status,
+		stderrTail: value.stderrTail,
+	};
+}
 
 /**
  * A real git repository root: `.git` is a linked-worktree/submodule pointer
@@ -121,18 +161,19 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
  * listing cannot be read — the tracked-dirty gate above still applies, and
  * the caller's unreadable-status refusal covers real-repo failures.
  */
-export function untrackedPathsInTargetTree(
+export async function untrackedPathsInTargetTree(
 	directory: string,
 	targetSha: string,
-): string[] {
+): Promise<string[]> {
 	if (!isRealGitRepository(directory)) return [];
-	const targetTree = _rollbackGateInternals.runGitBuffered(
-		['ls-tree', '-r', '-z', '--name-only', targetSha],
-		directory,
+	const targetTree = await readToString(
+		await _rollbackGateInternals.runGitBuffered(
+			['ls-tree', '-r', '-z', '--name-only', targetSha],
+			directory,
+		),
 	);
-	const index = _rollbackGateInternals.runGitBuffered(
-		['ls-files', '-z'],
-		directory,
+	const index = await readToString(
+		await _rollbackGateInternals.runGitBuffered(['ls-files', '-z'], directory),
 	);
 	if (targetTree === null || index === null) return [];
 	const indexed = new Set(index.split('\0').filter((p) => p !== ''));
@@ -184,23 +225,42 @@ export function swarmOverwriteCandidates(
  * it as a clean tree). A non-git or bare-marker root returns an empty
  * dirty set: nothing tracked to destroy.
  */
-export function measureGitDestruction(
+export async function measureGitDestruction(
 	directory: string,
 	targetSha?: string,
-): { kind: 'ok'; dirtyRelPaths: string[] } | { kind: 'unreadable' } {
+): Promise<
+	| { kind: 'ok'; dirtyRelPaths: string[] }
+	| {
+			kind: 'unreadable';
+			/** #3317: why the read failed, when the async reader could tell. */
+			code?: string | null;
+			status?: number | null;
+			stderrTail?: string;
+	  }
+> {
 	if (!isRealGitRepository(directory)) {
 		return { kind: 'ok', dirtyRelPaths: [] };
 	}
-	const status = _rollbackGateInternals.runGit(
-		['status', '--porcelain', '-z'],
+	const raw = _rollbackGateInternals.runGit(
+		// #3317: read-only status must not contend on the index write lock.
+		['--no-optional-locks', 'status', '--porcelain', '-z'],
 		directory,
 	);
+	const status = await readToString(raw);
 	if (status === null) {
-		return { kind: 'unreadable' };
+		const failure = await readFailureDetail(raw);
+		return failure
+			? {
+					kind: 'unreadable',
+					code: failure.code,
+					status: failure.status,
+					stderrTail: failure.stderrTail,
+				}
+			: { kind: 'unreadable' };
 	}
 	const dirtyRelPaths = parseTrackedDirtyPaths(status);
 	if (targetSha) {
-		for (const rel of untrackedPathsInTargetTree(directory, targetSha)) {
+		for (const rel of await untrackedPathsInTargetTree(directory, targetSha)) {
 			if (!dirtyRelPaths.includes(rel)) dirtyRelPaths.push(rel);
 		}
 	}
