@@ -47,7 +47,9 @@ and the lane-liveness watchdog is on by default.
   first, with the full detail persisted as a lane artifact.
 - **The lane-liveness watchdog is ON by default**: omitting the
   `lane_liveness_watchdog` configuration section now enables it (the
-  30-minute deadline is unchanged). To opt out, set
+  30-minute deadline is unchanged). With the default config, a busy PR lane
+  past the 30-minute deadline is now settled and its host session aborted
+  (previously retained by the alive probe); opt out with
   `lane_liveness_watchdog.enabled: false` (the explicit opt-out path keeps
   working).
 - **The architect prompt budget ceiling rises 164,000 → 165,000 chars**: the

@@ -670,6 +670,10 @@ function autoReviewEnabledByRelease(
  */
 export const CONSERVATIVE_PRESET_BASE: Readonly<Record<string, unknown>> = {
 	auto_review: { enabled: false },
+	// #3313 defaults flip (DEFAULT_FLIPS row lane_liveness_watchdog.enabled):
+	// the conservative preset restores the pre-flip default — the watchdog off,
+	// keeping PR lanes alive past the reachability floor until an operator acts.
+	lane_liveness_watchdog: { enabled: false },
 };
 
 const AutoReviewFinalConfigSchema = z.object({

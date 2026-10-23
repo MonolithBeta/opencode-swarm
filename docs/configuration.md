@@ -193,7 +193,7 @@ Two separate quantities are measured and recorded for every composition:
 - **Model tokens** — an estimate only (`estimateModelTokens`, roughly 4
   characters per token, rounded up). Real token usage varies by model and
   content; the estimate is reported next to the character count, never instead
-  of it, so a ~41K-token estimate at the 164K-char ceiling is understood as an
+  of it, so a ~41K-token estimate at the 165K-char ceiling is understood as an
   approximation of the system prompt's share of a 128K-token context window.
 
 Overflow policy (deterministic, guidance-preserving):
@@ -1106,7 +1106,7 @@ disables its own feature at `0` while leaving the others armed.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `enabled` | boolean | `true` | Arm the watchdog (default). `false` runs no probes, writes no watchdog events, and never changes the settlement horizon. |
+| `enabled` | boolean | `true` | Arm the watchdog (default). `false` runs no probes, writes no watchdog events, and forces the 30-minute reachability floor as the settlement horizon, overriding any `timeout_ms`. |
 | `timeout_ms` | number | `1800000` | When enabled and non-zero, the single effective PR-lane settlement horizon in milliseconds (0–86400000); the default equals the 30-minute reachability floor. `0` disables the execution deadline and restores the reachability-floor fallback. |
 | `stall_threshold_ms` | number | `300000` | Activity window for stall detection in milliseconds (0–86400000). Stall escalation is active only when this and both thresholds below are non-zero. |
 | `stall_min_steps` | number | `5` | Observable transcript steps within the window that count as progress (0–10000). |

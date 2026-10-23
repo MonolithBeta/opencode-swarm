@@ -4157,6 +4157,17 @@ export async function supersedeStaleLivenessVerdictLane(
 						};
 						return;
 					}
+					// Feedback F12: fail-closed identity check — a receipt read
+					// from the run's path whose own runId disagrees with the
+					// ladder-resolved run proves nothing about THIS run's
+					// settlement; a mismatched receipt must refuse, not cite.
+					if (receiptRead.receipt.runId !== runId) {
+						outcome = {
+							status: 'refused',
+							reason: `verdict-settlement receipt under run ${runId} carries runId ${receiptRead.receipt.runId}; cannot prove the lane uncited`,
+						};
+						return;
+					}
 					const cited = receiptRead.receipt.items.find(
 						(item) =>
 							item.sourceBatchId === record.batchId &&

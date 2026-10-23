@@ -1732,9 +1732,14 @@ export async function admitPrReviewPartialBaseCoverage(
 		};
 		// Issue #3312 (AC11): a supersession whose state write fails restores
 		// the superseded bytes, so durable state (still carrying the old record
-		// and digest) never points at a file it did not admit. Best effort —
-		// the original admission error always wins.
-		const restoreSupersededDisclosure = async (): Promise<void> => {
+		// and digest) never points at a file it did not admit. A restore FAILURE
+		// is NOT swallowed (feedback F14c/F-1): at that point the durable state
+		// digest points at unadmitted bytes — a permanent wedge unless the
+		// operator reconciles — so it must fail loud, chained to the admission
+		// error that caused the rollback.
+		const restoreSupersededDisclosure = async (
+			admissionError: unknown,
+		): Promise<void> => {
 			if (supersededRaw === null) return;
 			try {
 				if ((await fsp.readFile(absolutePath, 'utf8')) === raw) {
@@ -1744,8 +1749,11 @@ export async function admitPrReviewPartialBaseCoverage(
 						JSON.parse(supersededRaw),
 					);
 				}
-			} catch {
-				// Preserve the original admission error; restoration is best effort.
+			} catch (restoreError) {
+				throw new Error(
+					`partial base coverage supersession rollback failed: the superseded disclosure bytes could not be restored (${restoreError instanceof Error ? restoreError.message : String(restoreError)}) and the durable state digest now points at unadmitted bytes (${relativePath}); reconcile the disclosure artifact before retrying (admission error: ${admissionError instanceof Error ? admissionError.message : String(admissionError)})`,
+					{ cause: restoreError },
+				);
 			}
 		};
 		try {
@@ -1818,8 +1826,11 @@ export async function admitPrReviewPartialBaseCoverage(
 			}
 			return admitted;
 		} catch (error) {
+			// removeNewDisclosure stays best-effort (fresh admission: no prior
+			// bytes to preserve, and the admission error must win); the
+			// supersession restore propagates its own failure (see above).
 			await removeNewDisclosure();
-			await restoreSupersededDisclosure();
+			await restoreSupersededDisclosure(error);
 			throw error;
 		}
 	});
@@ -1951,14 +1962,19 @@ export async function assertPrReviewBaseCoverageSettled(
 }
 
 /**
- * Issue #3312 (U1 support — projection-local ONLY): a persisted validation-
- * skip disclosure bound to the current run identity (runId / prHeadSha /
- * revisionDigest) is itself a disclosed coverage degradation for this report
- * projection, so its verdict matrix excludes APPROVE for skip-disclosed runs.
- * Presence of the matching record on state suffices; this never feeds a
- * gate-side completion flag.
+ * Issue #3312 (U1 support): a persisted validation-skip disclosure bound to
+ * the current run identity (runId / prHeadSha / revisionDigest) is itself a
+ * disclosed coverage degradation for report projections, so its verdict
+ * matrix excludes APPROVE for skip-disclosed runs. Presence of the matching
+ * record on state suffices.
+ *
+ * Exported (feedback F2) for the gate consumer:
+ * `readPrReviewFinalFindingPolicyForReport` in `src/hooks/pr-workflow-gate.ts`
+ * ORs this into its disclosedDegradation leg — mirroring the #2840
+ * both-legs discipline (the gate-side completion flag AND the projection must
+ * agree that a skip-disclosed run never admits APPROVE/REQUEST_CHANGES).
  */
-function stateCarriesValidationSkipDisclosure(
+export function stateCarriesValidationSkipDisclosure(
 	state: PrReviewCompletionState,
 	revisionDigest: string,
 ): boolean {

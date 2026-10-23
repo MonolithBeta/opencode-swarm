@@ -364,6 +364,9 @@ describe('C1 — enabled x 0-disables cross-product (32 cells)', () => {
 		}
 	}
 
+	// Per-test timeout note (feedback F18e): the explicit 120_000 argument
+	// below is load-bearing — 32 temp-dir cells measured ~5.7s wall against
+	// bun's 5s default. Keep it when editing; do not trim cells instead.
 	test('every cell matches the frozen inertness truth table', async () => {
 		expect(CELLS.length).toBe(32);
 		for (const cell of CELLS) {

@@ -2404,6 +2404,10 @@ export async function executeCollectLaneResults(
 		// live: a pass where every record is already terminal (repeat collects
 		// served from the durable delivery cache) must spend ZERO host calls,
 		// so the batched status probe is skipped for it (wait-budget contract).
+		// Deliberate exception (issue #3312): the post-collect supersession
+		// scan below re-scans unscanned stale/liveness verdict lanes once per
+		// invocation even on an all-terminal pass — its transcript fetches are
+		// the one sanctioned host spend for an otherwise terminal batch.
 		if (
 			records.some(
 				(record) => record.status === 'pending' || record.status === 'running',
@@ -3300,26 +3304,32 @@ async function collectOnce(
 		// Issue #3312/#3313 (AC28/AC29): a record that already carries the child's
 		// exactly-once structured result receipt holds durable settlement proof —
 		// it must not wait for a terminal transcript boundary (or the 30-minute
-		// stale sweep) when the fetched window has no assistant text or readiness
-		// is unknown. Settle straight from the receipt through the #2865
-		// exact-coverage validation; an unbound receipt (foreign laneId) keeps the
-		// lane pending — never a receipt-launders settle. The settle is a DIRECT
-		// typed transition, NOT settleCollectedLane: this shape has no transcript
-		// text, so the analyzeLaneRecordResultIntegrity chain (chars <= 0 /
-		// missing outputRef) would mis-settle the lane as a contract error.
-		if (
-			record.result?.prReviewResultReceipt &&
-			(!transcript.text || readiness === 'unknown')
-		) {
-			await settleCollectedLaneFromReceipt({
+		// stale sweep) when the fetched window has no assistant text. Settle
+		// straight from the receipt through the #2865 exact-coverage validation;
+		// an unbound receipt (foreign laneId) keeps the lane pending — never a
+		// receipt-launders settle. The settle is a DIRECT typed transition, NOT
+		// settleCollectedLane: this shape has no transcript text, so a receipt
+		// settle that declines falls back to the ordinary empty-text logic below
+		// instead. A lane WITH good transcript text skips this branch entirely
+		// and goes through settleCollectedLane, whose #2865 re-read branch
+		// re-adopts the receipt and credits it (feedback F1: the old
+		// `readiness === 'unknown'` preemption stole that ordinary credit path).
+		if (record.result?.prReviewResultReceipt && !transcript.text) {
+			const receiptSettled = await settleCollectedLaneFromReceipt({
 				directory,
 				record,
 				deadline,
 				hostTimeouts,
 				revisionSnapshots,
 				revisionDigestBudgetMs: laneBudgets.revisionDigestBudgetMs,
+				settleFailureLogs,
 			});
-			continue;
+			// Feedback F1: only an ACCEPTED receipt settle that actually landed is
+			// terminal for this pass. A rejected/absent validation (unbound or
+			// non-discovery mode) or a settle that did not land falls through to
+			// the ordinary idle/empty-text logic below — a declined settle must no
+			// longer suppress the ordinary path.
+			if (receiptSettled) continue;
 		}
 		// Issue #3313 (AC30/AC31): a lane whose window holds NO assistant text is
 		// provably finished when the host affirmatively reports idle, or the
@@ -3340,6 +3350,21 @@ async function collectOnce(
 			messages.data.length > 0 &&
 			(readiness === 'idle' || transcript.terminalAssistantProof === true)
 		) {
+			// Feedback F15: re-read the record fresh before the liveness settle.
+			// The fetch stage ran concurrently with other writers, so a
+			// structured result receipt may have landed on the durable record
+			// AFTER the in-memory `record` was loaded — settling this lane as
+			// textless-liveness now would erase a concurrent receipt credit the
+			// next pass would otherwise take. If the fresh record carries the
+			// receipt, skip: the next pass settles from it (or the fall-through
+			// from a declined receipt settle reaches this same guard).
+			const freshRecordRead = findByCorrelationIdDetailed(
+				directory,
+				record.correlationId,
+			);
+			const freshRecord =
+				freshRecordRead.status === 'ok' ? freshRecordRead.value : null;
+			if (freshRecord?.result?.prReviewResultReceipt) continue;
 			const silentLaneReason =
 				readiness === 'idle'
 					? `lane ${laneLabel} idle with no assistant output: settled as liveness without waiting the stale horizon`
@@ -3450,8 +3475,11 @@ async function supersedeStaleLivenessVerdictLanesFromCollect(args: {
 		candidates.some((record) => Boolean(record.workspace?.prHeadSha)),
 	);
 	for (const record of candidates) {
-		args.scannedCorrelationIds.add(record.correlationId);
 		if (args.deadline - _internals.now() <= 0) return;
+		// Feedback F11: mark the record scanned only AFTER the deadline check —
+		// a record skipped for budget exhaustion must stay unscanned so a LATER
+		// collect invocation retries it, instead of being silently retired.
+		args.scannedCorrelationIds.add(record.correlationId);
 		const laneLabel = record.laneId ?? record.correlationId;
 		let messages: Awaited<ReturnType<NonNullable<SessionOps['messages']>>>;
 		try {
@@ -3470,7 +3498,8 @@ async function supersedeStaleLivenessVerdictLanesFromCollect(args: {
 				budgets.messagesBudgetMs,
 			);
 		} catch {
-			// Fetch failure or budget timeout: skip silently, later pass retries.
+			// Fetch failure or budget timeout: skip silently, a later collect
+			// invocation retries this record.
 			continue;
 		}
 		if (!messages.data) continue;
@@ -3801,13 +3830,18 @@ async function resolveCollectLaneRevisionDigest(args: {
  *
  * Runs the #2865 exact-coverage validation with the expected identity triple
  * from `resolveCollectExpectedWorkflowIdentity` (without it the validator
- * rejects every receipt — the #2585 trap). Every leg is terminal for this
- * record's pass: a validator 'absent' status (non-base/micro mode) or a
- * validation failure keeps the lane pending for a later pass or the stale
- * backstop; an accepted receipt writes the typed completed transition with the
- * receipt-bearing result (error/class dropped). Never routes through
- * `settleCollectedLane` — that chain requires transcript evidence this shape
- * does not have.
+ * rejects every receipt — the #2585 trap). Only an ACCEPTED validation that
+ * lands its transition is terminal for this record's pass (returns true); a
+ * validator 'absent' status (non-base/micro mode), a validation failure, a
+ * degraded artifact store, or a transition that does not land returns false so
+ * `collectOnce` falls through to its ordinary idle/empty-text logic (feedback
+ * F1/F8 — a declined settle must not suppress the ordinary path, and a settle
+ * write that does not land must be diagnosable, not silent). An accepted
+ * receipt stores its serialized form through the lane-output store and settles
+ * with a CREDITABLE result — text/chars/truncated/digest/outputRef mirroring
+ * `prepareLaneOutput`'s field names — so `recordsPassingBatchIntegrity`
+ * accepts the record and the structured-receipt credit branch can credit the
+ * dimension instead of wedging the lane as an uncreditable contract error.
  */
 async function settleCollectedLaneFromReceipt(args: {
 	directory: string;
@@ -3816,7 +3850,8 @@ async function settleCollectedLaneFromReceipt(args: {
 	hostTimeouts: Set<string>;
 	revisionSnapshots: Map<string, Promise<string | null>>;
 	revisionDigestBudgetMs: number;
-}): Promise<void> {
+	settleFailureLogs: LaneDiagnostics;
+}): Promise<boolean> {
 	const { directory, record } = args;
 	const laneLabel = record.laneId ?? record.correlationId;
 	if (
@@ -3824,7 +3859,7 @@ async function settleCollectedLaneFromReceipt(args: {
 		record.mode !== 'swarm-pr-review:micro' &&
 		record.mode !== 'swarm-pr-review:council'
 	) {
-		return;
+		return false;
 	}
 	const digestResolution = await resolveCollectLaneRevisionDigest({
 		directory,
@@ -3835,7 +3870,7 @@ async function settleCollectedLaneFromReceipt(args: {
 		revisionSnapshots: args.revisionSnapshots,
 		budgetMs: args.revisionDigestBudgetMs,
 	});
-	if (digestResolution.status === 'unavailable') return;
+	if (digestResolution.status === 'unavailable') return false;
 	// Fail-open identity read, mirroring settleCollectedLane: an unreadable gate
 	// leaves the triple undefined and the validator keeps its explicit
 	// missing-identity rejection instead of guessing.
@@ -3884,23 +3919,85 @@ async function settleCollectedLaneFromReceipt(args: {
 		artifact: null,
 		expected: receiptExpected,
 	});
-	if (structuredCoverage.status !== 'accepted') return;
-	const settledResult: BackgroundDelegationResult = {
-		...receiptProspectiveResult,
-	};
-	delete settledResult.error;
-	delete settledResult.workflowLaneFailureClass;
-	await appendDelegationTransition(directory, record.correlationId, {
-		status: 'completed',
-		result: settledResult,
-		expectedCurrentStatuses: ['pending', 'running'],
-		terminalResult: buildTypedDelegationTerminal(
-			record,
-			'completed',
-			settledResult,
-			_internals.now(),
-		),
+	if (structuredCoverage.status !== 'accepted') return false;
+	// Feedback F1: an accepted receipt must settle CREDITABLE — serialize the
+	// validated receipt and store it through the lane-output store exactly like
+	// persistLaneRejectionDetail does (same identity fields, source
+	// 'collect_lane_results'), then build the settled result mirroring the
+	// ordinary prepareLaneOutput result field names (text preview / chars /
+	// truncated / digest / outputRef) so the analyzeLaneRecordResultIntegrity
+	// chain (chars > 0, digest, outputRef) accepts it and the gate's
+	// structured-receipt credit branch credits the dimension.
+	const receipt = structuredCoverage.receipt;
+	const receiptText = JSON.stringify(receipt, null, 2);
+	const stored = storeLaneOutput(directory, {
+		batchId: record.batchId ?? record.callID,
+		laneId: record.laneId ?? record.correlationId,
+		agent: record.swarmPrefixedAgent,
+		role: record.normalizedAgent,
+		sessionId: record.subagentSessionId,
+		parentSessionId: record.parentSessionId,
+		mode: record.mode,
+		workflowLane: record.workflowLane,
+		prHeadSha: record.workspace?.prHeadSha ?? undefined,
+		gitHead: record.workspace?.gitHead ?? undefined,
+		revisionDigest: digestResolution.digest ?? undefined,
+		scope: record.workspace?.scope ?? undefined,
+		source: 'collect_lane_results',
+		text: receiptText,
 	});
+	if (!stored.ref || stored.degraded) {
+		// Fail-closed: without a retrievable artifact the result would not be
+		// creditable. Keep the lane pending for a later pass and say why.
+		addLaneDiagnostic(
+			args.settleFailureLogs,
+			laneLabel,
+			`receipt settle deferred for lane "${laneLabel}"; lane-output store degraded (${stored.error ?? 'no artifact ref'}); lane left open for retry`,
+		);
+		return false;
+	}
+	const preview = buildLaneOutputPreview({
+		text: receiptText,
+		ref: stored.ref,
+		degraded: stored.degraded,
+		maxChars: MAX_LANE_OUTPUT_CHARS,
+	});
+	const settledResult: BackgroundDelegationResult = {
+		text: preview.output,
+		chars: stored.chars,
+		truncated: preview.output_truncated,
+		digest: stored.digest,
+		outputRef: stored.ref,
+		prReviewResultReceipt: receipt,
+	};
+	const settled = await appendDelegationTransition(
+		directory,
+		record.correlationId,
+		{
+			status: 'completed',
+			result: settledResult,
+			expectedCurrentStatuses: ['pending', 'running'],
+			terminalResult: buildTypedDelegationTerminal(
+				record,
+				'completed',
+				settledResult,
+				_internals.now(),
+			),
+		},
+	);
+	if (!settled) {
+		// Feedback F8: a null return means the typed transition did not land
+		// (record absent, status raced past the expected set, or the store
+		// rejected the write). Dropping it silently would leave the lane pending
+		// with no trace of why the receipt settle never took.
+		addLaneDiagnostic(
+			args.settleFailureLogs,
+			laneLabel,
+			`receipt settle write did not land for lane "${laneLabel}"; lane left open`,
+		);
+		return false;
+	}
+	return true;
 }
 
 /**
@@ -3933,8 +4030,18 @@ function extractLaneRejectionRowId(failure: {
 		].find((id) => typeof id === 'string' && id.trim().length > 0);
 		if (typeof candidate === 'string') return candidate;
 	} catch {
-		// Not a JSON envelope: fall through to the discovery line-number shape.
+		// Not a parseable JSON envelope: fall through to the raw-string scan.
 	}
+	// Feedback F5: the failure `actual` is BOUNDED, so a wide envelope can be
+	// truncated past the point JSON.parse recovers it. The first offending id
+	// is still recoverable from the RAW string whenever the truncation cut it
+	// inside one of the id arrays — regex-scan the original (possibly
+	// truncated) text before degrading to the sentinel.
+	const rawEnvelopeId =
+		/"(?:unexpectedIds|invalidOrMissingIds)":\s*\[\s*"([^"]+)"/.exec(
+			failure.actual,
+		);
+	if (rawEnvelopeId) return rawEnvelopeId[1]!;
 	const discoveryRow = /\brow (\d+)\b/.exec(failure.actual);
 	if (discoveryRow) return discoveryRow[1]!;
 	return LANE_REJECTION_ROW_UNIDENTIFIED;
