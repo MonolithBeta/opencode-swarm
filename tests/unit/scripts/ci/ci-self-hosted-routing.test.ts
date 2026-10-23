@@ -129,12 +129,11 @@ function pinsOsAndArch(runsOn: string): boolean {
 describe('self-hosted runner routing — security invariant (issue #3404)', () => {
 	// Workflows that legitimately run on the runner unconditionally. Each one
 	// MUST NOT declare a pull_request trigger, or the untrusted-code boundary
-	// would be crossed.
-	const RUNNER_ONLY_WORKFLOWS = [
-		'release-and-publish.yml',
-		'stale.yml',
-		'quarantine-aging.yml',
-	];
+	// would be crossed. release-and-publish.yml is deliberately NOT here: npm
+	// trusted publishing does not support self-hosted runners and its jobs
+	// carry publish credentials, so it stays on GitHub-hosted runners (pinned
+	// by the publishing-contract test below).
+	const RUNNER_ONLY_WORKFLOWS = ['stale.yml', 'quarantine-aging.yml'];
 
 	// Workflows whose jobs may use the runner only on the merge_group leg.
 	const PER_EVENT_WORKFLOWS = ['ci.yml', 'host-contract-check.yml'];
@@ -200,9 +199,9 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 			);
 			const jobs = Object.entries<any>(workflow.jobs ?? {});
 			expect(jobs.length, `${file} has jobs`).toBeGreaterThan(0);
-			// Non-vacuity: the workflow really is runner-routed. Not every job
-			// must be (release-and-publish.yml keeps its multi-OS sandbox-runner
-			// matrix on GitHub-hosted runners), but at least one must be.
+			// Non-vacuity: the workflow really is runner-routed. Every job here
+			// is runner-routed, but asserting at least one keeps the loop from
+			// passing vacuously on an empty job map.
 			const runnerJobs = jobs.filter(([, job]) =>
 				canUseSelfHosted(runsOnOf(job)),
 			);
@@ -254,6 +253,95 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 		);
 		expect(runsOn).toContain("github.event_name == 'pull_request'");
 		expect(runsOn).toContain('ubuntu-latest');
+	});
+
+	test('release publishing stays on GitHub-hosted runners', () => {
+		// npm trusted publishing (OIDC provenance) does not support self-hosted
+		// runners, and these jobs carry publish credentials — a self-hosted
+		// compromise must never yield them. Every job of the release workflow is
+		// pinned to a GitHub-hosted label; a runner route here needs explicit
+		// maintainer sign-off, not just a label edit.
+		const workflow = parseWorkflow('release-and-publish.yml');
+		const offenders: string[] = [];
+		for (const [jobName, job] of Object.entries<any>(workflow.jobs ?? {})) {
+			const runsOn = runsOnOf(job);
+			if (canUseSelfHosted(runsOn)) {
+				offenders.push(`${jobName} -> ${runsOn}`);
+			}
+		}
+		expect(offenders).toEqual([]);
+		expect(runsOnOf(workflow.jobs?.['publish-npm'])).toContain('ubuntu-latest');
+	});
+
+	test('untrusted-execution events never reach the runner (fail-closed sweep)', () => {
+		// pull_request_target executes untrusted head code with secrets, and
+		// workflow_run inherits the privileges of its triggering workflow's
+		// artifacts — neither may resolve to the pool under ANY expression
+		// shape, unlike pull_request which has the two sanctioned routers.
+		const fs = require('node:fs') as typeof import('node:fs');
+		const offenders: string[] = [];
+		for (const file of fs.readdirSync(WORKFLOWS_DIR)) {
+			if (!file.endsWith('.yml') && !file.endsWith('.yaml')) continue;
+			let workflow: any;
+			try {
+				workflow = yaml.load(readWorkflow(file)) as any;
+			} catch {
+				continue;
+			}
+			const events = declaredEvents(workflow);
+			if (
+				!events.includes('pull_request_target') &&
+				!events.includes('workflow_run')
+			) {
+				continue;
+			}
+			for (const [jobName, job] of Object.entries<any>(workflow?.jobs ?? {})) {
+				const runsOn = runsOnOf(job);
+				if (canUseSelfHosted(runsOn)) {
+					offenders.push(`${file}:${jobName} -> ${runsOn}`);
+				}
+			}
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	test('the preinstalled-bun probe implements the documented truth table', () => {
+		// Contract: setup-bun installs the pinned bun unless the probe positively
+		// found that exact pin. Three cases — pin match (skip download), missing
+		// or mismatched bun (install), probe skipped on hosted legs (install,
+		// the empty output must fall through). The consumer comparison is
+		// `!= 'false'`, NOT `!= 'true'` — the latter inverts the table.
+		const shouldInstall = (need: string): boolean => need !== 'false';
+		expect(shouldInstall('false')).toBe(false);
+		expect(shouldInstall('true')).toBe(true);
+		expect(shouldInstall('')).toBe(true);
+
+		const jobs = parseWorkflow('ci.yml').jobs ?? {};
+		for (const [jobName, job] of Object.entries<any>(jobs)) {
+			const steps: any[] = job.steps ?? [];
+			const probe = steps.find((s) => s.id === 'bun-present');
+			if (!probe) continue;
+			const setup = steps.find((s) =>
+				String(s.uses ?? '').startsWith('oven-sh/setup-bun@'),
+			);
+			expect(setup, `${jobName} pairs the probe with setup-bun`).toBeDefined();
+			expect(
+				String(probe.run),
+				`${jobName} probe writes need=false only on a match`,
+			).toContain('grep -qx');
+			expect(String(probe.run)).toContain('echo "need=false"');
+			expect(String(probe.run)).toContain('echo "need=true"');
+			expect(
+				String(setup.if),
+				`${jobName} setup-bun runs unless the pin was matched`,
+			).toContain("steps.bun-present.outputs.need != 'false'");
+			// Version drift guard: the probe's accepted version must equal the
+			// version setup-bun installs, or the probe can never skip it.
+			const probed = /grep -qx "([^"]+)"/.exec(String(probe.run))?.[1];
+			const pinned = String(setup.with?.['bun-version'] ?? '');
+			expect(probed, `${jobName} probe names a version`).toBeTruthy();
+			expect(probed, `${jobName} probe matches the setup-bun pin`).toBe(pinned);
+		}
 	});
 
 	test('the runner-routed ci.yml jobs are the declared set', () => {
@@ -323,6 +411,10 @@ describe('self-hosted runner routing — security invariant (issue #3404)', () =
 			);
 			expect(first.if).toContain("runner.environment == 'self-hosted'");
 			expect(first.run).toContain('TMPDIR=$RUNNER_TEMP');
+			// The live ~/.bun/install/cache is shared across runner instances on
+			// one host and concurrent installs corrupted it (FileNotFound during
+			// cache copy in two merge-group batches), so each job gets its own.
+			expect(first.run).toContain('BUN_CACHE=$RUNNER_TEMP/bun-cache');
 		}
 	});
 });

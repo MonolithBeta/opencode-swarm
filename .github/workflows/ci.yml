@@ -321,7 +321,7 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - name: Release-owner guard dependency check
         if: ${{ always() && !cancelled() }}
         shell: bash
@@ -337,20 +337,20 @@ jobs:
         if: needs.detect-release.outputs.is-release != 'true'
         with:
           fetch-depth: 0
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: needs.detect-release.outputs.is-release != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: needs.detect-release.outputs.is-release != 'true' && steps.bun-present.outputs.need != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       - name: Cache bun dependencies
         if: needs.detect-release.outputs.is-release != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -541,23 +541,23 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       - name: Cache bun dependencies
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -613,7 +613,7 @@ jobs:
         if: needs.detect-release.outputs.is-release != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: |
             ${{ runner.os }}-bun-
@@ -1020,7 +1020,7 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         with:
@@ -1030,20 +1030,20 @@ jobs:
           # fail only in this merge-group path even though the candidate tree is
           # correct.
           fetch-depth: 0
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'true'
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       - name: Cache bun dependencies
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -1142,16 +1142,16 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'true'
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       # merge-lcov.mjs imports only node: builtins — no bun install, no build.
@@ -1239,23 +1239,23 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'true'
+        if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       - name: Cache bun dependencies
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -1376,16 +1376,16 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -1396,7 +1396,7 @@ jobs:
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -1420,23 +1420,23 @@ jobs:
       - name: Isolate temp dir on self-hosted runners
         if: runner.environment == 'self-hosted'
         shell: bash
-        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
-      - name: Use the preinstalled Bun when it is present
+      - name: Use the preinstalled Bun when it matches the pin
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && runner.environment == 'self-hosted'
         shell: bash
-        run: bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
+        run: bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT"
         id: bun-present
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
-        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'true'
+        if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true' && steps.bun-present.outputs.need != 'false'
         with:
           bun-version: "1.3.13"
       - name: Cache bun dependencies
         if: needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -1468,7 +1468,7 @@ jobs:
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies
@@ -1565,7 +1565,7 @@ jobs:
         if: github.event_name == 'merge_group' && needs.detect-release.outputs.is-release != 'true' && needs.detect-release.outputs.docs-only != 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.bun/install/cache
+          path: ${{ env.BUN_CACHE || '~/.bun/install/cache' }}
           key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
           restore-keys: ${{ runner.os }}-bun-
       - name: Install dependencies

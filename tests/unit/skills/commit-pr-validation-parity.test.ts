@@ -81,8 +81,8 @@ const CI_COMMAND_TO_SKILL_STRING: Record<string, string> = {
  */
 const NON_QUALITY_SETUP_COMMANDS = new Set([
 	'bun install --frozen-lockfile',
-	'echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV',
-	'bun --version >/dev/null 2>&1 && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT',
+	'echo "TMPDIR=$RUNNER_TEMP" >> "$GITHUB_ENV"; echo "BUN_CACHE=$RUNNER_TEMP/bun-cache" >> "$GITHUB_ENV',
+	'bun --version 2>/dev/null | grep -qx "1.3.13" && echo "need=false" >> "$GITHUB_OUTPUT" || echo "need=true" >> "$GITHUB_OUTPUT',
 ]);
 
 /** YAML block-scalar indicators are syntax, not shell commands. */
