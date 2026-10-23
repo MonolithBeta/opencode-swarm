@@ -3388,17 +3388,21 @@ async function collectOnce(
 						digest: digestText(silentLaneReason),
 						workflowLaneFailureClass: 'liveness',
 					};
-			const idleTransitioned = await appendDelegationTransition(directory, record.correlationId, {
-				status: 'stale',
-				result: silentLivenessResult,
-				expectedCurrentStatuses: ['pending', 'running'],
-				terminalResult: buildTypedDelegationTerminal(
-					record,
-					'stale',
-					silentLivenessResult,
-					_internals.now(),
-				),
-			});
+			const idleTransitioned = await appendDelegationTransition(
+				directory,
+				record.correlationId,
+				{
+					status: 'stale',
+					result: silentLivenessResult,
+					expectedCurrentStatuses: ['pending', 'running'],
+					terminalResult: buildTypedDelegationTerminal(
+						record,
+						'stale',
+						silentLivenessResult,
+						_internals.now(),
+					),
+				},
+			);
 			if (!idleTransitioned) {
 				// Feedback F8: a refused/uncertain transition must not vanish
 				// silently — record the settle failure so the operator sees why

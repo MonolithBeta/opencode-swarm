@@ -12401,8 +12401,6 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	return { policyVersion: 1, permittedVerdicts, blockingFindingIds };
 }
 
-
-
 function canonicalGitHubPrUrl(
 	value: string,
 	configured?: ForgeContext,
