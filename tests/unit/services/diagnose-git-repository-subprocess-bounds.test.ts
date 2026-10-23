@@ -11,8 +11,15 @@
  * against the real 5000 ms caller bound (repo convention for real-subprocess
  * tests).
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe as describeBlock, expect, test } from 'bun:test';
 import { performance } from 'node:perf_hooks';
+
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts;
+// the hosted unit matrix keeps this suite fully enforced.
+const skipCoverage = Boolean(process.env.COVERAGE_SHARD_INDEX);
+const describe = describeBlock.skipIf(skipCoverage);
+
 import {
 	_internals,
 	getDiagnoseData,
@@ -33,11 +40,7 @@ async function gitRow(projectDir: string) {
 	return row!;
 }
 
-// Skipped under coverage shards: coverage instrumentation distorts child-process
-// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
-// (children report exit 0 instead of signal death; overflow and replay bounds are
-// missed). The hosted unit matrix keeps this suite fully enforced.
-describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('diagnose checkGitRepository subprocess bounds (#2674)', () => {
+describe('diagnose checkGitRepository subprocess bounds (#2674)', () => {
 	let fixture: FakeGitFixture | null = null;
 	const originalExecFileSync = _internals.execFileSync;
 

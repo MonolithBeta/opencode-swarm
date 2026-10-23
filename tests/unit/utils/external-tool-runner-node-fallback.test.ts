@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test';
+import { describe as describeBlock, expect, test } from 'bun:test';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
@@ -6,10 +6,12 @@ import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 // Skipped under coverage shards: coverage instrumentation distorts child-process
-// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
-// (children report exit 0 instead of signal death; overflow and replay bounds are
-// missed). The hosted unit matrix keeps this suite fully enforced.
-describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('external-tool-runner Node fallback', () => {
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts;
+// the hosted unit matrix keeps this suite fully enforced.
+const skipCoverage = Boolean(process.env.COVERAGE_SHARD_INDEX);
+const describe = describeBlock.skipIf(skipCoverage);
+
+describe('external-tool-runner Node fallback', () => {
 	test('reports a real ENOENT as typed spawn-error instead of completed exit 1', () => {
 		const tempDir = realpathSync(
 			mkdtempSync(

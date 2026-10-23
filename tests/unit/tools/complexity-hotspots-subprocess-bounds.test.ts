@@ -10,8 +10,15 @@
  * never a fabricated empty success. Explicit per-test timeouts throughout
  * (bun:test's 5000 ms default would flake against the 10 s churn bound).
  */
-import { afterEach, describe, expect, test } from 'bun:test';
+import { afterEach, describe as describeBlock, expect, test } from 'bun:test';
 import { performance } from 'node:perf_hooks';
+
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts;
+// the hosted unit matrix keeps this suite fully enforced.
+const skipCoverage = Boolean(process.env.COVERAGE_SHARD_INDEX);
+const describe = describeBlock.skipIf(skipCoverage);
+
 import {
 	_internals,
 	complexity_hotspots,
@@ -38,11 +45,7 @@ async function runTool(projectDir: string) {
 	};
 }
 
-// Skipped under coverage shards: coverage instrumentation distorts child-process
-// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
-// (children report exit 0 instead of signal death; overflow and replay bounds are
-// missed). The hosted unit matrix keeps this suite fully enforced.
-describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn getGitChurn end-to-end bounds via real fake git (#2674)', () => {
+describe('churn getGitChurn end-to-end bounds via real fake git (#2674)', () => {
 	let fixture: FakeGitFixture | null = null;
 
 	afterEach(() => {
@@ -114,7 +117,7 @@ describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn getGitChurn en
 	}, 30_000);
 });
 
-describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn kill-shape discrimination via _internals.bunSpawn DI (#2674)', () => {
+describe('churn kill-shape discrimination via _internals.bunSpawn DI (#2674)', () => {
 	const originalBunSpawn = _internals.bunSpawn;
 	let fixture: FakeGitFixture | null = null;
 
@@ -193,7 +196,7 @@ describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn kill-shape dis
 	}, 20_000);
 });
 
-describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn host-abort arm via _internals.bunSpawn DI (#2705)', () => {
+describe('churn host-abort arm via _internals.bunSpawn DI (#2705)', () => {
 	const originalBunSpawn = _internals.bunSpawn;
 	const originalResolveGitExecutable = _internals.resolveGitExecutable;
 	let killCount = 0;

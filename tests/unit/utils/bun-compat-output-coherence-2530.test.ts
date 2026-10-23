@@ -1,9 +1,16 @@
-import { describe, expect, test } from 'bun:test';
+import { describe as describeBlock, expect, test } from 'bun:test';
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts;
+// the hosted unit matrix keeps this suite fully enforced.
+const skipCoverage = Boolean(process.env.COVERAGE_SHARD_INDEX);
+const describe = describeBlock.skipIf(skipCoverage);
+
 import {
 	BunCompatOutputLimitError,
 	type BunCompatSubprocess,
@@ -93,11 +100,7 @@ function spawnNativeChild(
 	});
 }
 
-// Skipped under coverage shards: coverage instrumentation distorts child-process
-// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
-// (children report exit 0 instead of signal death; overflow and replay bounds are
-// missed). The hosted unit matrix keeps this suite fully enforced.
-describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('native bunSpawn buffered output coherence (#2530)', () => {
+describe('native bunSpawn buffered output coherence (#2530)', () => {
 	test('shares one output-limit error across an overflowing pipe and its sibling', async () => {
 		const limit = 64 * 1024;
 		const overflowingBytes = limit + 1;
