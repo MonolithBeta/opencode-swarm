@@ -141,7 +141,11 @@ async function recordAndActivate(
 	});
 }
 
-describe('harness store replay bounds', () => {
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
+// (children report exit 0 instead of signal death; overflow and replay bounds are
+// missed). The hosted unit matrix keeps this suite fully enforced.
+describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('harness store replay bounds', () => {
 	let root = '';
 	let originalAppendLedgerLine = _storeInternals.appendLedgerLine;
 

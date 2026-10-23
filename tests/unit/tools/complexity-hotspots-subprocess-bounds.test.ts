@@ -38,7 +38,11 @@ async function runTool(projectDir: string) {
 	};
 }
 
-describe('churn getGitChurn end-to-end bounds via real fake git (#2674)', () => {
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
+// (children report exit 0 instead of signal death; overflow and replay bounds are
+// missed). The hosted unit matrix keeps this suite fully enforced.
+describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn getGitChurn end-to-end bounds via real fake git (#2674)', () => {
 	let fixture: FakeGitFixture | null = null;
 
 	afterEach(() => {
@@ -110,7 +114,7 @@ describe('churn getGitChurn end-to-end bounds via real fake git (#2674)', () => 
 	}, 30_000);
 });
 
-describe('churn kill-shape discrimination via _internals.bunSpawn DI (#2674)', () => {
+describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn kill-shape discrimination via _internals.bunSpawn DI (#2674)', () => {
 	const originalBunSpawn = _internals.bunSpawn;
 	let fixture: FakeGitFixture | null = null;
 
@@ -189,7 +193,7 @@ describe('churn kill-shape discrimination via _internals.bunSpawn DI (#2674)', (
 	}, 20_000);
 });
 
-describe('churn host-abort arm via _internals.bunSpawn DI (#2705)', () => {
+describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('churn host-abort arm via _internals.bunSpawn DI (#2705)', () => {
 	const originalBunSpawn = _internals.bunSpawn;
 	const originalResolveGitExecutable = _internals.resolveGitExecutable;
 	let killCount = 0;

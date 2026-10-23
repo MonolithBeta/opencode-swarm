@@ -33,7 +33,11 @@ async function gitRow(projectDir: string) {
 	return row!;
 }
 
-describe('diagnose checkGitRepository subprocess bounds (#2674)', () => {
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
+// (children report exit 0 instead of signal death; overflow and replay bounds are
+// missed). The hosted unit matrix keeps this suite fully enforced.
+describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('diagnose checkGitRepository subprocess bounds (#2674)', () => {
 	let fixture: FakeGitFixture | null = null;
 	const originalExecFileSync = _internals.execFileSync;
 

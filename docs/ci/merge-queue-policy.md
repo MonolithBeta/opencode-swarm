@@ -129,6 +129,14 @@ comfortably inside.
 **Reopening gate:** if a future batch still kills shards at 45m, the fix is
 fewer concurrent VM slots per host (host-side), not a higher ceiling.
 
+**Coverage-shard test class:** suites asserting child-process exit/buffering
+semantics and wall-clock bounds skip under coverage shards (see the shared
+rationale in the `bun-compat`/`*-subprocess-bounds`/`store-replay-bounds` test
+headers, PR #3404): coverage instrumentation distorts those semantics on
+shared self-hosted hosts, and the gate fails on any single test. The hosted
+unit matrix keeps the class fully enforced. Re-attempting coverage-on-pool
+validation for this class needs instrumentation-robust tests first.
+
 ### Build concurrency
 
 **Decision:** retain build concurrency at 5.

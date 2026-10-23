@@ -27,7 +27,11 @@ import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 const BOUND_MS = 5_000;
 const TERMINATION_SLACK_MS = 15_000;
 
-describe('identity getGitRemoteUrl subprocess bounds (#2674)', () => {
+// Skipped under coverage shards: coverage instrumentation distorts child-process
+// exit/buffering semantics and wall-clock bounds on shared self-hosted hosts
+// (children report exit 0 instead of signal death; overflow and replay bounds are
+// missed). The hosted unit matrix keeps this suite fully enforced.
+describe.skipIf(Boolean(process.env.COVERAGE_SHARD_INDEX))('identity getGitRemoteUrl subprocess bounds (#2674)', () => {
 	let fixture: FakeGitFixture | null = null;
 	// Platform-config isolation (same pattern as tests/unit/knowledge/identity.test.ts,
 	// required by the prod-store tripwire preload): writeProjectIdentity writes
