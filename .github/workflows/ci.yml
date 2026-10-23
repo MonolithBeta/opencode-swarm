@@ -1007,12 +1007,17 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6]
     runs-on: ${{ github.event_name == 'merge_group' && fromJSON('["self-hosted","Linux","X64"]') || 'ubuntu-latest' }}
-    # 30m: a typical shard is ~12 min (cached install + build + ~278 per-file
-    # coverage runs at ~1.6 s each); the per-file retry budget (2 retries at up
-    # to 60 s each) can add minutes on a flaky window, and a false-positive
-    # shard cancellation costs the whole merge group a requeue — headroom is
-    # cheaper than that (issue #2341).
-    timeout-minutes: 30
+    # 45m: a typical shard is ~24 min on GitHub-hosted runners and the
+    # physical self-hosted host; the self-hosted VM's 8 concurrent slots ran
+    # shards past the old 30-minute ceiling (4 of 6 killed at exactly 30m in
+    # the first fully-routed batch, cancelling the group). 45m covers a ~2x
+    # slot slowdown against the host instances; the merge queue's
+    # check_response_timeout is 90m so worst-case shard+aggregator stays well
+    # inside it. The per-file retry budget (2 retries at up to 60 s each) can
+    # add minutes on a flaky window, and a false-positive shard cancellation
+    # costs the whole merge group a requeue — headroom is cheaper than that
+    # (issue #2341).
+    timeout-minutes: 45
     steps:
       # Self-hosted runners persist between jobs; point the temp root at the
       # per-job RUNNER_TEMP (emptied by the runner each job) so files left by
