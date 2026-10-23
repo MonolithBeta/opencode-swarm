@@ -37,6 +37,7 @@ const ORIGINAL_INTERNALS = { ..._internals };
 
 function restoreInternals(): void {
 	_internals.spawnSync = ORIGINAL_INTERNALS.spawnSync;
+	_internals.asyncSpawn = ORIGINAL_INTERNALS.asyncSpawn;
 	_internals.platform = ORIGINAL_INTERNALS.platform;
 	_internals.env = ORIGINAL_INTERNALS.env;
 	_internals.now = ORIGINAL_INTERNALS.now;
