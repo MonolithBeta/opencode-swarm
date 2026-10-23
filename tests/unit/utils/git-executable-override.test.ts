@@ -420,6 +420,21 @@ describe('git-executable — resolveGitExecutableAsync', () => {
 		_internals.platform = () => 'linux';
 		_internals.env = () => ({ PATH: '' });
 		_internals.spawnSync = () => fakeSpawnResult({ status: 1 });
+		// #3317: the async entry probes through asyncSpawn — stub BOTH seams
+		// to a rejected probe so the all-rejected fallback holds on every
+		// platform (on a host where /usr/bin/git really exists and answers,
+		// an unstubbed async probe would ACCEPT it and resolve that path).
+		_internals.asyncSpawn = (() =>
+			({
+				stdout: { text: async () => '' },
+				stderr: { text: async () => '' },
+				exited: Promise.resolve(1),
+				spawnError: undefined,
+				signalCode: null,
+				kill() {},
+			}) as unknown as ReturnType<
+				typeof bunSpawn
+			>) as typeof _internals.asyncSpawn;
 
 		await expect(resolveGitExecutableAsync()).resolves.toBe('git');
 		// One yield per probed candidate — 3 linux platform candidates. The
@@ -436,6 +451,19 @@ describe('git-executable — resolveGitExecutableAsync', () => {
 		};
 		_internals.env = () => ({ PATH: '' });
 		_internals.spawnSync = () => fakeSpawnResult({ status: 1 });
+		// #3317: same asyncSpawn rejection stub as above — platform-independent
+		// all-rejected outcome.
+		_internals.asyncSpawn = (() =>
+			({
+				stdout: { text: async () => '' },
+				stderr: { text: async () => '' },
+				exited: Promise.resolve(1),
+				spawnError: undefined,
+				signalCode: null,
+				kill() {},
+			}) as unknown as ReturnType<
+				typeof bunSpawn
+			>) as typeof _internals.asyncSpawn;
 
 		const [a, b] = await Promise.all([
 			resolveGitExecutableAsync(),

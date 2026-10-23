@@ -117,6 +117,11 @@ async function readOnceDefault(
 			stdout: ignoreOutput ? 'ignore' : 'pipe',
 			stderr: ignoreOutput ? 'ignore' : 'pipe',
 			killProcessTree: true,
+			// Route the per-call bound into the wrapper too: bunSpawn's own
+			// default stream cap (512 KB) would silently truncate piped output
+			// before the manual bounded drain below sees it (observed on CI
+			// linux/macos bun 1.3.13; local Windows 1.3.14 raw streams differ).
+			maxBuffer: ignoreOutput ? undefined : maxBufferBytes,
 			env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
 		};
 		proc = bunSpawn([executable, ...args], options);
