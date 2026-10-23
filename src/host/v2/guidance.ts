@@ -192,6 +192,7 @@ export async function onV2ContextEvent(
 				originalById.set(message.id, message);
 			}
 		}
+		const consumed = new Set<V2Message>();
 		const claimed = new Map<
 			V2Message,
 			Array<{ type: string; text?: string }>
@@ -211,6 +212,8 @@ export async function onV2ContextEvent(
 						event.system.push({ type: 'text', text: part.text });
 					}
 				}
+				const source = originalByView.get(view);
+				if (source) consumed.add(source);
 				continue;
 			}
 			const byIdentity = originalByView.get(view);
@@ -223,12 +226,30 @@ export async function onV2ContextEvent(
 			else if (!message && (id === undefined || id.length === 0))
 				unpaired.push(view);
 		}
-		const unclaimedIdless = originalMessages.filter(
-			(m) => !claimed.has(m) && !(typeof m.id === 'string' && m.id.length > 0),
+		// Positional fallback, for views a stage rebuilt as new objects (the
+		// guardrails retry rollback restores a structuredClone): align them in
+		// order with still-unclaimed id-less originals of the SAME role. An
+		// original consumed as a carrier is excluded, so a chain-inserted view
+		// can never overwrite another role's message.
+		const candidates = originalMessages.filter(
+			(m) =>
+				!claimed.has(m) &&
+				!consumed.has(m) &&
+				!(typeof m.id === 'string' && m.id.length > 0),
 		);
-		for (let i = 0; i < unpaired.length; i += 1) {
-			const message = unclaimedIdless[i];
-			if (message) claimed.set(message, unpaired[i].parts);
+		let cursor = 0;
+		for (const view of unpaired) {
+			let match = cursor;
+			while (
+				match < candidates.length &&
+				candidates[match].role !== view.info.role
+			) {
+				match += 1;
+			}
+			if (match < candidates.length) {
+				claimed.set(candidates[match], view.parts);
+				cursor = match + 1;
+			}
 		}
 
 		// Rebuild in the HOST's order. A message whose view the chain dropped is

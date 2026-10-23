@@ -20,8 +20,8 @@
  * `[...nonText, ...text]`, moving an assistant's preamble text AFTER its
  * tool call.
  *
- * Tests 1–3 are RED at base and GREEN after the fix; 4–5 are regression floors
- * (GREEN at both ends).
+ * Tests 1–3 are RED at base and GREEN after the fix; 4, 5 and 7 are regression
+ * floors; 6 pins the positional fallback against role confusion.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -237,5 +237,60 @@ describe('v2 context write-back with id-less host messages', () => {
 
 		expect(ev.messages.map((m) => m.id)).toEqual(['m1', 'm3']);
 		expect(ev.messages[1]?.content).toEqual([{ type: 'text', text: 'reply' }]);
+	});
+	test('hardening — a chain-inserted view never overwrites a message consumed as a carrier', async () => {
+		const ev = event(idlessHistory());
+		await onV2ContextEvent(
+			ev,
+			hooksWith((messages) => {
+				materializeSystemGuidanceInPlace(messages as never);
+				messages.push({
+					info: { role: 'user' },
+					parts: [{ type: 'text', text: 'injected verdict' }],
+				});
+			}),
+			canonicalMkdtemp('swarm-idless-carrier-insert-'),
+		);
+
+		expect(ev.messages.some((m) => m.role === 'system')).toBe(false);
+		const allText = JSON.stringify(ev.messages);
+		expect(allText).not.toContain('injected verdict');
+		expect(orphanedResults(ev.messages)).toEqual([]);
+	});
+
+	test('regression floor — views rebuilt as clones (retry rollback) still pair by role and order', async () => {
+		const ev = event(idlessHistory());
+		await onV2ContextEvent(
+			ev,
+			hooksWith((messages) => {
+				const clones = structuredClone(messages);
+				for (const clone of clones) {
+					for (const part of clone.parts) {
+						if (part.type === 'text') part.text = `${part.text}#`;
+					}
+				}
+				messages.length = 0;
+				for (const clone of clones) messages.push(clone);
+			}),
+			canonicalMkdtemp('swarm-idless-clone-'),
+		);
+
+		const texts = ev.messages.map((m) =>
+			m.content
+				.filter((p) => p.type === 'text')
+				.map((p) => p.text)
+				.join(''),
+		);
+		expect(texts).toEqual([
+			'run three steps#',
+			'step 1#',
+			'',
+			'mid-history reminder#',
+			'step 2#',
+			'',
+			'step 3#',
+			'',
+		]);
+		expect(orphanedResults(ev.messages)).toEqual([]);
 	});
 });
