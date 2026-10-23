@@ -19,7 +19,6 @@ import {
 	_internals as diagnoseInternals,
 	getDiagnoseData,
 } from '../../../src/services/diagnose-service.js';
-import { __seedGitExecutableForTests } from '../../../src/utils/git-executable.js';
 
 // This file holds `checkGitRepository`-related coverage extracted from
 // diagnose-service.test.ts and diagnose-service.adversarial.test.ts to keep
