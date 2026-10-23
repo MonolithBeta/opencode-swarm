@@ -1067,7 +1067,7 @@ export const RETENTION_REGISTRY: readonly RetentionRow[] = [
 		id: 'pr-review-run-artifacts',
 		category: 2,
 		pathGrammar:
-			'.swarm/pr-review/{run_id}/{findings.jsonl, feedback-handoff.json, trigger-eval.json, run-reservation.json, coverage-disclosure.json, verdict-settlement.reviewer.json, verdict-settlement.critic.json, submission-payload.json, post-abort-export.json} + .swarm/pr-review/route-receipts/{encoded-session}--{encoded-task}.json (or sha256_<pair-hex>.json when the complete basename would exceed 255 bytes)',
+			'.swarm/pr-review/{run_id}/{findings.jsonl, feedback-handoff.json, trigger-eval.json, run-reservation.json, coverage-disclosure.json, verdict-settlement.reviewer.json, verdict-settlement.critic.json, validation-skip-disclosure.json, submission-payload.json, post-abort-export.json} + .swarm/pr-review/route-receipts/{encoded-session}--{encoded-task}.json (or sha256_<pair-hex>.json when the complete basename would exceed 255 bytes)',
 		canonicalRoot: 'project-swarm',
 		writerModules: [
 			'src/tools/write-pr-review-artifact.ts',

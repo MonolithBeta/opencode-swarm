@@ -12401,26 +12401,7 @@ export async function readPrReviewFinalFindingPolicyForReport(
 	return { policyVersion: 1, permittedVerdicts, blockingFindingIds };
 }
 
-/**
- * Feedback F2/F-4 tail: does the CURRENT gate state carry a validation-skip
- * disclosure bound to the current run identity (head + revision digest + run
- * id)? Consumed by the completion tool's PRE-completion capture, so the
- * response's `allowed_verdicts` can be overridden to INCOMPLETE-only for a
- * skip-disclosed run — the disclosure's semantics never admit
- * APPROVE/REQUEST_CHANGES, regardless of the pre-completion policy projection.
- */
-export async function readPrReviewValidationSkipDisclosureCarried(
-	directory: string,
-	sessionID: string,
-): Promise<boolean> {
-	const state = await readPrWorkflowGateStateFromDisk(
-		directory,
-		normalizeSessionID(sessionID),
-	);
-	if (!state || state.mode !== 'PR_REVIEW') return false;
-	const ctx = await createPrReviewGateContext(directory, state);
-	return stateCarriesValidationSkipDisclosure(state, ctx.revisionDigest);
-}
+
 
 function canonicalGitHubPrUrl(
 	value: string,
@@ -14621,7 +14602,7 @@ export async function completePrWorkflow(
 					// operator-visible receipt and must still fire.
 				}
 				throw new Error(
-					`BLOCKED: PR_REVIEW ${settlement.kind} completion refused while eligible retryable work remains and retry budget is available. Remaining dimensions: ${retryableRemainder.map((entry) => `${entry.dimension} (${entry.failureClass})`).join(', ')}. Retry budget: ${attemptsUsed}/${maxAttempts} attempts used${stagedPolicyEnabled ? ' (staged policy)' : ' (legacy single contract retry)'} — re-dispatch the dimension(s) via dispatch_lanes_async to consume the retry budget, or end the workflow through the human force path (/swarm abort-pr-workflow). If lanes are still live at an earlier stage, settle them explicitly first — cancel_lane_batch (confirm: true + reason) refuses busy/retry lanes, so live work is never destroyed on the model path.`,
+					`BLOCKED: PR_REVIEW ${settlement.kind} completion refused while eligible retryable work remains and retry budget is available. Remaining dimensions: ${retryableRemainder.map((entry) => `${entry.dimension} (${entry.failureClass})`).join(', ')}. Retry budget: ${attemptsUsed}/${maxAttempts} attempts used${stagedPolicyEnabled ? ' (staged policy)' : ' (legacy single contract retry)'} — re-dispatch the dimension(s) via dispatch_lanes_async to consume the retry budget, or end the workflow through the human force path (/swarm abort-pr-workflow). If lanes are still live at an earlier stage, settle them explicitly first — cancel_lane_batch (confirm: true + reason) refuses busy/retry lanes, and with the watchdog now default-on (#3313) a busy lane past the 30-minute deadline is settled by the watchdog rather than destroyed, but live work is still never destroyed on the model path.`,
 				);
 			}
 		}

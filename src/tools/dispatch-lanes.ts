@@ -3364,7 +3364,14 @@ async function collectOnce(
 			);
 			const freshRecord =
 				freshRecordRead.status === 'ok' ? freshRecordRead.value : null;
-			if (freshRecord?.result?.prReviewResultReceipt) continue;
+			if (freshRecordRead.status !== 'ok' || !freshRecord) {
+				// Feedback F15 edge: an UNCERTAIN store read must not be read as
+				// absence (#2511 discipline) — the transition cannot be proven
+				// safe, so defer the settle to the next pass rather than risk
+				// erasing a concurrent receipt credit.
+				continue;
+			}
+			if (freshRecord.result?.prReviewResultReceipt) continue;
 			const silentLaneReason =
 				readiness === 'idle'
 					? `lane ${laneLabel} idle with no assistant output: settled as liveness without waiting the stale horizon`
@@ -3381,7 +3388,7 @@ async function collectOnce(
 						digest: digestText(silentLaneReason),
 						workflowLaneFailureClass: 'liveness',
 					};
-			await appendDelegationTransition(directory, record.correlationId, {
+			const idleTransitioned = await appendDelegationTransition(directory, record.correlationId, {
 				status: 'stale',
 				result: silentLivenessResult,
 				expectedCurrentStatuses: ['pending', 'running'],
@@ -3392,6 +3399,16 @@ async function collectOnce(
 					_internals.now(),
 				),
 			});
+			if (!idleTransitioned) {
+				// Feedback F8: a refused/uncertain transition must not vanish
+				// silently — record the settle failure so the operator sees why
+				// the lane is still open (mirrors the terminal-error arm).
+				addLaneDiagnostic(
+					settleFailureLogs,
+					laneLabel,
+					`idle liveness settle write did not land for lane "${laneLabel}"; lane left open for retry`,
+				);
+			}
 			continue;
 		}
 		if (!transcript.text) continue;
