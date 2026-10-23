@@ -43,9 +43,11 @@ describe('git-status reader output bounds and retry finals (#3317 supplement)', 
 		tempRoots.push(cwd);
 		gitStatusReadInternals.resolveExecutable = async () => process.execPath;
 		// ~1.5 MB of output: above the 1 MB default, far under 32 MB.
+		// writeSync to fd 1 (not stdout.write): an async write can race the
+		// child's exit and deliver a partial stream on bun 1.3.13 runners.
 		const args = [
 			'-e',
-			"process.stdout.write('x'.repeat(1536 * 1024)); process.exit(0)",
+			"const b = Buffer.alloc(64 * 1024, 120); for (let i = 0; i < 24; i++) require('node:fs').writeSync(1, b);",
 		];
 
 		const under32 = await readGitStatusAsync(args, cwd, {
