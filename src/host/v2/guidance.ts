@@ -85,18 +85,42 @@ function toV1MessageView(
 	};
 }
 
-/** Write the (non-carrier) transformed text parts back onto a v2 message. */
+/**
+ * Write the (non-carrier) transformed text parts back onto a v2 message.
+ *
+ * Text parts are replaced IN POSITION: the v1 chain only sees text, so every
+ * non-text part (tool-call, tool-result, media, reasoning) keeps its slot
+ * relative to the text around it — an assistant's preamble stays before its
+ * tool call. Extra texts follow the last original text part (or lead the
+ * message when it had none); missing texts drop the trailing text slots.
+ */
 function writeBackTextParts(
 	message: V2Message,
 	parts: Array<{ type: string; text?: string }>,
 ): void {
-	const kept = (message.content ?? []).filter(
-		(part) => !(part && typeof part === 'object' && part.type === 'text'),
-	);
 	const texts = parts
 		.filter((p) => p.type === 'text' && typeof p.text === 'string')
 		.map((p) => ({ type: 'text' as const, text: p.text as string }));
-	message.content = [...kept, ...texts];
+	const content: V2Message['content'] = [];
+	let nextText = 0;
+	let afterLastText = 0;
+	for (const part of message.content ?? []) {
+		if (part && typeof part === 'object' && part.type === 'text') {
+			if (nextText < texts.length) content.push(texts[nextText++]);
+			afterLastText = content.length;
+		} else {
+			content.push(part);
+		}
+	}
+	content.splice(afterLastText, 0, ...texts.slice(nextText));
+	message.content = content;
+}
+
+/** True when a message carries anything the v1 text-only view cannot see. */
+function hasNonTextParts(message: V2Message): boolean {
+	return (message.content ?? []).some(
+		(part) => !(part && typeof part === 'object' && part.type === 'text'),
+	);
 }
 
 /** Map the v2 model ref onto the v1 {providerID, modelID} shape. */
@@ -125,10 +149,18 @@ export async function onV2ContextEvent(
 
 	const messagesTransform = hooks['experimental.chat.messages.transform'];
 	if (typeof messagesTransform === 'function') {
-		const views = (event.messages ?? []).map((m) =>
+		const originalMessages = [...(event.messages ?? [])];
+		const views = originalMessages.map((m) =>
 			toV1MessageView(m, sessionID, eventAgentName),
 		);
-		const originalMessages = [...(event.messages ?? [])];
+		// The v2 host's context messages carry no `id`, and the v1 chain changes
+		// the view count (carrier materialization, verdict inserts), so pair each
+		// view to its original by OBJECT IDENTITY — stages convert views in place
+		// (convertSystemEntryInPlace keeps the object, replaces `info`).
+		const originalByView = new Map<V1PartsMessageView, V2Message>();
+		for (let i = 0; i < views.length; i += 1) {
+			originalByView.set(views[i], originalMessages[i]);
+		}
 		await withTimeout(
 			messagesTransform({}, { messages: views as unknown as unknown[] }),
 			V2_GUIDANCE_CHAIN_TIMEOUT_MS,
@@ -141,33 +173,30 @@ export async function onV2ContextEvent(
 				},
 			);
 			// Restore the pre-transform views so a partial failure cannot corrupt content.
-			for (let i = 0; i < originalMessages.length; i += 1) {
-				views[i] = toV1MessageView(
-					originalMessages[i],
-					sessionID,
-					eventAgentName,
-				);
+			views.length = 0;
+			originalByView.clear();
+			for (const message of originalMessages) {
+				const view = toV1MessageView(message, sessionID, eventAgentName);
+				views.push(view);
+				originalByView.set(view, message);
 			}
 		});
 
-		// Partition carriers vs kept messages, then re-home the carriers.
-		// Pair views with their original v2 messages by IDENTITY, not position:
-		// the v1 chain can insert carriers (unshift/splice) or rebuild the
-		// array (materializeSystemGuidanceInPlace), so positional pairing would
-		// write one message's transformed text back onto a different message.
+		// Re-home carriers, then pair the kept views with their originals:
+		// object identity first, then `id`, then — only for views a stage
+		// rebuilt as new objects — position among the still-unclaimed id-less
+		// originals. Views with no match (chain inserts) are dropped.
 		const originalById = new Map<string, V2Message>();
-		const originalsWithoutId: V2Message[] = [];
 		for (const message of originalMessages) {
-			const id = typeof message.id === 'string' ? message.id : undefined;
-			if (id !== undefined && id.length > 0) originalById.set(id, message);
-			else originalsWithoutId.push(message);
+			if (typeof message.id === 'string' && message.id.length > 0) {
+				originalById.set(message.id, message);
+			}
 		}
-		const usedIds = new Set<string>();
-		let nextIdless = 0;
-		const keptParts: Array<{
-			message: V2Message;
-			parts: Array<{ type: string; text?: string }>;
-		}> = [];
+		const claimed = new Map<
+			V2Message,
+			Array<{ type: string; text?: string }>
+		>();
+		const unpaired: V1PartsMessageView[] = [];
 		event.system = event.system ?? [];
 		for (const view of views) {
 			const id = view.info.id;
@@ -184,37 +213,40 @@ export async function onV2ContextEvent(
 				}
 				continue;
 			}
-			let message: V2Message | undefined;
-			if (
-				typeof id === 'string' &&
-				id.length > 0 &&
-				originalById.has(id) &&
-				!usedIds.has(id)
-			) {
-				message = originalById.get(id);
-				usedIds.add(id);
-			} else if (
-				(id === undefined || id.length === 0) &&
-				nextIdless < originalsWithoutId.length
-			) {
-				// Id-less views pair positionally with id-less originals only.
-				message = originalsWithoutId[nextIdless];
-				nextIdless += 1;
-			}
-			if (message) {
-				keptParts.push({ message, parts: view.parts });
-			}
-			// Views with no identity match are dropped from the pairing (their
-			// write-back is skipped) rather than written onto a wrong message.
+			const byIdentity = originalByView.get(view);
+			const byId =
+				typeof id === 'string' && id.length > 0
+					? originalById.get(id)
+					: undefined;
+			const message = byIdentity ?? byId;
+			if (message && !claimed.has(message)) claimed.set(message, view.parts);
+			else if (!message && (id === undefined || id.length === 0))
+				unpaired.push(view);
 		}
-		// Write the (non-carrier) transformed text parts back onto their
-		// identity-paired v2 messages, then reassign the array in place.
-		for (const { message, parts } of keptParts) {
-			writeBackTextParts(message, parts);
+		const unclaimedIdless = originalMessages.filter(
+			(m) => !claimed.has(m) && !(typeof m.id === 'string' && m.id.length > 0),
+		);
+		for (let i = 0; i < unpaired.length; i += 1) {
+			const message = unclaimedIdless[i];
+			if (message) claimed.set(message, unpaired[i].parts);
+		}
+
+		// Rebuild in the HOST's order. A message whose view the chain dropped is
+		// removed only when it is text-only: tool calls/results and media are
+		// invisible to the v1 chain and removing them orphans tool pairs.
+		const kept: V2Message[] = [];
+		for (const message of originalMessages) {
+			const parts = claimed.get(message);
+			if (parts) {
+				writeBackTextParts(message, parts);
+				kept.push(message);
+			} else if (hasNonTextParts(message)) {
+				kept.push(message);
+			}
 		}
 		// In-place contract: the host reads its own arrays after the hook.
 		event.messages.length = 0;
-		event.messages.push(...keptParts.map((k) => k.message));
+		event.messages.push(...kept);
 	}
 
 	const systemTransform = hooks['experimental.chat.system.transform'];
