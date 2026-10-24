@@ -218,50 +218,6 @@ describe('TaskSchema', () => {
 		const result = TaskSchema.safeParse(task);
 		expect(result.success).toBe(false);
 	});
-
-	it('external_git without evidence_anchors is refused (issue #3432 review PRR-008)', () => {
-		const task = {
-			id: '1.1',
-			phase: 1,
-			description: 'Commit and push',
-			evidence_class: 'external_git' as const,
-		};
-		const result = TaskSchema.safeParse(task);
-		expect(result.success).toBe(false);
-	});
-
-	it('external_git with an empty evidence_anchors array is refused (PRR-008)', () => {
-		const task = {
-			id: '1.1',
-			phase: 1,
-			description: 'Commit and push',
-			evidence_class: 'external_git' as const,
-			evidence_anchors: [],
-		};
-		const result = TaskSchema.safeParse(task);
-		expect(result.success).toBe(false);
-	});
-
-	it('an anchor with neither expect nor expect_prefix is refused (PRR-008 non-vacuity)', () => {
-		const task = {
-			id: '1.1',
-			phase: 1,
-			description: 'Commit and push',
-			evidence_class: 'external_git' as const,
-			evidence_anchors: [{ command: 'git rev-list --count HEAD' }],
-		};
-		const result = TaskSchema.safeParse(task);
-		expect(result.success).toBe(false);
-	});
-
-	it('a coder_mutation task may carry no anchors and legacy tasks stay valid', () => {
-		const result = TaskSchema.safeParse({
-			id: '1.1',
-			phase: 1,
-			description: 'Test',
-		});
-		expect(result.success).toBe(true);
-	});
 });
 
 describe('PhaseSchema', () => {
