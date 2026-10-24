@@ -88,7 +88,11 @@ describe('#3022 v2 setup + advance wiring (source contract)', () => {
 	);
 
 	test('setup registers the agent-transform surface', () => {
-		expect(setupSrc).toContain('registerV2AgentTransformSurface(ctx);');
+		// #2910 W5 re-pin: the call is token-carrying (per-instance owner
+		// scoping — a setup's cleanup clears only its own surface).
+		expect(setupSrc).toContain(
+			'registerV2AgentTransformSurface(ctx, ownerToken);',
+		);
 	});
 
 	test('setup runs the startup roster preflight inline at its tail, withTimeout-bounded (C6 scan)', () => {

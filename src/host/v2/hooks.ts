@@ -26,6 +26,7 @@
  */
 
 import { normalizeToolNameLowerCase } from '../../hooks/normalize-tool-name';
+import { addDeferredWarning } from '../../services/warning-buffer';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
 import { normalizeV2AgentRef, seedV1SessionState } from './setup';
@@ -426,7 +427,28 @@ async function onV2Prompt(
 	}
 }
 
-/** Register the tool hooks (execute.before/after). */
+/**
+ * Surface one v2 host-registration failure (#3352): a deferred warning naming
+ * the hook/domain and the error (the operator-reachable channel; log() is
+ * OPENCODE_SWARM_DEBUG-gated) plus the debug log. Never throws.
+ */
+function warnV2HookRegistrationFailure(label: string, err: unknown): void {
+	const message = err instanceof Error ? err.message : String(err);
+	log(`v2 ${label} registration failed (non-fatal)`, { error: message });
+	addDeferredWarning(
+		`[opencode-swarm] v2: ${label} registration failed (${message}); the hook was not installed on this host.`,
+	);
+}
+
+/**
+ * Register the tool hooks (execute.before/after).
+ *
+ * #3352: BOTH registrations of the pair are attempted independently — a
+ * rejection of the first never skips its sibling. Each failure records a
+ * deferred warning naming the hook + error; the function resolves when at
+ * least one registration landed and rejects only if both failed (setup's
+ * runRegistration wrapper isolates that rejection with its own warning).
+ */
 export async function registerV2ToolHooks(
 	ctx: V2PluginContext,
 	hooks: V1HooksSubset,
@@ -441,8 +463,11 @@ export async function registerV2ToolHooks(
 		new Error(
 			'[opencode-swarm] v2: execute.before registration exceeded budget',
 		),
-	);
-	registrations.push(before);
+	).catch((err: unknown) => {
+		warnV2HookRegistrationFailure('execute.before', err);
+		return undefined;
+	});
+	if (before !== undefined) registrations.push(before);
 	const after = await withTimeout(
 		ctx.tool.hook('execute.after', async (event: unknown) => {
 			return onV2ToolAfter(event as V2ToolHookInput, hooks, directory);
@@ -451,11 +476,25 @@ export async function registerV2ToolHooks(
 		new Error(
 			'[opencode-swarm] v2: execute.after registration exceeded budget',
 		),
-	);
-	registrations.push(after);
+	).catch((err: unknown) => {
+		warnV2HookRegistrationFailure('execute.after', err);
+		return undefined;
+	});
+	if (after !== undefined) registrations.push(after);
+	if (before === undefined && after === undefined) {
+		throw new Error(
+			'[opencode-swarm] v2: execute.before and execute.after registrations both failed',
+		);
+	}
 }
 
-/** Register the compaction + prompt session hooks. */
+/**
+ * Register the compaction + prompt session hooks.
+ *
+ * #3352: same pair-independence contract as registerV2ToolHooks — a
+ * rejecting 'compaction' registration still attempts 'prompt', each failure
+ * warns, and only a double failure rejects.
+ */
 export async function registerV2SessionHooks(
 	ctx: V2PluginContext,
 	hooks: V1HooksSubset,
@@ -472,14 +511,25 @@ export async function registerV2SessionHooks(
 		}) as never),
 		V2_HOOK_TIMEOUT_MS,
 		new Error('[opencode-swarm] v2: compaction registration exceeded budget'),
-	);
-	registrations.push(compaction);
+	).catch((err: unknown) => {
+		warnV2HookRegistrationFailure('compaction', err);
+		return undefined;
+	});
+	if (compaction !== undefined) registrations.push(compaction);
 	const prompt = await withTimeout(
 		ctx.session.hook('prompt', (async (event: unknown) => {
 			return onV2Prompt(event as V2SessionPromptEvent, hooks);
 		}) as never),
 		V2_HOOK_TIMEOUT_MS,
 		new Error('[opencode-swarm] v2: prompt registration exceeded budget'),
-	);
-	registrations.push(prompt);
+	).catch((err: unknown) => {
+		warnV2HookRegistrationFailure('prompt', err);
+		return undefined;
+	});
+	if (prompt !== undefined) registrations.push(prompt);
+	if (compaction === undefined && prompt === undefined) {
+		throw new Error(
+			'[opencode-swarm] v2: compaction and prompt registrations both failed',
+		);
+	}
 }

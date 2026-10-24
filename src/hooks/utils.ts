@@ -51,6 +51,67 @@ export function markFailClosed<I, O>(
 	};
 }
 
+/**
+ * Bounded per-(sessionID, command) registry of errors safeHook swallowed
+ * (#3318 AC6 / #2910 W6). Production installs the v1 command handler as
+ * `safeHook(commandHandler)` (src/index.ts ~5054), so a real handler failure
+ * never reaches the v2 dispatcher's own catch arm — it surfaces only as empty
+ * output parts. The dispatcher consults this registry after an empty-parts
+ * dispatch to distinguish "handler failed" from "legitimately empty".
+ *
+ * Invariants (AGENTS.md 8): bounded module-global state — at most
+ * {@link SWALLOWED_COMMAND_ERROR_BOUND} entries, FIFO eviction; entries are
+ * READ-ONCE (a successful read consumes them) so a repeated empty-parts
+ * dispatch cannot re-warn a stale failure. Write-only for v1 semantics: v1
+ * callers never read, so recording never changes v1 behavior.
+ */
+const swallowedCommandErrors = new Map<string, string>();
+const SWALLOWED_COMMAND_ERROR_BOUND = 64;
+
+/** Registry key: NUL cannot appear in a host-provided sessionID/command. */
+function swallowedCommandErrorKey(sessionID: string, command: string): string {
+	return `${sessionID}\u0000${command}`;
+}
+
+/** Record one swallowed error (safeHook catch arm only; never throws). */
+function recordSwallowedCommandError(
+	sessionID: string,
+	command: string,
+	message: string,
+): void {
+	const key = swallowedCommandErrorKey(sessionID, command);
+	// Delete-then-set so a re-recorded key is also the NEWEST for FIFO eviction.
+	swallowedCommandErrors.delete(key);
+	swallowedCommandErrors.set(key, message);
+	while (swallowedCommandErrors.size > SWALLOWED_COMMAND_ERROR_BOUND) {
+		const oldest = swallowedCommandErrors.keys().next().value;
+		if (oldest === undefined) break;
+		swallowedCommandErrors.delete(oldest);
+	}
+}
+
+/**
+ * Read-once accessor for the swallowed-command-error registry (#3318 AC6):
+ * returns the recorded error message for the exact (sessionID, command) pair
+ * and consumes the entry, or undefined when nothing is recorded (a miss
+ * consumes nothing). The v2 command dispatcher is the sole designed reader.
+ */
+export function getLastSwallowedCommandError(
+	sessionID: string,
+	command: string,
+): string | undefined {
+	const key = swallowedCommandErrorKey(sessionID, command);
+	const message = swallowedCommandErrors.get(key);
+	if (message === undefined) return undefined;
+	swallowedCommandErrors.delete(key);
+	return message;
+}
+
+/** Empty the swallowed-command-error registry (v2 setup cleanup / tests). */
+export function clearSwallowedCommandErrorRegistry(): void {
+	swallowedCommandErrors.clear();
+}
+
 function isFailClosedHandler(value: unknown): boolean {
 	return (
 		typeof value === 'function' &&
@@ -65,6 +126,31 @@ export function safeHook<I, O>(fn: HookHandler<I, O>): HookHandler<I, O> {
 			await fn(input, output);
 		} catch (_error) {
 			const functionName = fn.name || 'unknown';
+			// #3318 AC6 / #2910 W6: write-only side effect — record the swallowed
+			// error into the bounded per-(sessionID, command) registry so the v2
+			// dispatcher's empty-parts consult can surface the real failure.
+			// Command-hook inputs carry {sessionID, command, arguments}
+			// (src/index.ts commandHandler); other hook shapes fall back to the
+			// stable 'unknown' key so the registry stays bounded and uniform.
+			// v1 behavior is unchanged: v1 callers never read the registry.
+			const hookInput = (input ?? {}) as {
+				sessionID?: unknown;
+				command?: unknown;
+			};
+			recordSwallowedCommandError(
+				typeof hookInput?.sessionID === 'string' &&
+					hookInput.sessionID.length > 0
+					? hookInput.sessionID
+					: 'unknown',
+				typeof hookInput?.command === 'string' && hookInput.command.length > 0
+					? hookInput.command
+					: 'unknown',
+				_error instanceof SwarmError
+					? `${_error.message}\n  → ${_error.guidance}`
+					: _error instanceof Error
+						? _error.message
+						: String(_error),
+			);
 			if (_error instanceof SwarmError) {
 				warn(
 					`Hook '${functionName}' failed: ${_error.message}\n  → ${_error.guidance}`,

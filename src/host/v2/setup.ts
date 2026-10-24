@@ -5,21 +5,41 @@
  * enabled-role models against the checked-in verified keyless roster instead
  * and surface a bounded operational warning per non-roster id. Fail-open on
  * every error; bounded local reads only (no network).
+ *
+ * #3350 AC1: every failure arm is operator-visible through the
+ * deferred-warning buffer — (a) the config read exceeding its LIVE budget
+ * (`_internals.preflightConfigTimeoutMs`, read at call time) or throwing, and
+ * (b) a resolved-but-degraded ConfigLoadResult (`configHadErrors` — the exact
+ * loader field, src/config/loader.ts). Exactly one preflight warning per arm;
+ * roster warnings (clean load) are unchanged.
  */
 async function deferredV2StartupModelPreflight(
 	directory: string,
 ): Promise<void> {
+	// Call-time reads (#3350 AC4 declared seam): tests pin the budget and the
+	// loader through _internals, so a module-load capture would freeze them.
+	const budgetMs = _internals.preflightConfigTimeoutMs;
 	try {
 		// Async loader so the budget is a real bound (the sync variant runs to
 		// completion before withTimeout could start its timer); same budget as
 		// the v1 config load (src/index.ts LOAD_PLUGIN_CONFIG_TIMEOUT_MS).
 		const loaded = await withTimeout(
-			loadPluginConfigWithMetaAsync(directory),
-			V2_PREFLIGHT_CONFIG_TIMEOUT_MS,
+			_internals.loadConfig(directory),
+			_internals.preflightConfigTimeoutMs,
 			new Error(
-				'[opencode-swarm] v2: startup preflight config read exceeded budget',
+				`[opencode-swarm] v2: startup preflight config read exceeded the ${budgetMs}ms budget`,
 			),
 		);
+		// The preflight load is the earliest config read setup owns: feed the
+		// v2 operator-warning quiet flag from it (#3318). #2910 W3/W5: the
+		// 1-arg setter attaches to the CURRENT owner's registry entry — this
+		// setup's per-instance token, made current at startup below.
+		setV2OperatorQuiet(loaded?.config?.quiet === true);
+		if (loaded?.configHadErrors === true) {
+			addDeferredWarning(
+				`[opencode-swarm] v2: startup model preflight degraded — the config read resolved with errors (configHadErrors) within its ${budgetMs}ms budget; the roster check ran against the degraded configuration.`,
+			);
+		}
 		const entries = collectEnabledAgentModels(loaded?.config);
 		const models = entries
 			.map((entry) => entry.model)
@@ -48,9 +68,11 @@ async function deferredV2StartupModelPreflight(
 			}
 		}
 	} catch (err) {
-		log('v2 startup model preflight failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-		});
+		const message = err instanceof Error ? err.message : String(err);
+		log('v2 startup model preflight failed (non-fatal)', { error: message });
+		addDeferredWarning(
+			`[opencode-swarm] v2: startup model preflight failed after the ${budgetMs}ms config budget (${message}); the roster check did not run.`,
+		);
 	}
 }
 
@@ -92,6 +114,7 @@ async function deferredV2StartupModelPreflight(
 
 import { z } from 'zod';
 import { loadPluginConfigWithMetaAsync } from '../../config/loader';
+import { clearSwallowedCommandErrorRegistry } from '../../hooks/utils';
 import {
 	collectEnabledAgentModels,
 	collectModelRosterWarnings,
@@ -106,7 +129,13 @@ import {
 import { log } from '../../utils';
 import { resolveProjectRootDecision } from '../../utils/project-boundary';
 import { withTimeout } from '../../utils/timeout';
-import { registerV2AgentsAndCommands } from './agents-commands';
+import {
+	registerV2AgentsAndCommands,
+	registerV2ConfigRebuildSourceForOwner,
+	resetV2OperatorWarningState,
+	setV2OperatorQuiet,
+	setV2OperatorQuietForOwner,
+} from './agents-commands';
 import { clearToolNameRegistry, startDeferredEventPump } from './events';
 import { registerV2ContextHook } from './guidance';
 import { registerV2SessionHooks, registerV2ToolHooks } from './hooks';
@@ -143,10 +172,37 @@ const V2_REGISTRATION_TIMEOUT_MS = 3_500;
 /** Startup preflight config-read budget (parity with the v1 config load). */
 const V2_PREFLIGHT_CONFIG_TIMEOUT_MS = 2_000;
 
+/**
+ * Test seam (#3350 AC4 declared seam, frozen checks
+ * setup-registration-budget-fakeclock-3327 / setup-preflight-timeout-3327):
+ * the registration-stage budget, the preflight config budget and the preflight
+ * loader are read through this object AT CALL TIME so tests can pin them
+ * without patching global timers (AGENTS.md invariant 7; precedent: PRR-002
+ * dispatchTimeoutMs in agents-commands.ts). Production never mutates it.
+ */
+export const _internals = {
+	registrationTimeoutMs: V2_REGISTRATION_TIMEOUT_MS,
+	preflightConfigTimeoutMs: V2_PREFLIGHT_CONFIG_TIMEOUT_MS,
+	loadConfig:
+		loadPluginConfigWithMetaAsync as typeof loadPluginConfigWithMetaAsync,
+};
+
 /** Dependencies injected from src/index.ts (avoids an index↔host cycle). */
 export interface V2SetupDependencies {
 	/** The shared server-initialization wrapper (begin-interval → init core → schedule deferred → end-interval). */
 	runInit: (input: unknown) => Promise<V1HooksSubset>;
+	/**
+	 * Fresh registration-table builder (#2910 W3): a FRESH config read plus
+	 * `getAgentConfigs` + the shared command-table builder — no
+	 * side-effecting init re-run. Registered as this setup instance's config
+	 * rebuild source so a successful `config doctor --fix` dispatch can
+	 * refresh the registration tables. `undefined` -> the adapter registers
+	 * no rebuild source (registration refresh stays a no-op).
+	 */
+	buildV2RegistrationTables?: (directory: string) => Promise<{
+		agentTable: Record<string, unknown>;
+		commandTable: Record<string, unknown>;
+	}>;
 }
 
 interface CollectedState {
@@ -206,6 +262,19 @@ export function normalizeV2AgentRef(agent: unknown): string | undefined {
 }
 
 /**
+ * Monotonic per-process owner-token counter (#2910 W3/W5): one token per
+ * setup instance, scoping the config rebuild-source/quiet registry entry and
+ * the model-apply surface so a concurrent live setup's cleanup can never
+ * remove another instance's state.
+ */
+let v2SetupOwnerCounter = 0;
+
+function nextV2OwnerToken(): string {
+	v2SetupOwnerCounter += 1;
+	return `v2-owner-${v2SetupOwnerCounter}`;
+}
+
+/**
  * Register the plugin on an OpenCode 2 host. Throws propagate to the v2 host
  * (which skips the plugin) after a FATAL stderr line from the shared wrapper —
  * the same posture the v1 server() path has (issue #675).
@@ -223,6 +292,16 @@ export async function openCodeSwarmV2Setup(
 			'[opencode-swarm] v2 setup: host Context carried no location.directory; refusing to start (invariant 4).',
 		);
 	}
+	// #2910 W3/W5 owner startup: register THIS instance's rebuild source (from
+	// deps; absent -> no rebuild source) and quiet entry BEFORE anything else,
+	// so every later owner-scoped write (preflight quiet, registration
+	// snapshot) attaches to this token and cleanup unregisters exactly these.
+	const ownerToken = nextV2OwnerToken();
+	registerV2ConfigRebuildSourceForOwner(
+		ownerToken,
+		deps.buildV2RegistrationTables,
+	);
+	setV2OperatorQuietForOwner(ownerToken, false);
 	// Route the raw directory through the same project-root decision the v1
 	// init path applies (issue #2127): a subdirectory owned by a parent
 	// project root redirects, so session-scoped state does not split-brain
@@ -269,9 +348,15 @@ export async function openCodeSwarmV2Setup(
 		pendingDomains.add(domain);
 		return register()
 			.catch((err: unknown) => {
+				const message = err instanceof Error ? err.message : String(err);
 				log(`v2 ${domain} registration failed (non-fatal)`, {
-					error: err instanceof Error ? err.message : String(err),
+					error: message,
 				});
+				// #3352/#3318: a REJECTED domain is operator-visible, not only
+				// debug-logged (log() is OPENCODE_SWARM_DEBUG-gated).
+				addDeferredWarning(
+					`[opencode-swarm] v2 setup: ${domain} registration failed (${message}); the domain was not registered.`,
+				);
 			})
 			.finally(() => {
 				pendingDomains.delete(domain);
@@ -295,7 +380,7 @@ export async function openCodeSwarmV2Setup(
 				registerV2SessionHooks(ctx, hooks, directory, state.registrations),
 			),
 		]),
-		V2_REGISTRATION_TIMEOUT_MS,
+		_internals.registrationTimeoutMs,
 		new Error(
 			'[opencode-swarm] v2 setup: parallel registration exceeded budget',
 		),
@@ -305,11 +390,18 @@ export async function openCodeSwarmV2Setup(
 			error: err instanceof Error ? err.message : String(err),
 			pending,
 		});
-		if (pending.length > 0) {
-			addDeferredWarning(
-				`[opencode-swarm] v2 setup: registration still pending after ${V2_REGISTRATION_TIMEOUT_MS}ms (${pending.join(', ')}); the plugin loaded with partial registration.`,
-			);
-		}
+		// #3350 AC5 (guard removed — decision recorded on
+		// https://github.com/ZaxbyHub/opencode-swarm/issues/3350#issuecomment-6388937737):
+		// the timeout catch ALWAYS warns, even when every domain completed
+		// after the budget raced ahead of the last .finally — the stage still
+		// exceeded its budget and the operator must see that.
+		const pendingText =
+			pending.length > 0
+				? pending.join(', ')
+				: 'none — domains completed but the stage exceeded budget';
+		addDeferredWarning(
+			`[opencode-swarm] v2 setup: registration still pending after ${_internals.registrationTimeoutMs}ms (${pendingText}); the plugin loaded with partial registration.`,
+		);
 	});
 
 	// Deferred event pump (detached; named for the C6 convention).
@@ -318,8 +410,9 @@ export async function openCodeSwarmV2Setup(
 
 	// #3022 D2: remember the agent transform surface for runtime model
 	// rewrites (fallback advance application — the v2-native equivalent of the
-	// v1 output.message.model write).
-	registerV2AgentTransformSurface(ctx);
+	// v1 output.message.model write). #2910 W5: token-carrying so this
+	// instance's cleanup clears only its own surface.
+	registerV2AgentTransformSurface(ctx, ownerToken);
 
 	// #3022 AC4: clientless startup roster preflight — the catalog-backed
 	// preflight is client-only, so on v2 validate the effective models against
@@ -352,12 +445,23 @@ export async function openCodeSwarmV2Setup(
 		// error envelope afterwards; that bounded residue is re-cleared on the
 		// next cleanup (documented in the trace).
 		clearV2SessionClientState();
-		clearV2AgentTransformSurface();
+		// #2910 W5: owner-scoped clear — only THIS instance's surface + held
+		// registrations; a concurrent live setup's surface survives.
+		clearV2AgentTransformSurface(ownerToken);
 		// #3401: the pump-side tool-name registry must not outlive the pump —
 		// stale (session,call)→name residue would put a re-setup under
 		// eviction pressure (and could hand a recycled dispatch id a stale
 		// name).
 		clearToolNameRegistry();
+		// #3318 AC6 / #2910 W6: the safeHook swallowed-error registry and the
+		// operator-warning dedup state are setup-lifetime state — a re-setup
+		// must not inherit the previous instance's stale entries.
+		clearSwallowedCommandErrorRegistry();
+		resetV2OperatorWarningState();
+		// #2910 W3/W5: unregister THIS instance's rebuild source and quiet
+		// entry (ambient/other-owner entries are untouched — owner isolation).
+		registerV2ConfigRebuildSourceForOwner(ownerToken, undefined);
+		setV2OperatorQuietForOwner(ownerToken, undefined);
 		for (const registration of state.registrations) {
 			try {
 				await withTimeout(
