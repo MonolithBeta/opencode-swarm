@@ -530,6 +530,10 @@ function driveSync(
 async function probeCandidateAsync(
 	candidatePath: string,
 	platform: NodeJS.Platform,
+	// Callers may cap this below PER_PROBE_TIMEOUT_MS to the cycle's
+	// remaining total budget (post-push automation review) so a probe
+	// started near the budget boundary cannot overrun TOTAL_BUDGET_MS.
+	probeTimeoutMs: number = PER_PROBE_TIMEOUT_MS,
 ): Promise<ProbeOutcome> {
 	if (!isAbsoluteForPlatform(candidatePath, platform)) {
 		return { accepted: false, reason: 'not an absolute path' };
@@ -584,10 +588,7 @@ async function probeCandidateAsync(
 		const result = await Promise.race([
 			completed,
 			new Promise<{ kind: 'timeout' }>((resolve) => {
-				timer = setTimeout(
-					() => resolve({ kind: 'timeout' }),
-					PER_PROBE_TIMEOUT_MS,
-				);
+				timer = setTimeout(() => resolve({ kind: 'timeout' }), probeTimeoutMs);
 			}),
 		]);
 		if (result.kind === 'timeout') {
@@ -647,12 +648,21 @@ async function probeCycleAsync(
 	let sawTimeout = false;
 
 	for (const candidate of candidates) {
-		if (_internals.now() - start > TOTAL_BUDGET_MS) {
+		// Cap each probe by the REMAINING total budget (post-push automation
+		// review): the pre-candidate check alone let a probe started just
+		// inside the boundary run a full PER_PROBE_TIMEOUT_MS past
+		// TOTAL_BUDGET_MS, making the advertised cycle budget inaccurate.
+		const remainingBudgetMs = TOTAL_BUDGET_MS - (_internals.now() - start);
+		if (remainingBudgetMs <= 0) {
 			budgetExceeded = true;
 			break;
 		}
 
-		const result = await probeCandidateAsync(candidate.path, platform);
+		const result = await probeCandidateAsync(
+			candidate.path,
+			platform,
+			Math.min(PER_PROBE_TIMEOUT_MS, remainingBudgetMs),
+		);
 		attempts.push({
 			source: candidate.source,
 			candidate: candidate.path,

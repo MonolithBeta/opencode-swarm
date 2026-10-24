@@ -125,14 +125,43 @@ async function readOnceDefault(
 ): Promise<GitStatusReadResult> {
 	let proc: BunCompatSubprocess | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let resolutionTimer: ReturnType<typeof setTimeout> | undefined;
 	let childCompleted = false;
 	try {
 		// The deadline covers executable resolution too (#3317 review
-		// PRR-009): a slow resolver must not silently extend the advertised
-		// bound. Resolution has its own internal budget (~1.25 s max), so the
-		// remaining-time slice is normally the full timeoutMs.
+		// PRR-009, tightened after the post-push automation review): the
+		// resolver is RACED against timeoutMs, so a slow resolver cannot
+		// delay the refusal past the advertised end-to-end bound. Before the
+		// race, resolution was only *charged* against the deadline — the
+		// ETIMEDOUT answer still waited for the resolver to finish, so the
+		// function could return up to the resolver's own budget (~1.25 s)
+		// after the advertised timeout. The losing racer is settled by
+		// Promise.race's attached handlers (no-op catch, same as the child
+		// racer), so a late resolver settlement never surfaces an unhandled
+		// rejection.
 		const startedAt = Date.now();
-		const executable = await gitStatusReadInternals.resolveExecutable();
+		const resolution = gitStatusReadInternals
+			.resolveExecutable()
+			.then((executable) => ({ kind: 'resolved' as const, executable }));
+		// Losing-racer no-op catch (the unhandled-rejection hazard).
+		resolution.catch(() => {});
+		const resolutionOutcome = await Promise.race([
+			resolution,
+			new Promise<{ kind: 'timeout' }>((resolve) => {
+				resolutionTimer = setTimeout(
+					() => resolve({ kind: 'timeout' }),
+					timeoutMs,
+				);
+			}),
+		]);
+		if (resolutionTimer !== undefined) {
+			clearTimeout(resolutionTimer);
+			resolutionTimer = undefined;
+		}
+		if (resolutionOutcome.kind === 'timeout') {
+			return { ok: false, code: 'ETIMEDOUT', status: null, stderrTail: '' };
+		}
+		const executable = resolutionOutcome.executable;
 		const remainingMs = timeoutMs - (Date.now() - startedAt);
 		if (remainingMs <= 0) {
 			return { ok: false, code: 'ETIMEDOUT', status: null, stderrTail: '' };
@@ -247,6 +276,9 @@ async function readOnceDefault(
 		};
 	} finally {
 		if (timer) clearTimeout(timer);
+		// Arm-hygiene: only reachable if the resolution race rejected before
+		// the inline clear ran — never leave a deadline timer armed (PRR-008).
+		if (resolutionTimer) clearTimeout(resolutionTimer);
 		// Only a child that is still running needs killing (PRR-005/PRR-025):
 		// the timeout path is the one case where `exited` has NOT settled.
 		// Killing an already-reaped child spawned an extra `taskkill` per

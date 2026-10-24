@@ -131,7 +131,7 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 		const cwd = canonicalMkdtemp('3317-fclass-deadline-');
 		tempRoots.push(cwd);
 		gitStatusReadInternals.resolveExecutable = async () => {
-			await sleep(200);
+			await sleep(400);
 			return process.execPath;
 		};
 		let spawns = 0;
@@ -139,12 +139,21 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 			spawns += 1;
 			return stubSpawnResult({ exitCode: 0 });
 		}) as typeof gitStatusReadInternals.spawn;
+		const startedAt = performance.now();
 		const result = await gitStatusReadInternals.readOnce(['status'], cwd, 80);
+		const elapsedMs = performance.now() - startedAt;
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.code).toBe('ETIMEDOUT');
 		}
 		expect(spawns).toBe(0);
+		// End-to-end bound (post-push automation review): the refusal must
+		// arrive near the advertised 80 ms deadline, NOT after the resolver's
+		// own 400 ms sleep. Charging resolution against the deadline without
+		// racing it (the pre-fix shape) returned at ~400 ms; the race returns
+		// at ~80 ms. 300 ms separates the two shapes with wide margins in
+		// both directions (timer slack on loaded CI runners).
+		expect(elapsedMs).toBeLessThan(300);
 	}, 30_000);
 
 	test('close gate renders EOUTPUT and ESIGNAL causes (never the availability or index-repair remedy)', async () => {
