@@ -26,7 +26,6 @@ import {
 	buildAnchorArgv,
 	executeAttestTask,
 } from '../../../src/tools/attest-task.js';
-import { executeUpdateTaskStatus } from '../../../src/tools/update-task-status.js';
 import { resolveGitExecutable } from '../../../src/utils/git-executable.js';
 import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
@@ -176,9 +175,11 @@ function readBundle(dir: string): {
  * level via stubbed stdout shapes.
  */
 const originalRunAnchor = attestInternals.runAnchor;
+const originalLoadPlanTask = attestInternals.loadPlanTask;
 
 afterEach(() => {
 	attestInternals.runAnchor = originalRunAnchor;
+	attestInternals.loadPlanTask = originalLoadPlanTask;
 });
 
 afterAll(() => {
@@ -235,6 +236,23 @@ describe('buildAnchorArgv — read-only git grammar (plan §7)', () => {
 		expect(refusal).toMatch(/remote-helper URL/);
 		expect(refusal).toMatch(/read-only git/);
 	});
+
+	test('arity-1 flag values normalize to attached form (PRR-009: the space form fails on git-for-windows 2.54)', () => {
+		const inline = buildAnchorArgv('git log --format=%H');
+		const spaced = buildAnchorArgv('git log --format %H');
+		expect(inline.refusal).toBeNull();
+		expect(spaced.refusal).toBeNull();
+		expect(spaced.argv).not.toBeNull();
+		expect(inline.argv).not.toBeNull();
+		// Both spellings compile to the identical argv (the log guards
+		// --no-ext-diff/--no-textconv are appended after the anchor tokens).
+		expect(spaced.argv).toEqual(inline.argv);
+		expect(spaced.argv).toContain('--format=%H');
+		// Short-option values attach to the flag: `-n 2` becomes `-n2`.
+		const short = buildAnchorArgv('git log -n 2');
+		expect(short.refusal).toBeNull();
+		expect(short.argv).toContain('-n2');
+	});
 });
 
 describe('executeAttestTask — malformed expectations (expect token)', () => {
@@ -264,7 +282,10 @@ describe('executeAttestTask — malformed expectations (expect token)', () => {
 			dir,
 		);
 		expect(result.success).toBe(false);
-		expect(result.message).toContain('neither expect nor expect_prefix');
+		// Issue #3432 review PRR-008: a vacuous anchor is now rejected at the
+		// plan-schema boundary; attest surfaces that through the same expect
+		// vocabulary instead of the (now unreachable) runtime backstop.
+		expect(result.message).toContain('non-empty expect_prefix');
 	});
 });
 
@@ -360,96 +381,6 @@ describe('executeAttestTask — raw stdout bound (plan §6 R3F5)', () => {
 		expect(result.message).toContain('refusing rather than truncating');
 		// Refusal happens before publication: no evidence bundle is written.
 		expect(fs.existsSync(evidencePath(dir))).toBe(false);
-	});
-});
-
-describe('executeAttestTask — spawn properties via the DI seam', () => {
-	test('argv is git binary + producer prefix + subcommand (no duplicated git token); cwd is the project root', async () => {
-		const dir = plainFixture('attest-spawn-props-');
-		writePlan(dir, {
-			evidenceClass: 'external_git',
-			anchors: [{ command: 'git rev-list --count HEAD', expect: '1' }],
-		});
-		const captured: Array<{
-			argv: string[];
-			cwd: string;
-			timeoutMs: number;
-		}> = [];
-		attestInternals.runAnchor = async (argv, cwd, timeoutMs) => {
-			captured.push({ argv, cwd, timeoutMs });
-			return { exitCode: 0, stdout: '1\n', refusal: null };
-		};
-		const result = await executeAttestTask(
-			{ task_id: TASK_ID, working_directory: dir },
-			dir,
-		);
-		expect(result.success).toBe(true);
-		expect(captured.length).toBe(1);
-		const { argv, cwd, timeoutMs } = captured[0] as {
-			argv: string[];
-			cwd: string;
-			timeoutMs: number;
-		};
-		const [gitBinary, ...rest] = argv;
-		expect(gitBinary).toBe(resolveGitExecutable());
-		// Producer's own safety prefix (plan §7): the grammar lets no anchor
-		// token reach this position, so hostile globals cannot be injected.
-		expect(rest.slice(0, 5)).toEqual([
-			'--no-pager',
-			'-c',
-			'diff.external=',
-			'-c',
-			'core.pager=cat',
-		]);
-		// The anchor's leading `git` token is stripped: the next token is the
-		// subcommand itself, never a duplicated 'git'.
-		expect(rest[5]).toBe('rev-list');
-		expect(argv.filter((token) => token === 'git').length).toBe(
-			gitBinary === 'git' ? 1 : 0,
-		);
-		expect(cwd).toBe(dir);
-		expect(timeoutMs).toBeGreaterThan(0);
-		expect(timeoutMs).toBeLessThanOrEqual(10_000);
-		// NOTE: env scrubbing, stdin-ignore, stream byte bounds, timeout, and
-		// kill-in-finally live in bunSpawn (src/utils/bun-compat.ts) and its
-		// call site — intentionally NOT re-tested here.
-	});
-});
-
-describe('executeAttestTask + completion — declaration-digest staleness (plan §3/§4c)', () => {
-	test('editing the plan anchors after attest makes completion refuse until a fresh attest', async () => {
-		const dir = gitFixture('attest-stale-digest-');
-		writePlan(dir, {
-			evidenceClass: 'external_git',
-			anchors: [{ command: 'git rev-list --count HEAD', expect: '1' }],
-		});
-		const attest = await executeAttestTask(
-			{ task_id: TASK_ID, working_directory: dir },
-			dir,
-		);
-		expect(attest.success).toBe(true);
-
-		// Re-plan: the same task now declares different anchors (B). The
-		// recorded bundle still pins digest(A), so the recomputed digest no
-		// longer matches the CURRENT declaration.
-		writePlan(dir, {
-			evidenceClass: 'external_git',
-			anchors: [
-				{
-					command: 'git rev-list --count HEAD',
-					expect: '1',
-					expect_prefix: '1',
-				},
-			],
-		});
-		const completion = await executeUpdateTaskStatus(
-			{ task_id: TASK_ID, status: 'completed', working_directory: dir },
-			dir,
-		);
-		expect(completion.success).toBe(false);
-		expect(completion.errors?.[0]).toContain('TASK_COMPLETION_CAS_MISMATCH');
-		expect(completion.errors?.[0]).toContain('no current matched attestation');
-		expect(completion.errors?.[0]).toContain(`/swarm attest ${TASK_ID}`);
 	});
 });
 

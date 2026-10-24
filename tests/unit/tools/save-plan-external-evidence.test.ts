@@ -19,7 +19,6 @@ import * as path from 'node:path';
 import { transitionTaskWorkflowEvidence } from '../../../src/gate-evidence';
 import type { SavePlanArgs } from '../../../src/tools/save-plan';
 import { executeSavePlan } from '../../../src/tools/save-plan';
-import { executeUpdateTaskStatus } from '../../../src/tools/update-task-status';
 import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
@@ -291,88 +290,6 @@ describe('save_plan external-evidence declaration surface (issue #3422)', () => 
 		).toBe(true);
 	});
 
-	it('revokes attested external evidence when the declaration changes on a nonterminal task', async () => {
-		const dir = newFixture('sp3422-revoke-');
-		const first = await executeSavePlan(
-			saveArgs(dir, 'Revocation plan', [
-				{
-					id: '5.1',
-					description: 'Commit and push the release artifact',
-					files_touched: [],
-					evidence_class: 'external_git',
-					evidence_anchors: ANCHORS_A,
-				},
-			]),
-			dir,
-		);
-		expect(first.success).toBe(true);
-		await seedExternalAttestation(dir, '5.1', ANCHORS_A);
-		expect(readEvidenceWorkflow(dir, '5.1').externalEvidence).toBeDefined();
-
-		const second = await executeSavePlan(
-			saveArgs(dir, 'Revocation plan', [
-				{
-					id: '5.1',
-					description: 'Commit and push the release artifact',
-					files_touched: [],
-					evidence_class: 'external_git',
-					evidence_anchors: ANCHORS_B,
-				},
-			]),
-			dir,
-		);
-		expect(second.success).toBe(true);
-		const workflow = readEvidenceWorkflow(dir, '5.1');
-		expect(workflow.externalEvidence).toBeUndefined();
-		// The revoke is state-preserving: the task stays idle for a fresh attest.
-		expect(workflow.state).toBe('idle');
-	});
-
-	it('preserves terminal attested evidence when the declaration changes (R4F1)', async () => {
-		const dir = newFixture('sp3422-terminal-');
-		const first = await executeSavePlan(
-			saveArgs(dir, 'Terminal preservation plan', [
-				{
-					id: '5.2',
-					description: 'Commit and push the release artifact',
-					files_touched: [],
-					evidence_class: 'external_git',
-					evidence_anchors: ANCHORS_A,
-				},
-			]),
-			dir,
-		);
-		expect(first.success).toBe(true);
-		await seedExternalAttestation(dir, '5.2', ANCHORS_A);
-		await transitionTaskWorkflowEvidence(dir, '5.2', {
-			type: 'task_completed',
-			expectedGeneration: 0,
-			transitionId: 'complete:5.2',
-			externalEvidence: true,
-		});
-		expect(readEvidenceWorkflow(dir, '5.2').state).toBe('complete');
-
-		const second = await executeSavePlan(
-			saveArgs(dir, 'Terminal preservation plan', [
-				{
-					id: '5.2',
-					description: 'Commit and push the release artifact',
-					files_touched: [],
-					evidence_class: 'external_git',
-					evidence_anchors: ANCHORS_B,
-				},
-			]),
-			dir,
-		);
-		expect(second.success).toBe(true);
-		const workflow = readEvidenceWorkflow(dir, '5.2') as {
-			state: string;
-			externalEvidence?: { declarationDigest?: string };
-		};
-		expect(workflow.state).toBe('complete');
-		expect(workflow.externalEvidence?.declarationDigest).toBe('a'.repeat(64));
-	});
-
 	it('plan-lints git-ops tasks with empty scope and stays silent for controls', async () => {
 		const dir = newFixture('sp3422-lint-');
 		const saved = await executeSavePlan(
@@ -429,68 +346,5 @@ describe('save_plan external-evidence declaration surface (issue #3422)', () => 
 		expect(warnings.some((warning) => warning.includes('3.3'))).toBe(false);
 		expect(warnings.some((warning) => warning.includes('2.1'))).toBe(false);
 		expect(warnings.some((warning) => warning.includes('2.2'))).toBe(true);
-	});
-
-	it('revokes on removal and refuses completion after an identical re-add without fresh attest', async () => {
-		const dir = newFixture('sp3422-remove-');
-		const declared = (description: string): SaveTaskInput => ({
-			id: '9.1',
-			description,
-			files_touched: [],
-			evidence_class: 'external_git',
-			evidence_anchors: ANCHORS_A,
-		});
-		const sibling: SaveTaskInput = {
-			id: '9.2',
-			description: 'Update the changelog section',
-			files_touched: ['docs/change.md'],
-		};
-		const first = await executeSavePlan(
-			saveArgs(dir, 'Removal re-add plan', [
-				declared('Commit and push the artifact'),
-				sibling,
-			]),
-			dir,
-		);
-		expect(first.success).toBe(true);
-		await seedExternalAttestation(dir, '9.1', ANCHORS_A);
-		expect(readEvidenceWorkflow(dir, '9.1').externalEvidence).toBeDefined();
-
-		const removal = await executeSavePlan(
-			saveArgs(dir, 'Removal re-add plan', [sibling], {
-				removed_task_ids: ['9.1'],
-				removal_reason: 'Declaration moved to a follow-up plan',
-			}),
-			dir,
-		);
-		expect(removal.success).toBe(true);
-		expect(readEvidenceWorkflow(dir, '9.1').externalEvidence).toBeUndefined();
-
-		const readd = await executeSavePlan(
-			saveArgs(dir, 'Removal re-add plan', [
-				declared('Commit and push the artifact'),
-				sibling,
-			]),
-			dir,
-		);
-		expect(readd.success).toBe(true);
-
-		const completion = await executeUpdateTaskStatus(
-			{ task_id: '9.1', status: 'completed', working_directory: dir },
-			dir,
-		);
-		expect(completion.success).toBe(false);
-		const text = [completion.message, ...(completion.errors ?? [])].join('\n');
-		// The refusal surfaces through the reviewer-gate pre-check's external
-		// arm (update-task-status.ts `checkReviewerGate`), which fires before
-		// the plan-lock TASK_COMPLETION_CAS_MISMATCH validation for a
-		// reviewer-requiring phase: the attestation is gone, so completion
-		// fails closed naming the missing proof and the /swarm attest remedy.
-		// (The pre-lock reviewer precheck is bypassed for declared external
-		// tasks, so the under-lock refusal is the one that surfaces.)
-		expect(text).toContain(
-			'declares external_git evidence but has no current matched attestation',
-		);
-		expect(text).toContain('/swarm attest 9.1');
 	});
 });

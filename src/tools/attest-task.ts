@@ -211,7 +211,13 @@ export function buildAnchorArgv(command: string): {
 					value = next;
 					i++;
 				}
-				finalTokens.push(flag, value);
+				// Issue #3432 review PRR-009: space-separated option values fail
+				// on git-for-windows 2.54 ("ambiguous argument" exit 128, probed)
+				// while the = form works everywhere — normalize to a single
+				// `flag=value` token (short flags concatenate without =).
+				finalTokens.push(
+					flag.startsWith('--') ? `${flag}=${value}` : `${flag}${value}`,
+				);
 			}
 			continue;
 		}
@@ -242,6 +248,10 @@ export function buildAnchorArgv(command: string): {
 		finalTokens.push('--no-ext-diff', '--no-textconv');
 	}
 	const git = resolveGitExecutable();
+	// Issue #3432 review PRR-001: neutralize the remaining config-driven exec
+	// class alongside diff.external — fsmonitor daemons (fire on index refresh
+	// during diff), GPG helpers (log.showSignature/gpg.program verify signed
+	// objects on log/show), and credential helpers (defense in depth).
 	const argv = [
 		git,
 		'--no-pager',
@@ -249,6 +259,12 @@ export function buildAnchorArgv(command: string): {
 		'diff.external=',
 		'-c',
 		'core.pager=cat',
+		'-c',
+		'core.fsmonitor=',
+		'-c',
+		'gpg.program=',
+		'-c',
+		'credential.helper=',
 		...finalTokens,
 	];
 	return { argv, refusal: null };
@@ -274,8 +290,19 @@ async function runAnchor(
 		const exited = await proc.exited;
 		// bunSpawn exposes stdout/stderr as buffered BunCompatStreams, not
 		// plain strings; read them to text AFTER exit (the maxBuffer cap
-		// owns the bound).
-		const stdout = await proc.stdout.text();
+		// owns the bound). An over-buffer stream rejects — convert that to
+		// the tool's fail-closed refusal shape instead of letting the error
+		// escape the executor boundary (#3432 review PRR-004).
+		let stdout: string;
+		try {
+			stdout = await proc.stdout.text();
+		} catch {
+			return {
+				exitCode: exited,
+				stdout: '',
+				refusal: `anchor output exceeded the ${Math.floor(ANCHOR_SPAWN_MAX_BUFFER_BYTES / 1024)}KB spawn capture buffer; refusing rather than truncating`,
+			};
+		}
 		if (exited !== 0) {
 			const stderr = await proc.stderr.text();
 			const detail = stderr.trim().slice(0, 200);
@@ -370,10 +397,9 @@ export async function executeAttestTask(
 		found = _internals.loadPlanTask(directory, args.task_id);
 	} catch (error) {
 		// A schema-invalid plan must surface as a clean refusal, never a
-		// thrown zod error (#3422): an anchor the schema already forbids
-		// (e.g. an empty expect_prefix, which would match any output) is
-		// reported through the same `expect` vocabulary attest uses for
-		// malformed anchors.
+		// thrown zod error (#3422/#3432 review PRR-004). Anchor-specific
+		// failures keep the dedicated `expect` wording; every other plan
+		// validation failure gets the generic invalid-plan refusal.
 		const message = error instanceof Error ? error.message : String(error);
 		if (
 			message.includes('expect_prefix') ||
@@ -388,7 +414,13 @@ export async function executeAttestTask(
 				task_id: args.task_id,
 			};
 		}
-		throw error;
+		const refusal = `the plan at ${directory} is invalid or unreadable; fix or re-save the plan before attesting`;
+		return {
+			success: false,
+			message: refusal,
+			errors: [`${refusal} (${message.slice(0, 160)})`],
+			task_id: args.task_id,
+		};
 	}
 	if (!found) {
 		const message = `Task ${args.task_id} not found in the plan at ${directory}`;
@@ -510,15 +542,33 @@ export async function executeAttestTask(
 
 	// Compare-and-publish freshness: re-read the plan after the bounded run so
 	// a re-plan that landed mid-run cannot publish a bundle whose digest names
-	// a declaration that no longer exists. Completion re-validates the digest
+	// a declaration that no longer exists (#3432 review PRR-003: the anchor
+	// set itself is compared, not just the identity fields — it is exactly the
+	// field a declaration edit changes). Completion re-validates the digest
 	// again under the plan lock (externalProofCurrent), which is the
 	// authoritative enforcement point.
-	const current = _internals.loadPlanTask(directory, args.task_id);
+	let current: ReturnType<typeof _internals.loadPlanTask>;
+	try {
+		current = _internals.loadPlanTask(directory, args.task_id);
+	} catch (error) {
+		const message =
+			'the plan became unreadable while anchors were running; re-run attest against the current declaration';
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
+	}
+	const anchorsUnchanged =
+		JSON.stringify(current?.task.evidence_anchors ?? null) ===
+		JSON.stringify(anchors);
 	if (
 		!current ||
 		current.task.evidence_class !== 'external_git' ||
 		current.title !== found.title ||
-		current.swarm !== found.swarm
+		current.swarm !== found.swarm ||
+		!anchorsUnchanged
 	) {
 		const message =
 			'the plan changed while anchors were running; re-run attest against the current declaration';

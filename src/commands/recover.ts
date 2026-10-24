@@ -19,11 +19,18 @@ import {
 const DISPATCH_HISTORY_SCAN_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
- * Whether any coder-settlement lifecycle event mentions this task (#3422:
+ * Whether any coder-settlement lifecycle event names this task (#3422:
  * the recover no-WAL branch must distinguish "never dispatched" from
  * "dispatched, WAL lost" — events are best-effort but their PRESENCE rules
  * out the never-dispatched shape). 'unknown' on a missing/oversized file so
  * the caller can fall back to an honest weaker message.
+ *
+ * Issue #3432 review PRR-005: the match is on the STRUCTURED record — a
+ * line that parses as JSON with `type: 'coder_settlement'` and a `taskId`
+ * field exactly equal to the requested id — never on raw substrings, so
+ * `T1` cannot match `T10` and a task id mentioned in an unrelated record
+ * cannot fabricate a dispatch. Malformed lines are skipped; they cannot
+ * produce a match either way.
  */
 function scanTaskDispatchHistory(
 	directory: string,
@@ -35,9 +42,21 @@ function scanTaskDispatchHistory(
 		const stat = fs.statSync(eventsPath);
 		if (stat.size > DISPATCH_HISTORY_SCAN_MAX_BYTES) return 'unknown';
 		const content = fs.readFileSync(eventsPath, 'utf-8');
-		return content.includes('coder_settlement') && content.includes(taskId)
-			? 'present'
-			: 'absent';
+		for (const line of content.split('\n')) {
+			if (!line.includes('coder_settlement')) continue;
+			try {
+				const record = JSON.parse(line) as {
+					type?: unknown;
+					taskId?: unknown;
+				};
+				if (record.type === 'coder_settlement' && record.taskId === taskId) {
+					return 'present';
+				}
+			} catch {
+				// torn or corrupt line — skip; it matches nothing
+			}
+		}
+		return 'absent';
 	} catch {
 		return 'unknown';
 	}
@@ -209,6 +228,17 @@ export async function handleRecoverCommand(
 				report.push(
 					`⚠️ No settlement WAL for task ${taskId} and its task-evidence file is unreadable (corrupt) — inspect .swarm/evidence/${taskId}.json; this command refuses corrupt evidence. See docs/troubleshooting/recovery-runbook.md.`,
 				);
+			} else if (dispatchHistory === 'unknown') {
+				// Issue #3432 review PRR-006: an undeterminable dispatch history
+				// gets its own honest branch — it must not be narrated as "no
+				// coder dispatch ran" when the scan simply could not tell.
+				report.push(
+					`⚠️ No settlement WAL for task ${taskId}, and its dispatch history could not be established (the core event log is missing, oversized, or unreadable). Task-evidence state: ${evidenceState}.`,
+					'',
+					'Inspect the core event log before assuming the task was never dispatched. If the task declares external_git evidence, `/swarm attest ' +
+						taskId +
+						'` remains available; otherwise re-plan it as a thin coder dispatch so a settlement exists.',
+				);
 			} else if (dispatchHistory === 'absent' && evidenceState === 'absent') {
 				report.push(
 					`❌ No coder dispatch or settlement evidence was found for task ${taskId} (no settlement WAL, no exact-task workflow evidence file, no coder_settlement events).`,
@@ -220,11 +250,6 @@ export async function handleRecoverCommand(
 					'2. manual close — flip the task status in the TUI and record the wedge plus the close reason in your execution trace.',
 					'3. Re-plan the task as a thin coder dispatch (the coder executes the pinned-scope git commands) so a settlement exists and the normal gate applies.',
 				);
-				if (listed.length > 0) {
-					report.push(
-						`Known tasks: ${listed.map((entry) => entry.taskId).join(', ')}`,
-					);
-				}
 			} else {
 				// Evidence exists but no WAL and no dispatch events — the
 				// incomplete-evidence shape: name what is missing instead of a
@@ -235,6 +260,22 @@ export async function handleRecoverCommand(
 					'Next steps: run `/swarm attest ' +
 						taskId +
 						'` if the task declares external_git evidence (or re-plan it to), or re-plan it as a thin coder dispatch so a settlement exists.',
+				);
+			}
+			// Issue #3432 review PRR-016: every no-WAL shape lists the tasks
+			// that DO have settlement WALs so a task-id typo is visible at a
+			// glance instead of buried behind the diagnosis.
+			if (listed.length > 0) {
+				report.push(
+					`Known tasks: ${listed.map((entry) => entry.taskId).join(', ')}`,
+				);
+			}
+			// Issue #3432 review PRR-012: when the WAL listing itself was
+			// capped, "no settlement WAL for this task" is only proven within
+			// the listed prefix — say so instead of an unqualified absence.
+			if (listTruncated) {
+				report.push(
+					'⚠️ The settlement-WAL listing hit the recovery scan cap (200) — the absence above is only established for the listed tasks.',
 				);
 			}
 		} else {

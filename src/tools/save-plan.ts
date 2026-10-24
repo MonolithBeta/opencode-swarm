@@ -1507,7 +1507,10 @@ export async function executeSavePlan(
 			// ABSENT from the incoming plan (removal/re-add cannot bypass
 			// revocation) or whose resolved (class, anchors) declaration
 			// changed gets an `external_evidence_revoked` transition that
-			// clears the externalEvidence metadata. Ordering is critical:
+			// clears the externalEvidence metadata — as does a plan title or
+			// swarm rename (the declaration digest names plan identity, so a
+			// rename stales every prior bundle; issue #3432 review PRR-010).
+			// Ordering is critical:
 			// AFTER the incoming plan + declarations validate and BEFORE the
 			// ledger/projection write below — the safe failure direction is a
 			// save that fails after revocation (old declaration without proof,
@@ -1518,13 +1521,24 @@ export async function executeSavePlan(
 			// bundles are preserved as audit history, and a repair_idle
 			// reopen already forces a fresh attest on any reopened task.
 			const revocationErrors: string[] = [];
+			// Issue #3432 review PRR-010: the declaration digest names the plan
+			// title and swarm too, so a plan RENAME silently invalidates every
+			// prior external_git bundle even when (class, anchors) are
+			// unchanged — the revocation comparison must include plan identity
+			// or the stale bundle would linger attached to the task.
+			const planIdentityChanged =
+				existingPlan !== null &&
+				(existingPlan.title !== plan.title ||
+					existingPlan.swarm !== plan.swarm);
 			for (const priorTask of existingPlan?.phases.flatMap((p) => p.tasks) ??
 				[]) {
 				if (priorTask.evidence_class !== 'external_git') continue;
 				const resolved = resolvedDeclarationById.get(priorTask.id);
-				// Absent from the incoming plan (undefined) and any changed
-				// declaration both count as a declaration change.
+				// Absent from the incoming plan (undefined), a plan title/swarm
+				// rename, and any changed declaration all count as a
+				// declaration change.
 				if (
+					!planIdentityChanged &&
 					resolved !== undefined &&
 					canonicalDeclarationKey(
 						priorTask.evidence_class,

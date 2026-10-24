@@ -541,7 +541,22 @@ export const ExternalEvidenceBundleSchema = z.object({
 				stdout: z.string().max(4096),
 			}),
 		)
-		.max(16),
+		.min(1)
+		.max(16)
+		// Issue #3432 review PRR-008: persisted bundles are non-vacuous —
+		// every recorded anchor carried an expectation (an anchor with none
+		// would attest anything), mirroring the plan-declaration schema.
+		.superRefine((anchors, ctx) => {
+			anchors.forEach((anchor, index) => {
+				if (anchor.expect === undefined && anchor.expect_prefix === undefined) {
+					ctx.addIssue({
+						code: z.ZodIssueCode.custom,
+						message: `anchor ${index} must carry expect and/or a non-empty expect_prefix`,
+						path: [index],
+					});
+				}
+			});
+		}),
 	attestedAt: z.string().min(1),
 });
 export type ExternalEvidenceBundle = z.infer<
@@ -868,8 +883,28 @@ export function deriveApplicableGateSet(
 			? true
 			: options.currentDeclaredFiles !== null &&
 				options.currentDeclaredFiles.length === 0);
+	// Issue #3422 (and #3432 review PRR-002): a task that reached the
+	// external_evidence_attested state through the attest transition with a
+	// fully-matched bundle replaces the coder-mutation QA gate set — do not
+	// demand pre_check from a task whose deliverable can never produce one.
+	// The key is the attested STATE (reachable only through the attest
+	// transition, which refuses undeclared tasks), never bare bundle
+	// presence: a forged externalEvidence blob on an undeclared task must
+	// not change the derived gate set. Revocation drops back to a
+	// nonterminal state, so the demand returns. The declaration/digest match
+	// itself is enforced at completion admission
+	// (isExternalEvidenceInitialCompletionEligible); this derivation only
+	// keeps gate-status consumers honest between attests.
+	const externalEvidenceMatched =
+		workflow.state === 'external_evidence_attested' &&
+		(workflow.externalEvidence?.anchors.length ?? 0) > 0 &&
+		workflow.externalEvidence!.anchors.every((anchor) => anchor.matched);
 	const requiredGates = [...new Set(evidence.required_gates ?? [])];
-	if (!readOnlyNoMutation && !requiredGates.includes('pre_check')) {
+	if (
+		!readOnlyNoMutation &&
+		!externalEvidenceMatched &&
+		!requiredGates.includes('pre_check')
+	) {
 		requiredGates.unshift('pre_check');
 	}
 	const satisfiedGates = requiredGates.filter(

@@ -468,4 +468,29 @@ describe('issue #3422 — ExternalEvidenceBundleSchema bounds', () => {
 			).toBe(false);
 		}
 	});
+
+	test('rejects an empty anchor array (PRR-008: bundles are non-vacuous)', () => {
+		expect(
+			ExternalEvidenceBundleSchema.safeParse(makeBundle({ anchors: [] }))
+				.success,
+		).toBe(false);
+	});
+
+	test('rejects an anchor with neither expect nor expect_prefix (PRR-008)', () => {
+		const anchor = makeBundle().anchors[0];
+		expect(
+			ExternalEvidenceBundleSchema.safeParse(
+				makeBundle({
+					anchors: [
+						{
+							command: anchor.command,
+							matched: true,
+							exit_code: 0,
+							stdout: '1\n',
+						},
+					],
+				}),
+			).success,
+		).toBe(false);
+	});
 });

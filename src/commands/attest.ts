@@ -12,17 +12,27 @@ export async function handleAttestCommand(
 	args: string[],
 	sessionID?: string,
 ): Promise<string> {
-	const positional = args.filter((arg) => !arg.startsWith('--'));
-	if (positional.length !== 1) {
+	// Issue #3432 review PRR-007: unknown options are refused, never silently
+	// filtered — a typo like `--force` must not become an unintended
+	// attestation. The command takes exactly one positional task id.
+	const unknownOptions = args.filter((arg) => arg.startsWith('--'));
+	if (unknownOptions.length > 0) {
 		return [
 			'## External Evidence Attestation',
 			'',
-			positional.length === 0
-				? '❌ Missing task id. Usage: /swarm attest <task_id>'
-				: `❌ Unexpected arguments: ${positional.join(' ')}. Usage: /swarm attest <task_id>`,
+			`❌ Unsupported option(s): ${unknownOptions.join(' ')}. Usage: /swarm attest <task_id>`,
 		].join('\n');
 	}
-	const taskId = positional[0]!;
+	if (args.length !== 1) {
+		return [
+			'## External Evidence Attestation',
+			'',
+			args.length === 0
+				? '❌ Missing task id. Usage: /swarm attest <task_id>'
+				: `❌ Unexpected arguments: ${args.join(' ')}. Usage: /swarm attest <task_id>`,
+		].join('\n');
+	}
+	const taskId = args[0]!;
 	// Lazy import: a static one would pull tools/update-task-status.js's heavy
 	// state graph into every src/commands barrel consumer and break the
 	// close-command suites that mock src/state.js with a partial stub object
