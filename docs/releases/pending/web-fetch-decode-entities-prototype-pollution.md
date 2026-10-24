@@ -14,6 +14,7 @@ Defense against corrupted agent-visible content when `web_fetch` processes attac
 
 - `&constructor;`, `&CONSTRUCTOR;`, `&Constructor;` no longer decode to `function Object() { [native code] }`; they are left as-is (unknown entity).
 - All previously-working named entities remain unaffected.
+- Related numeric-reference fixes and two same-class sibling lookups are described in `inherited-key-lookups-and-numeric-entities.md`.
 
 ## Migration
 
