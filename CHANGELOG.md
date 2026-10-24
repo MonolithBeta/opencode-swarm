@@ -1,5 +1,18 @@
 # Changelog
 
+## [7.200.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.6...v7.200.0) (2026-10-24)
+
+
+### Features
+
+* **workflow:** external-evidence task class + /swarm attest — in-machine exit for git-external deliverables ([6457cc9](https://github.com/ZaxbyHub/opencode-swarm/commit/6457cc95b07481e340a2e37c3b8ffa75a408a4c8))
+
+
+### Bug Fixes
+
+* close review findings on web-fetch entity decoding and sibling inherited-key lookups ([099d677](https://github.com/ZaxbyHub/opencode-swarm/commit/099d677f72f48cf79e1c36ae9a7e3c037ab718c7))
+* own-key lookups for web-fetch entities, lean-turbo scopes and concurrency presets; spec-safe numeric entity decoding ([60ff250](https://github.com/ZaxbyHub/opencode-swarm/commit/60ff25052cd902738e3c422629a873e67d7f6aec))
+
 ## [7.199.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.5...v7.199.6) (2026-10-24)
 
 
