@@ -3,9 +3,9 @@ import * as path from 'node:path';
 import { PlanSchema } from '../config/plan-schema.js';
 import {
 	computeExternalDeclarationDigest,
+	type ExternalEvidenceBundle,
 	readTaskEvidenceRaw,
 	transitionTaskWorkflowEvidence,
-	type ExternalEvidenceBundle,
 } from '../gate-evidence.js';
 import { bunSpawn } from '../utils/bun-compat.js';
 import { resolveGitExecutable } from '../utils/git-executable.js';
@@ -61,7 +61,9 @@ const ATTEST_TOTAL_DEADLINE_MS = 30_000;
  * arity (number of value tokens). Anything not listed refuses. `=`-joined
  * values are accepted only for arity-1 flags.
  */
-const READ_ONLY_GIT_FLAGS: Readonly<Record<string, Readonly<Record<string, number>>>> = {
+const READ_ONLY_GIT_FLAGS: Readonly<
+	Record<string, Readonly<Record<string, number>>>
+> = {
 	'rev-list': { '--count': 0, '--max-count': 1, '--format': 1, '--skip': 1 },
 	log: {
 		'--format': 1,
@@ -78,7 +80,13 @@ const READ_ONLY_GIT_FLAGS: Readonly<Record<string, Readonly<Record<string, numbe
 		'-5': 0,
 		'-9': 0,
 	},
-	show: { '--format': 1, '--stat': 0, '--name-only': 0, '--no-patch': 0, '--quiet': 0 },
+	show: {
+		'--format': 1,
+		'--stat': 0,
+		'--name-only': 0,
+		'--no-patch': 0,
+		'--quiet': 0,
+	},
 	diff: { '--stat': 0, '--name-only': 0, '--quiet': 0 },
 	'rev-parse': { '--verify': 0, '--short': 0 },
 };
@@ -140,9 +148,10 @@ function anchorEnv(): {
  * argv. Returns a refusal string (policy: `read-only git`; malformed
  * expectation: `expect`) or null when admitted.
  */
-export function buildAnchorArgv(
-	command: string,
-): { argv: string[] | null; refusal: string | null } {
+export function buildAnchorArgv(command: string): {
+	argv: string[] | null;
+	refusal: string | null;
+} {
 	const tokens = command.trim().split(/\s+/).filter(Boolean);
 	if (tokens[0] !== 'git' || tokens.length < 2) {
 		return {
@@ -206,8 +215,16 @@ export function buildAnchorArgv(
 			}
 			continue;
 		}
-		if (token.length > 400 || /[\x00-\x1f]/.test(token)) {
-			return { argv: null, refusal: 'anchor argument is too long or contains control bytes' };
+		// Biome forbids control characters in regexes (decoded escapes count),
+		// so the control-byte scan is a code-point check (issue #3422).
+		const hasControlByte = Array.from(token).some(
+			(ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f,
+		);
+		if (token.length > 400 || hasControlByte) {
+			return {
+				argv: null,
+				refusal: 'anchor argument is too long or contains control bytes',
+			};
 		}
 		if (REMOTE_HELPER_PATTERN.test(token)) {
 			return {
@@ -225,7 +242,15 @@ export function buildAnchorArgv(
 		finalTokens.push('--no-ext-diff', '--no-textconv');
 	}
 	const git = resolveGitExecutable();
-	const argv = [git, '--no-pager', '-c', 'diff.external=', '-c', 'core.pager=cat', ...finalTokens];
+	const argv = [
+		git,
+		'--no-pager',
+		'-c',
+		'diff.external=',
+		'-c',
+		'core.pager=cat',
+		...finalTokens,
+	];
 	return { argv, refusal: null };
 }
 
@@ -277,10 +302,20 @@ export const _internals = {
 	loadPlanTask: (
 		directory: string,
 		taskId: string,
-	): { title: string; swarm: string; task: { id: string; evidence_class?: string; evidence_anchors?: AnchorPlan[] } } | null => {
+	): {
+		title: string;
+		swarm: string;
+		task: {
+			id: string;
+			evidence_class?: string;
+			evidence_anchors?: AnchorPlan[];
+		};
+	} | null => {
 		const planPath = path.join(directory, '.swarm', 'plan.json');
 		if (!fs.existsSync(planPath)) return null;
-		const plan = PlanSchema.parse(JSON.parse(fs.readFileSync(planPath, 'utf-8')));
+		const plan = PlanSchema.parse(
+			JSON.parse(fs.readFileSync(planPath, 'utf-8')),
+		);
 		for (const phase of plan.phases) {
 			for (const task of phase.tasks) {
 				if (task.id === taskId) {
@@ -297,7 +332,10 @@ function validateAnchorExpectations(anchors: AnchorPlan[]): string | null {
 		if (anchor.expect === undefined && anchor.expect_prefix === undefined) {
 			return `anchor "${anchor.command.slice(0, 60)}" declares neither expect nor expect_prefix`;
 		}
-		if (anchor.expect_prefix !== undefined && anchor.expect_prefix.length === 0) {
+		if (
+			anchor.expect_prefix !== undefined &&
+			anchor.expect_prefix.length === 0
+		) {
 			return `anchor "${anchor.command.slice(0, 60)}" declares an empty expect_prefix, which would match any output`;
 		}
 	}
@@ -337,31 +375,59 @@ export async function executeAttestTask(
 		// reported through the same `expect` vocabulary attest uses for
 		// malformed anchors.
 		const message = error instanceof Error ? error.message : String(error);
-		if (message.includes('expect_prefix') || message.includes('evidence_anchors')) {
+		if (
+			message.includes('expect_prefix') ||
+			message.includes('evidence_anchors')
+		) {
 			const refusal =
 				'the plan declares an invalid external-evidence anchor: every anchor must carry expect and/or a non-empty expect_prefix (an empty prefix would match any output)';
-			return { success: false, message: refusal, errors: [refusal], task_id: args.task_id };
+			return {
+				success: false,
+				message: refusal,
+				errors: [refusal],
+				task_id: args.task_id,
+			};
 		}
 		throw error;
 	}
 	if (!found) {
 		const message = `Task ${args.task_id} not found in the plan at ${directory}`;
-		return { success: false, message, errors: [message], task_id: args.task_id };
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
 	}
 	if (found.task.evidence_class !== 'external_git') {
 		const message =
 			`Task ${args.task_id} does not declare evidence_class external_git; the attest path is ` +
 			`fail-closed to explicitly declared external-evidence tasks (issue #3422)`;
-		return { success: false, message, errors: [message], task_id: args.task_id };
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
 	}
 	const anchors = found.task.evidence_anchors ?? [];
 	if (anchors.length === 0) {
 		const message = `Task ${args.task_id} declares external_git evidence but pins no evidence_anchors`;
-		return { success: false, message, errors: [message], task_id: args.task_id };
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
 	}
 	const malformed = validateAnchorExpectations(anchors);
 	if (malformed) {
-		return { success: false, message: malformed, errors: [malformed], task_id: args.task_id };
+		return {
+			success: false,
+			message: malformed,
+			errors: [malformed],
+			task_id: args.task_id,
+		};
 	}
 
 	const startedAt = Date.now();
@@ -370,12 +436,23 @@ export async function executeAttestTask(
 		const { argv, refusal } = _internals.buildAnchorArgv(anchor.command);
 		if (refusal !== null || argv === null) {
 			const message = `anchor not admitted: ${refusal ?? 'not an allowed read-only git invocation'}`;
-			return { success: false, message, errors: [message], task_id: args.task_id };
+			return {
+				success: false,
+				message,
+				errors: [message],
+				task_id: args.task_id,
+			};
 		}
 		const remaining = ATTEST_TOTAL_DEADLINE_MS - (Date.now() - startedAt);
 		if (remaining <= 0) {
-			const message = 'attest total deadline (30s) exhausted before all anchors ran';
-			return { success: false, message, errors: [message], task_id: args.task_id };
+			const message =
+				'attest total deadline (30s) exhausted before all anchors ran';
+			return {
+				success: false,
+				message,
+				errors: [message],
+				task_id: args.task_id,
+			};
 		}
 		const run = await _internals.runAnchor(
 			argv,
@@ -384,18 +461,30 @@ export async function executeAttestTask(
 		);
 		if (run.refusal !== null) {
 			const message = `anchor "${anchor.command.slice(0, 60)}" failed: ${run.refusal}`;
-			return { success: false, message, errors: [message], task_id: args.task_id };
+			return {
+				success: false,
+				message,
+				errors: [message],
+				task_id: args.task_id,
+			};
 		}
 		if (run.stdout.length > ANCHOR_STDOUT_MAX_CHARS) {
 			const message =
 				`anchor "${anchor.command.slice(0, 60)}" produced ${run.stdout.length} chars of stdout, ` +
 				`exceeding the ${ANCHOR_STDOUT_MAX_CHARS}-char evidence storage bound; refusing rather than truncating`;
-			return { success: false, message, errors: [message], task_id: args.task_id };
+			return {
+				success: false,
+				message,
+				errors: [message],
+				task_id: args.task_id,
+			};
 		}
 		const trimmed = run.stdout.trim();
 		const matched =
 			anchor.expect !== undefined
-				? trimmed === anchor.expect && (anchor.expect_prefix === undefined || trimmed.startsWith(anchor.expect_prefix))
+				? trimmed === anchor.expect &&
+					(anchor.expect_prefix === undefined ||
+						trimmed.startsWith(anchor.expect_prefix))
 				: trimmed.startsWith(anchor.expect_prefix!);
 		outcomes.push({
 			command: anchor.command,
@@ -411,7 +500,12 @@ export async function executeAttestTask(
 		const message =
 			`anchor "${failed?.command.slice(0, 60) ?? '?'}" did not match its expectation ` +
 			`(stdout: ${JSON.stringify(failed?.stdout.slice(0, 120) ?? '')})`;
-		return { success: false, message, errors: [message], task_id: args.task_id };
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
 	}
 
 	// Compare-and-publish freshness: re-read the plan after the bounded run so
@@ -426,8 +520,14 @@ export async function executeAttestTask(
 		current.title !== found.title ||
 		current.swarm !== found.swarm
 	) {
-		const message = 'the plan changed while anchors were running; re-run attest against the current declaration';
-		return { success: false, message, errors: [message], task_id: args.task_id };
+		const message =
+			'the plan changed while anchors were running; re-run attest against the current declaration';
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
 	}
 
 	const existingEvidence = readTaskEvidenceRaw(directory, args.task_id);
@@ -457,7 +557,12 @@ export async function executeAttestTask(
 		});
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		return { success: false, message, errors: [message], task_id: args.task_id };
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
 	}
 
 	return {

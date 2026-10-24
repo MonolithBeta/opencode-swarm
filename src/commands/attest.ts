@@ -26,7 +26,11 @@ export async function handleAttestCommand(
 	}
 	const taskId = positional[0]!;
 	const result = await executeAttestTask(
-		{ task_id: taskId, working_directory: directory, reason: `swarm attest (${sessionID ?? 'no-session'})` },
+		{
+			task_id: taskId,
+			working_directory: directory,
+			reason: `swarm attest (${sessionID ?? 'no-session'})`,
+		},
 		directory,
 	);
 	const lines = ['## External Evidence Attestation', ''];

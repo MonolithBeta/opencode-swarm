@@ -1,5 +1,5 @@
 import * as fs from 'node:fs';
-import * as path from 'node:path';
+import { coreEventsFilePath } from '../events/core-events.js';
 import { readTaskEvidenceRaw } from '../gate-evidence.js';
 import { sanitizeDiagnosticText } from '../scope/path-identity.js';
 import { retrySnapshotCoordinationInitialization } from '../session/snapshot-coordination-init.js';
@@ -30,7 +30,7 @@ function scanTaskDispatchHistory(
 	taskId: string,
 ): 'present' | 'absent' | 'unknown' {
 	try {
-		const eventsPath = path.join(directory, '.swarm', 'events.jsonl');
+		const eventsPath = coreEventsFilePath(directory);
 		if (!fs.existsSync(eventsPath)) return 'absent';
 		const stat = fs.statSync(eventsPath);
 		if (stat.size > DISPATCH_HISTORY_SCAN_MAX_BYTES) return 'unknown';
@@ -203,7 +203,7 @@ export async function handleRecoverCommand(
 			const evidenceState = inspectTaskEvidenceState(directory, taskId);
 			if (dispatchHistory === 'present') {
 				report.push(
-					`⚠️ No settlement WAL for task ${taskId}, but coder-settlement lifecycle events exist for it in .swarm/events.jsonl — this looks like a partial cleanup or a background dispatch (WALs are optional for background dispatches). Nothing to recover here; see docs/troubleshooting/recovery-runbook.md.`,
+					`⚠️ No settlement WAL for task ${taskId}, but coder-settlement lifecycle events exist for it in the core event log — this looks like a partial cleanup or a background dispatch (WALs are optional for background dispatches). Nothing to recover here; see docs/troubleshooting/recovery-runbook.md.`,
 				);
 			} else if (evidenceState === 'corrupt') {
 				report.push(
@@ -214,7 +214,9 @@ export async function handleRecoverCommand(
 					`❌ No coder dispatch or settlement evidence was found for task ${taskId} (no settlement WAL, no exact-task workflow evidence file, no coder_settlement events).`,
 					'',
 					'This is the git-external-deliverable shape (issue #3422): if the work was commit/push/gh ops done outside a coder lane, there is nothing to recover — the coder-mutation gate cannot be satisfied by recovery. Options:',
-					'1. If the task declares evidence_class external_git (or you can re-plan it to): run `/swarm attest ' + taskId + '` to verify the deliverable with its pinned anchors and admit completion.',
+					'1. If the task declares evidence_class external_git (or you can re-plan it to): run `/swarm attest ' +
+						taskId +
+						'` to verify the deliverable with its pinned anchors and admit completion.',
 					'2. manual close — flip the task status in the TUI and record the wedge plus the close reason in your execution trace.',
 					'3. Re-plan the task as a thin coder dispatch (the coder executes the pinned-scope git commands) so a settlement exists and the normal gate applies.',
 				);

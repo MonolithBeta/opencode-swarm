@@ -18,6 +18,8 @@ function cmd(name: string): CommandEntry {
 
 describe('toolPolicy classification snapshot — no regression', () => {
 	const EXPECTED_AGENT = new Set<string>([
+		// #3422: external-evidence attestation (agent-invocable).
+		'attest',
 		'agents',
 		'config',
 		'config doctor',
