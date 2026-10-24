@@ -218,6 +218,7 @@ describe('pr-workflow-gate review validation', () => {
 				[
 					{
 						laneId: 'critic-partial',
+						agent: 'critic',
 						workflowLane: 'critic-partial',
 						reviewItemIds: candidateIds.slice(0, -1),
 					},
@@ -235,6 +236,7 @@ describe('pr-workflow-gate review validation', () => {
 			[
 				{
 					laneId: 'critic-invalid',
+					agent: 'critic',
 					workflowLane: 'critic-invalid',
 					reviewItemIds: candidateIds,
 				},
@@ -366,6 +368,7 @@ describe('pr-workflow-gate review validation', () => {
 			[
 				{
 					laneId: 'critic-old',
+					agent: 'critic',
 					workflowLane: 'critic-all',
 					reviewItemIds: candidateIds,
 				},
