@@ -12,7 +12,10 @@ import { readSwarmFileAsync } from '../../../src/hooks/utils.js';
 // Import mocked modules
 import { loadPlanJsonOnly } from '../../../src/plan/manager.js';
 import { readEffectiveSpecSync } from '../../../src/sdd/effective-spec.js';
-import { getDiagnoseData } from '../../../src/services/diagnose-service.js';
+import {
+	_internals as diagnoseInternals,
+	getDiagnoseData,
+} from '../../../src/services/diagnose-service.js';
 import { __seedGitExecutableForTests } from '../../../src/utils/git-executable.js';
 
 // Mock all the imported modules
@@ -107,6 +110,8 @@ function effectiveSpec(content: string) {
 	};
 }
 
+const originalDiagnoseRead = diagnoseInternals.readGitRepositoryOnce;
+
 beforeEach(() => {
 	mock.clearAllMocks();
 	mockLoadPlanJsonOnly.mockResolvedValue(null);
@@ -121,11 +126,18 @@ beforeEach(() => {
 	mockExecSync.mockReturnValue(Buffer.from('.git'));
 	mockExecFileSync.mockReturnValue(Buffer.from('.git'));
 	__seedGitExecutableForTests('git');
+	// #3317 PRR-023: the git-repo check reads through the async reader
+	// seam now — stub it so no real git spawns here (deterministic timing).
+	diagnoseInternals.readGitRepositoryOnce = async () => ({
+		ok: true,
+		stdout: '.git',
+	});
 	// restore env var
 	delete process.env.OPENCODE_SWARM_ID;
 });
 
 afterEach(() => {
+	diagnoseInternals.readGitRepositoryOnce = originalDiagnoseRead;
 	mock.restore();
 	delete process.env.OPENCODE_SWARM_ID;
 });

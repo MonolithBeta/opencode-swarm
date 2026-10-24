@@ -3,37 +3,58 @@
 ## What
 
 The git-status gate reads behind `/swarm finalize` (alias `/swarm close`),
-`/swarm rollback`, and the `/swarm diagnose` "Git Repository" check now run
-through one shared async, bounded, killable reader instead of private blocking
-`spawnSync` wrappers, and every converted status read passes
-`--no-optional-locks` so a read-only check never contends on the git index
-write lock.
+`/swarm rollback`, the pre-destruction re-check, and the `/swarm diagnose`
+"Git Repository" check now run through one shared async, bounded, killable
+reader instead of private blocking `spawnSync`/`execFileSync` wrappers, and
+every converted status read passes `--no-optional-locks` so a read-only check
+never contends on the git index write lock.
 
-When a gate read fails, the refusal text now names the cause instead of the
-old generic "Ensure git is available and the repository is readable" hint:
+When a gate read fails, the refusal text names the cause instead of the old
+generic "Ensure git is available and the repository is readable" hint:
 
 - a timed-out read reports `ETIMEDOUT` and advises restarting the OpenCode
   host (or inspecting the host runtime / security software) — the right
   remedy when git is present and the host could not complete the child spawn;
 - a nonzero exit reports the exit status and the git stderr tail (for
   example a damaged `.git/index`), with a repair-the-repository remedy;
-- a missing git binary reports `ENOENT` with the install hint.
+- a missing git binary reports `ENOENT` with the install hint (git.binary is
+  honored from your USER-level config only);
+- output larger than the read safety bound reports `EOUTPUT` and advises
+  shrinking the change footprint, and an externally killed child reports
+  `ESIGNAL` — neither is ever reported as a successful `status 0` exit or a
+  repository verdict;
+- `/swarm diagnose` distinguishes all of these rows honestly — a hang, a
+  kill, and a spawn failure show as "git state unknown" with the actual
+  cause, a missing binary names `ENOENT`, and only a real nonzero
+  `git rev-parse` says "Not a git repository".
 
 The fail-closed contracts are unchanged: an unreadable status still refuses
 the destructive pipeline with "Nothing was closed, archived, or destroyed",
 the close gate and the pre-destruction re-check still share one argv and one
 parser, and an unreadable rollback measurement still refuses the restore.
+
 `/swarm finalize --dry-run`'s repository probe is a single bounded async
 attempt — it no longer falls into the blocking 5-attempt synchronous retry
-chain (up to ~150 s of frozen host event loop when git hangs). The git
-executable resolver's async entry now probes candidates through an async
-spawn (never the synchronous probe), and a probe cycle that times out is no
-longer negative-cached as the 60-second bare-`git` fallback.
+chain (up to ~150 s of frozen host event loop when git hangs), and the report
+now says the probe is a read-only `git rev-parse`, not that "no git command
+runs". The git executable resolver's async entry now probes candidates
+through an async spawn (never the synchronous probe), and a probe cycle that
+timed out is no longer negative-cached as the 60-second bare-`git` fallback.
 
 The no-sync-spawn ratchet now also covers the four converted files
 (`src/commands/close/orchestrator.ts`, `src/commands/destructive-purge.ts`,
 `src/commands/rollback-gate.ts`, `src/services/diagnose-service.ts`), so the
-blocking wrappers cannot return.
+blocking wrappers it replaced cannot return.
+
+### Known residual (not fixed here)
+
+Two synchronous git probes remain on adjacent paths and are tracked in
+follow-up issue #3427: the checkpoint tool's `isGitRepo` preflight (every
+git-checkpoint `/swarm rollback` crosses it first) and the align stage's
+mid-finalize `getGitRepositoryStatus` call — both still use the blocking
+retry chain and can wedge on a host where synchronous spawns stall. This
+change makes the GATE READS async and diagnosable; it does not make those
+two probes non-blocking.
 
 ## Why
 

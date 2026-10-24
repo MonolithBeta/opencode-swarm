@@ -216,6 +216,34 @@ export function swarmOverwriteCandidates(
 }
 
 /**
+ * #3317: cause-matched wording for an unreadable destruction measurement —
+ * single source shared by the /swarm rollback command and the checkpoint
+ * tool sink so the two refusal texts cannot drift.
+ */
+export function describeUnreadableCause(measurement: {
+	code?: string | null;
+	status?: number | null;
+	stderrTail?: string;
+}): string {
+	if (measurement.code === 'ETIMEDOUT') {
+		return 'the read timed out (ETIMEDOUT) — the host may be unable to complete child spawns while loaded; restart the host and retry';
+	}
+	if (measurement.code === 'EOUTPUT') {
+		return `the status output exceeded the read safety bound (${measurement.stderrTail ?? 'output too large'}) — reduce the change footprint (commit or stash some work, or remove untracked bulk) and retry`;
+	}
+	if (measurement.code === 'ESIGNAL') {
+		return 'the git process was terminated before it answered (signal) — something external stopped it; retry, and inspect what terminates child processes if it recurs';
+	}
+	if (measurement.status !== null && measurement.status !== undefined) {
+		return `git status exited with status ${measurement.status}${measurement.stderrTail ? `: ${measurement.stderrTail}` : ''} — repair the repository state and retry`;
+	}
+	if (measurement.code) {
+		return `the read failed with code ${measurement.code} — retry, or inspect git status manually`;
+	}
+	return 'retry, or inspect git status manually';
+}
+
+/**
  * Measure the destruction scope for a git checkpoint restore. When
  * `targetSha` is provided, files that are untracked (or since-ignored) on
  * disk but tracked in the TARGET tree are included: `git reset --hard`

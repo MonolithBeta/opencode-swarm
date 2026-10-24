@@ -18,7 +18,8 @@ import type { PlanData } from './context.js';
  * Builds the `/swarm finalize --dry-run` report. Purely READ-ONLY: inspects the
  * plan and the filesystem and describes what a real finalize WOULD do, without
  * acquiring the finalize lock, creating an archive bundle, deleting any file,
- * running git, or tearing down session state. (#1692)
+ * running any mutating git command (the repository probe below is a read-only
+ * `git rev-parse`), or tearing down session state. (#1692)
  *
  * The archive-first guard means the clean stage only removes files it first
  * archived successfully; this report approximates that by listing existing
@@ -96,7 +97,7 @@ export async function runFinalizeDryRun(
 	const lines: string[] = [
 		'## /swarm finalize — DRY RUN (no changes made)',
 		'',
-		'No lock is taken, no files are archived or deleted, no git command runs.',
+		'No lock is taken, no files are archived or deleted, and no MUTATING git command runs (the repository probe below is a read-only `git rev-parse`).',
 		'',
 		'### Plan',
 		planExists

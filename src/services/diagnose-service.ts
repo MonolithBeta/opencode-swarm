@@ -526,15 +526,40 @@ async function checkGitRepository(directory: string): Promise<HealthCheck> {
 			detail: 'Git repository detected',
 		};
 	}
-	// Timeout-like codes (the reader's own ETIMEDOUT race, plus externally
-	// signal-terminated children reported by code) keep the honest unknown
-	// row; a plain nonzero exit means rev-parse answered "not a repository".
+	// Cause-matched classification of the structured failure (#3317 review
+	// PRR-010): only a real hang earns the "did not answer within N ms" row;
+	// a missing binary, a permission/spawn failure, and an external kill each
+	// say what actually happened — never a false "not a repository" and never
+	// a false timeout.
 	const code = read.code;
-	if (code === 'ETIMEDOUT' || (code !== null && code !== 'ENOENT')) {
+	if (code === 'ETIMEDOUT') {
 		return {
 			name: 'Git Repository',
 			status: '⬜',
 			detail: `git rev-parse did not answer within ${GIT_REPOSITORY_CHECK_TIMEOUT_MS} ms — git state unknown`,
+		};
+	}
+	if (code === 'ESIGNAL') {
+		return {
+			name: 'Git Repository',
+			status: '⬜',
+			detail:
+				'git rev-parse was terminated before it answered (signal) — git state unknown',
+		};
+	}
+	if (code === 'ENOENT') {
+		return {
+			name: 'Git Repository',
+			status: '❌',
+			detail:
+				'git executable not found (ENOENT) — install git on PATH or set git.binary in your USER-level config',
+		};
+	}
+	if (code !== null) {
+		return {
+			name: 'Git Repository',
+			status: '⬜',
+			detail: `git rev-parse could not be spawned (code ${code}) — git state unknown`,
 		};
 	}
 	return {

@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
 import * as realChildProcess from 'node:child_process';
 import * as realFs from 'node:fs';
 import type { Plan } from '../../../src/config/plan-schema.js';
-import { getDiagnoseData } from '../../../src/services/diagnose-service.js';
+import {
+	_internals as diagnoseInternals,
+	getDiagnoseData,
+} from '../../../src/services/diagnose-service.js';
 import { __seedGitExecutableForTests } from '../../../src/utils/git-executable.js';
 
 // Shared mock registry — allows factory-created mocks to be re-imported
@@ -131,6 +134,8 @@ function findCheck(checks: any[], name: string) {
 
 const testDirectory = '/test/directory';
 
+const originalDiagnoseRead = diagnoseInternals.readGitRepositoryOnce;
+
 beforeEach(() => {
 	mock.clearAllMocks();
 	mockLoadPlanJsonOnly.mockResolvedValue(null);
@@ -144,11 +149,18 @@ beforeEach(() => {
 	mockExecSync.mockReturnValue(Buffer.from('.git'));
 	mockExecFileSync.mockReturnValue(Buffer.from('.git'));
 	__seedGitExecutableForTests('git');
+	// #3317 PRR-023: the git-repo check reads through the async reader
+	// seam now — stub it so no real git spawns here (deterministic timing).
+	diagnoseInternals.readGitRepositoryOnce = async () => ({
+		ok: true,
+		stdout: '.git',
+	});
 	// restore env var
 	delete process.env.OPENCODE_SWARM_ID;
 });
 
 afterEach(() => {
+	diagnoseInternals.readGitRepositoryOnce = originalDiagnoseRead;
 	mock.restore();
 	delete process.env.OPENCODE_SWARM_ID;
 });

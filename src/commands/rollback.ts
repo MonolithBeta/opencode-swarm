@@ -17,6 +17,7 @@ import { resetSwarmArtifactCache } from '../utils/swarm-artifact-cache';
 import { consumeConfirmToken, issueConfirmToken } from './destructive-purge';
 import { backupSwarmStateBeforeReset } from './reset-backup';
 import {
+	describeUnreadableCause,
 	measureGitDestruction,
 	ROLLBACK_GIT_KIND,
 	ROLLBACK_PHASE_KIND,
@@ -207,15 +208,9 @@ async function restoreGitCheckpointGated(
 ): Promise<string> {
 	const measurement = await measureGitDestruction(directory, selected.sha);
 	if (measurement.kind === 'unreadable') {
-		// #3317: name WHY the read failed when the async reader could tell.
-		const cause =
-			measurement.code === 'ETIMEDOUT'
-				? 'the read timed out (ETIMEDOUT) — the host may be unable to complete child spawns while loaded; restart the host and retry'
-				: measurement.status !== null && measurement.status !== undefined
-					? `git status exited with status ${measurement.status}${measurement.stderrTail ? `: ${measurement.stderrTail}` : ''} — repair the repository state and retry`
-					: measurement.code
-						? `the read failed with code ${measurement.code} — retry, or inspect git status manually`
-						: 'retry, or inspect git status manually';
+		// #3317: name WHY the read failed when the async reader could tell
+		// (single shared source with the checkpoint tool sink).
+		const cause = describeUnreadableCause(measurement);
 		return `Error: cannot verify the working tree (git status unreadable; ${cause}) — refusing to restore without a preview.`;
 	}
 	if (flags.yes && flags.confirmToken) {

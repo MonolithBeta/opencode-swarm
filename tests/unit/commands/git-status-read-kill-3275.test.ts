@@ -47,7 +47,10 @@ describe('git-status reader kills the timed-out child (#3317 supplement)', () =>
 			`require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); await new Promise((r) => setTimeout(r, 30000));`,
 		];
 
-		const result = await gitStatusReadInternals.readOnce(args, cwd, 300);
+		// The deadline must exceed cold-start so the child announces itself
+		// BEFORE the kill (PRR-021: measured pid write at 586-1984 ms; a
+		// 300 ms deadline raced it and threw ENOENT instead of asserting).
+		const result = await gitStatusReadInternals.readOnce(args, cwd, 5000);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.code).toBe('ETIMEDOUT');

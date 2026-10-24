@@ -35,6 +35,7 @@ import {
 	type GitStatusReadResult,
 	readGitStatusAsync,
 } from './git-status-read.js';
+import { describeUnreadableCause } from './rollback-gate';
 
 // validateSwarmPath joins `.swarm/` itself — keep this filename-only.
 const PENDING_PURGE_PATH = 'pending-purge.json';
@@ -101,9 +102,9 @@ export const _internals: {
 /**
  * Shared argv for every tracked-dirty measurement (issue #2953): the close
  * gate and the pre-destruction re-check run the identical status command and
- * feed the same parser, so the two measurements parse identically. (The two
- * reads still go through separate spawn wrappers; equivalence is by
- * convention + review, not a single shared call site.)
+ * feed the same parser, so the two measurements parse identically. (Both now
+ * route through the shared #3317 reader via their own test seam; equivalence
+ * is by convention + review, not a single shared call site.)
  * #3317: `--no-optional-locks` leads the argv — a read-only status must not
  * contend on the index write lock. It is a top-level git option and therefore
  * sits BEFORE the subcommand.
@@ -114,17 +115,30 @@ export const GIT_STATUS_ARGS = [
 	'--porcelain',
 ] as const;
 
-/** Default bounded status read (#3317: async, killable, through the shared
+/**
+ * Default bounded status read (#3317: async, killable, through the shared
  * reader). Legacy seam shapes keep their meaning: a sync `string` is stdout,
- * a sync `null` is an unreadable read (#2953's await-tolerant stub contract). */
+ * a sync `null` is an unreadable read with NO detail (#2953's await-tolerant
+ * stub contract), and a structured failure carries its cause so the
+ * pre-destruction refusal can name it (#3317 review PRR-001).
+ */
 async function runGitStatusRead(
 	args: readonly string[],
 	cwd: string,
-): Promise<string | null> {
+): Promise<
+	| { stdout: string; cause?: undefined }
+	| {
+			cause: { code: string | null; status: number | null; stderrTail: string };
+	  }
+	| null
+> {
 	const raw = await _internals.runGitStatus(args, cwd);
-	if (typeof raw === 'string') return raw;
+	if (typeof raw === 'string') return { stdout: raw };
 	if (raw === null) return null;
-	return raw.ok ? raw.stdout : null;
+	if (raw.ok) return { stdout: raw.stdout };
+	return {
+		cause: { code: raw.code, status: raw.status, stderrTail: raw.stderrTail },
+	};
 }
 
 /**
@@ -174,11 +188,18 @@ export async function readTrackedDirtyPaths(directory: string): Promise<
 	  }
 	| {
 			ok: false;
+			/** Structured cause when the reader could tell (absent for legacy `null` stubs). */
+			failure?: {
+				code: string | null;
+				status: number | null;
+				stderrTail: string;
+			};
 	  }
 > {
-	const statusOutput = await runGitStatusRead(GIT_STATUS_ARGS, directory);
-	if (statusOutput === null) return { ok: false };
-	return { ok: true, dirtyPaths: parseTrackedDirtyPaths(statusOutput) };
+	const read = await runGitStatusRead(GIT_STATUS_ARGS, directory);
+	if (read === null) return { ok: false };
+	if ('cause' in read) return { ok: false, failure: read.cause };
+	return { ok: true, dirtyPaths: parseTrackedDirtyPaths(read.stdout) };
 }
 
 /**
@@ -201,8 +222,12 @@ export async function recheckBeforeDestructive(
 	if (!read.ok) {
 		return {
 			ok: false,
-			reason:
-				'git status could not be re-read before the destructive reset — the confirmed scope cannot be re-verified',
+			// Keep the generic text byte-identical (#2953 contract); append
+			// the cause ONLY when the async reader produced one (#3317
+			// PRR-001) — legacy `null` stubs carry no detail and stay generic.
+			reason: `git status could not be re-read before the destructive reset — the confirmed scope cannot be re-verified${
+				read.failure ? `. Cause: ${describeUnreadableCause(read.failure)}` : ''
+			}`,
 			newDirtyPaths: [],
 		};
 	}

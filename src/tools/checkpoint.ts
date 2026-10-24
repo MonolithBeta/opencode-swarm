@@ -9,6 +9,7 @@ import {
 } from '../commands/destructive-purge';
 import { backupTrackedChangesBeforeRollback } from '../commands/reset-backup';
 import {
+	describeUnreadableCause,
 	measureGitDestruction,
 	ROLLBACK_GIT_KIND,
 	trackedDirtyCandidates,
@@ -808,15 +809,9 @@ async function handleRestore(
 		// (command layer) is consumable here at the sink — and vice versa.
 		const measurement = await measureGitDestruction(directory, checkpoint.sha);
 		if (measurement.kind === 'unreadable') {
-			// #3317: name WHY the read failed when the async reader could tell.
-			const cause =
-				measurement.code === 'ETIMEDOUT'
-					? 'the read timed out (ETIMEDOUT) — the host may be unable to complete child spawns while loaded; restart the host and retry'
-					: measurement.status !== null && measurement.status !== undefined
-						? `git status exited with status ${measurement.status}${measurement.stderrTail ? `: ${measurement.stderrTail}` : ''} — repair the repository state and retry`
-						: measurement.code
-							? `the read failed with code ${measurement.code} — retry, or inspect git status manually`
-							: 'retry, or inspect git status manually';
+			// #3317: name WHY the read failed when the async reader could tell
+			// (single shared source with the /swarm rollback command).
+			const cause = describeUnreadableCause(measurement);
 			return serializeResult('restore', {
 				success: false,
 				error: `cannot verify the working tree (git status unreadable; ${cause}) — refusing to restore without a preview.`,

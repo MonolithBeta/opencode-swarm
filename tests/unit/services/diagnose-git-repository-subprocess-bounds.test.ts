@@ -60,13 +60,15 @@ describe('diagnose checkGitRepository subprocess bounds (#2674)', () => {
 		);
 	}, 20_000);
 
-	test('missing executable: row reports ❌ with the not-a-repository detail', async () => {
+	test('missing executable: row reports ❌ naming ENOENT, never "not a repository"', async () => {
+		// #3317 PRR-010: a missing git binary is a tool problem, not a repo
+		// verdict — the row must say what actually happened.
 		fixture = setupFakeGit('normal', true);
 		const row = await gitRow(fixture.projectDir);
 		expect(row.status).toBe('❌');
-		expect(row.detail).toBe(
-			'Not a git repository — version control recommended',
-		);
+		expect(row.detail).toContain('ENOENT');
+		expect(row.detail).toContain('install git');
+		expect(row.detail).not.toContain('Not a git repository');
 	}, 20_000);
 
 	test('output volume: output is ignored, so an overflowing child still renders ✅ and terminates', async () => {

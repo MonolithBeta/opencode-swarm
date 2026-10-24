@@ -518,11 +518,14 @@ function driveSync(
  * #3317: the async candidate probe. Same acceptance logic as `probeCandidate`
  * (absolute-path check, stat checks, `--version` output pattern), but the
  * spawn is the async `bunSpawn` with `killProcessTree` and a caller-owned
- * single-timer deadline — so a probe cycle driven through this helper NEVER
- * blocks the event loop and never touches the synchronous `_internals.spawnSync`
- * seam. The deadline convention mirrors `runGitAsyncDetailed`
- * (src/background/workspace-snapshot.ts): exactly one timer, and the `finally`
- * tree-kills the child.
+ * single-timer deadline — a probe cycle driven through this helper never
+ * touches the synchronous `_internals.spawnSync` seam and never blocks on a
+ * SPAWN. The one synchronous call kept is the per-candidate `fs.statSync`
+ * precheck (bounded local stat, identical to the sync twin) — a stat against
+ * a stalled network mount could still block briefly (accepted; the spawn
+ * path, which is the #3275 failure class, is fully async). The deadline
+ * convention mirrors `runGitAsyncDetailed` (src/background/workspace-snapshot.ts):
+ * exactly one timer, and the `finally` tree-kills the child.
  */
 async function probeCandidateAsync(
 	candidatePath: string,
@@ -629,9 +632,10 @@ async function probeCandidateAsync(
 /**
  * #3317: the async probe cycle — the async twin of `probeCycle`, sharing the
  * same candidate order, budget accounting, override warning, and attempt
- * recording, but probing through `probeCandidateAsync` so the whole cycle is
- * event-loop-free. Yields between candidates exactly like the old async
- * driver did.
+ * recording, but probing through `probeCandidateAsync` so the whole cycle
+ * never spawns synchronously. Yields between candidates exactly like the old
+ * async driver did (the per-candidate stat precheck remains synchronous and
+ * bounded — see probeCandidateAsync).
  */
 async function probeCycleAsync(
 	candidates: Candidate[],
@@ -784,7 +788,7 @@ export async function resolveGitExecutableAsync(): Promise<string> {
 
 	const run = (async (): Promise<string> => {
 		// #3317: the async entry drives the async probe cycle (bunSpawn-based,
-		// killable, event-loop-free) — never the synchronous `_internals.spawnSync`
+		// killable, spawn-non-blocking) — never the synchronous `_internals.spawnSync`
 		// probe the sync entry below uses.
 		const result = await probeCycleAsync(candidates, platform, attempts);
 		return applyProbeResult(result, attempts, generation);

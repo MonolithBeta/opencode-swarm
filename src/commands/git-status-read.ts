@@ -13,9 +13,11 @@
  * `runGitAsyncDetailed` in src/background/workspace-snapshot.ts): the
  * caller-side `Promise.race` owns the deadline; `bunSpawn` with
  * `killProcessTree: true` deletes the native timeout so exactly one timer is
- * armed, and the `finally` block tree-kills the child. The losing racer
- * carries a no-op catch so a late completion can never surface an unhandled
- * rejection.
+ * armed, and the `finally` block tree-kills a child that is still running.
+ * The deadline covers the WHOLE attempt — executable resolution is timed
+ * against it too, so the advertised timeoutMs is an end-to-end bound. The
+ * losing racer carries a no-op catch so a late completion can never surface
+ * an unhandled rejection.
  */
 import {
 	type BunCompatSpawnOptions,
@@ -28,11 +30,17 @@ export type GitStatusReadResult =
 	| { ok: true; stdout: string }
 	| {
 			ok: false;
-			/** Spawn-error code (`ETIMEDOUT`, `ENOENT`, …) or signal name; null when the child exited nonzero without a spawn error. */
+			/**
+			 * Failure class: `ETIMEDOUT` (deadline), `ENOENT` (missing binary,
+			 * both runtimes), `ESIGNAL` (terminated externally), `EOUTPUT`
+			 * (output exceeded the read safety bound), or another spawn-error
+			 * code (`EPERM`, `EBUSY`, …). Null only when the child ran and
+			 * exited nonzero on its own.
+			 */
 			code: string | null;
 			/** Child exit status when it ran and exited; null otherwise. */
 			status: number | null;
-			/** Bounded excerpt of the child's stderr (at most 200 characters). */
+			/** Bounded excerpt of the child's stderr (at most 200 characters, sanitized). */
 			stderrTail: string;
 	  };
 
@@ -47,8 +55,17 @@ export const GIT_READ_STDERR_TAIL_MAX_CHARS = 200;
 
 const TRANSIENT_RETRY_CODES = new Set(['ETIMEDOUT', 'EBUSY', 'EPERM']);
 
+/**
+ * The bounded stderr excerpt that reaches operator- and agent-visible
+ * refusal text: the LAST 200 characters (git prints the actionable `fatal:`
+ * line at the END of stderr), with control characters collapsed so one
+ * refusal stays one line (the house rule for untrusted diagnostic text —
+ * cf. `excerptProbeOutput` in src/utils/git-executable.ts).
+ */
 function stderrTail(text: string): string {
-	return text.slice(0, GIT_READ_STDERR_TAIL_MAX_CHARS);
+	const tail = text.slice(-GIT_READ_STDERR_TAIL_MAX_CHARS);
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: deliberate — collapse, not strip-into-nothing
+	return tail.replace(/[\x00-\x1f\x7f]+/g, ' ').trim();
 }
 
 interface BoundedOutput {
@@ -71,24 +88,25 @@ async function readBoundedOutput(
 			if (!value) continue;
 			const remaining = maxBytes - totalBytes;
 			if (value.byteLength > remaining) {
-				// Mark truncated but KEEP DRAINING (discarding): stopping the
-				// read would apply backpressure and block the child's exit,
-				// turning an overflow into a timeout.
+				// Mark truncated but KEEP DRAINING: stopping the read would
+				// apply backpressure and block the child's exit, turning an
+				// overflow into a timeout. Collect what fit so a failure can
+				// still carry real stderr detail.
+				if (remaining > 0) chunks.push(value.slice(0, remaining));
 				truncated = true;
-				totalBytes += value.byteLength;
+				totalBytes += remaining;
 				continue;
 			}
-			if (!truncated) chunks.push(value);
+			chunks.push(value);
 			totalBytes += value.byteLength;
 		}
-		if (truncated) return { text: '', truncated: true };
 		const joined = new Uint8Array(totalBytes);
 		let offset = 0;
 		for (const chunk of chunks) {
 			joined.set(chunk, offset);
 			offset += chunk.byteLength;
 		}
-		return { text: new TextDecoder().decode(joined), truncated: false };
+		return { text: new TextDecoder().decode(joined), truncated };
 	} finally {
 		try {
 			reader.releaseLock();
@@ -105,10 +123,21 @@ async function readOnceDefault(
 	maxBufferBytes = GIT_READ_DEFAULT_MAX_BUFFER_BYTES,
 	ignoreOutput = false,
 ): Promise<GitStatusReadResult> {
-	const executable = await gitStatusReadInternals.resolveExecutable();
 	let proc: BunCompatSubprocess | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
+	let childCompleted = false;
 	try {
+		// The deadline covers executable resolution too (#3317 review
+		// PRR-009): a slow resolver must not silently extend the advertised
+		// bound. Resolution has its own internal budget (~1.25 s max), so the
+		// remaining-time slice is normally the full timeoutMs.
+		const startedAt = Date.now();
+		const executable = await gitStatusReadInternals.resolveExecutable();
+		const remainingMs = timeoutMs - (Date.now() - startedAt);
+		if (remainingMs <= 0) {
+			return { ok: false, code: 'ETIMEDOUT', status: null, stderrTail: '' };
+		}
+
 		const options: BunCompatSpawnOptions = {
 			cwd,
 			stdin: 'ignore',
@@ -117,17 +146,19 @@ async function readOnceDefault(
 			stdout: ignoreOutput ? 'ignore' : 'pipe',
 			stderr: ignoreOutput ? 'ignore' : 'pipe',
 			killProcessTree: true,
-			// Route the per-call bound into the wrapper too: bunSpawn's own
-			// default stream cap (512 KB) would silently truncate piped output
-			// before the manual bounded drain below sees it (observed on CI
-			// linux/macos bun 1.3.13; local Windows 1.3.14 raw streams differ).
+			// The manual bounded drain below is authoritative on the
+			// getReader() path (the wrapper's collect()-mode cap does not run
+			// there); this threads the caller's bound for the buffered
+			// consumers as defense-in-depth. Wrapper default: 5 MiB.
 			maxBuffer: ignoreOutput ? undefined : maxBufferBytes,
 			env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
 		};
-		proc = bunSpawn([executable, ...args], options);
-		// Process-creation failures (for example ENOENT) are reported as a
-		// VALUE on every runtime (see bunSpawn's #2236 handling) — read them
-		// before awaiting anything.
+		proc = gitStatusReadInternals.spawn([executable, ...args], options);
+		// Process-creation failures (for example ENOENT) are synchronous
+		// values under Bun (Bun.spawn throws) — read them before awaiting.
+		// Under the Node fallback the `error` event populates spawnError
+		// ASYNC, so the same check runs again after `exited` settles below
+		// (PRR-005) — never trust the fast path alone.
 		if (proc.spawnError) {
 			return {
 				ok: false,
@@ -155,18 +186,45 @@ async function readOnceDefault(
 		const result = await Promise.race([
 			completed,
 			new Promise<{ kind: 'timeout' }>((resolve) => {
-				timer = setTimeout(() => resolve({ kind: 'timeout' }), timeoutMs);
+				timer = setTimeout(() => resolve({ kind: 'timeout' }), remainingMs);
 			}),
 		]);
 		if (result.kind === 'timeout') {
 			return { ok: false, code: 'ETIMEDOUT', status: null, stderrTail: '' };
 		}
-		if (result.exitCode === null) {
-			// Externally signal-terminated child — keep the signal name so the
-			// diagnose timeout-like arms cannot regress to "not a repository".
+		childCompleted = true;
+		// Node-runtime re-check: `error` may have populated spawnError while
+		// `exited` resolved (bun-compat resolves it with 1 on error). Without
+		// this, a missing binary would render as a nonzero git exit (PRR-005).
+		if (proc.spawnError) {
 			return {
 				ok: false,
-				code: proc.signalCode ?? null,
+				code: (proc.spawnError as NodeJS.ErrnoException).code ?? null,
+				status: null,
+				stderrTail: stderrTail(result.stderr.text),
+			};
+		}
+		// Output-bound overflow BEFORE the exit-code arms (PRR-002): a child
+		// that exited 0 (or nonzero) while overrunning the bound must never be
+		// reported as "exited with status 0" or as an unexplained nonzero —
+		// the bound is the measured cause.
+		if (result.stdout.truncated || result.stderr.truncated) {
+			return {
+				ok: false,
+				code: 'EOUTPUT',
+				status: null,
+				stderrTail: `output exceeded the ${maxBufferBytes}-byte bound`,
+			};
+		}
+		if (result.exitCode === null || result.exitCode === -1) {
+			// Externally signal-terminated child. bun-compat resolves a
+			// signal-killed exit as `code ?? -1` (POSIX) or the platform kill
+			// result (Windows taskkill) — neither runtime surfaces a POSIX
+			// signal name through `exited`, so the uniform, consumer-friendly
+			// class is ESIGNAL (PRR-006).
+			return {
+				ok: false,
+				code: 'ESIGNAL',
 				status: null,
 				stderrTail: stderrTail(result.stderr.text),
 			};
@@ -179,16 +237,6 @@ async function readOnceDefault(
 				stderrTail: stderrTail(result.stderr.text),
 			};
 		}
-		if (result.stdout.truncated || result.stderr.truncated) {
-			// A read that overran its bound must never read as a complete
-			// measurement — fail closed with an honest bounded reason.
-			return {
-				ok: false,
-				code: null,
-				status: result.exitCode,
-				stderrTail: `output exceeded the ${maxBufferBytes}-byte bound`,
-			};
-		}
 		return { ok: true, stdout: result.stdout.text };
 	} catch (err) {
 		return {
@@ -199,25 +247,32 @@ async function readOnceDefault(
 		};
 	} finally {
 		if (timer) clearTimeout(timer);
-		if (proc && !proc.spawnError) {
+		// Only a child that is still running needs killing (PRR-005/PRR-025):
+		// the timeout path is the one case where `exited` has NOT settled.
+		// Killing an already-reaped child spawned an extra `taskkill` per
+		// successful read on Windows (PID-reuse hazard + subprocess churn).
+		if (!childCompleted && proc && !proc.spawnError) {
 			try {
 				proc.kill('SIGKILL');
 			} catch {
-				// Best-effort tree cleanup for an already-exited process.
+				// Best-effort cleanup for an already-exited process.
 			}
-			// Reap wait (#3317, AC3 "kill the child"): on Windows a killed
-			// child keeps a handle on its working directory until it is reaped,
-			// so callers cleaning that directory up need the termination to
-			// have LANDED before this read resolves. Bounded: a healthy child
-			// already exited (the completed race awaited it), and even a
-			// kill-resistant one cannot hold us past 2 s.
+			// Reap wait (#3317, AC3): on Windows a killed child keeps a
+			// handle on its working directory until reaped, so callers
+			// cleaning that directory need termination to have LANDED before
+			// this read resolves. Bounded at 2 s for a kill-resistant child.
+			let reapTimer: ReturnType<typeof setTimeout> | undefined;
 			try {
 				await Promise.race([
 					proc.exited,
-					new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+					new Promise<void>((resolve) => {
+						reapTimer = setTimeout(resolve, 2_000);
+					}),
 				]);
 			} catch {
 				// Reap observation is best-effort; the kill was already issued.
+			} finally {
+				if (reapTimer) clearTimeout(reapTimer);
 			}
 		}
 	}
@@ -225,9 +280,10 @@ async function readOnceDefault(
 
 /**
  * Test seam (repo convention): `resolveExecutable` defaults to the async git
- * resolver; `readOnce` is the single-attempt runner `readGitStatusAsync`
- * wraps. Both are late-bound through this object so sibling test files can
- * stub them without `mock.module`.
+ * resolver, `spawn` defaults to `bunSpawn`, and `readOnce` is the
+ * single-attempt runner `readGitStatusAsync` wraps. All three are late-bound
+ * through this object so sibling test files can stub them without
+ * `mock.module`.
  */
 export const gitStatusReadInternals: {
 	readOnce: (
@@ -238,16 +294,18 @@ export const gitStatusReadInternals: {
 		ignoreOutput?: boolean,
 	) => Promise<GitStatusReadResult>;
 	resolveExecutable: () => Promise<string>;
+	spawn: typeof bunSpawn;
 } = {
 	readOnce: readOnceDefault,
 	resolveExecutable: () => resolveGitExecutableAsync(),
+	spawn: bunSpawn,
 };
 
 /**
  * Bounded git read with exactly one retry for transient spawn errors
- * (`ETIMEDOUT`, `EBUSY`, `EPERM`). Definite failures — `ENOENT`, nonzero
- * exits — are permanent: one attempt only. A second transient failure is
- * final (two attempts total).
+ * (`ETIMEDOUT`, `EBUSY`, `EPERM`). Definite failures — `ENOENT`, `EOUTPUT`,
+ * `ESIGNAL`, nonzero exits — are permanent: one attempt only. A second
+ * transient failure is final (two attempts total).
  */
 export async function readGitStatusAsync(
 	args: readonly string[],

@@ -133,8 +133,16 @@ function describeCloseGateStatusFailure(failure?: {
 	if (failure.code === 'ETIMEDOUT') {
 		return 'The git status read timed out (ETIMEDOUT): git was launched but did not answer within the deadline — the host process may be unable to complete child spawns while loaded. Restart the OpenCode host (or inspect the host runtime / security software), then re-run /swarm close.';
 	}
+	if (failure.code === 'EOUTPUT') {
+		return `The git status read exceeded its output safety bound (${failure.stderrTail}) — the working set is too large to verify in one read. Reduce the change footprint (commit or stash some work, or remove untracked bulk), then re-run /swarm close.`;
+	}
+	if (failure.code === 'ESIGNAL') {
+		return `The git process was terminated before it answered (signal)${
+			failure.stderrTail ? `: ${failure.stderrTail}` : ''
+		} — something external (a kill or resource manager) stopped it. Re-run /swarm close; if it recurs, inspect what terminates child processes in this environment.`;
+	}
 	if (failure.code === 'ENOENT') {
-		return 'The git executable was not found (ENOENT). Install git on PATH or configure git.binary, then re-run /swarm close.';
+		return 'The git executable was not found (ENOENT). Install git on PATH, or set git.binary in your USER-level config (project-level git.binary is ignored), then re-run /swarm close.';
 	}
 	if (failure.code !== null) {
 		return `The git status read failed to spawn (code ${failure.code}). Inspect git availability in that environment, then re-run /swarm close.`;
