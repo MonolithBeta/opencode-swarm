@@ -18,8 +18,6 @@ function cmd(name: string): CommandEntry {
 
 describe('toolPolicy classification snapshot — no regression', () => {
 	const EXPECTED_AGENT = new Set<string>([
-		// #3422: external-evidence attestation (agent-invocable).
-		'attest',
 		'agents',
 		'config',
 		'config doctor',
@@ -68,6 +66,7 @@ describe('toolPolicy classification snapshot — no regression', () => {
 		// guardrail diagnostics: pre-existing 'agent' commands not previously
 		// enumerated here — registry is the source of truth (both 'agent')
 		'guardrail explain',
+		'attest', // #3422 (agent)
 		'guardrail reset',
 		'guardrail-log',
 		'lanes',
@@ -83,8 +82,7 @@ describe('toolPolicy classification snapshot — no regression', () => {
 		'skill-opt plan',
 		'skill-opt status',
 		'skill-opt diff',
-		'skill-opt history',
-		'harness-opt',
+		'skill-opt history', 'harness-opt',
 		'harness-opt plan',
 		'harness-opt status',
 		'harness-opt history',

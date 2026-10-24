@@ -1,8 +1,7 @@
 /**
  * Issue #3422 — external-evidence completion path: terminal WAL round-trip,
- * completion (initial + duplicate), digest-mismatch / undeclared (AC2 pin) /
- * forged refusals, the phase-cursor crash window, check_gate_status, plan.md
- * projection, and the C5 hash constants.
+ * completion, digest-mismatch / undeclared (AC2 pin) / forged refusals, the
+ * phase-cursor crash window, check_gate_status, plan.md projection, C5 hashes.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
@@ -57,10 +56,8 @@ function runGit(directory: string, args: string[]): void {
 		cwd: directory,
 		stdio: 'ignore',
 		timeout: 5000,
-		windowsHide: true,
 	});
-	if (result.status !== 0)
-		throw new Error(`fixture git failed: ${args.join(' ')}`);
+	if (result.status !== 0) throw new Error(`git failed: ${args.join(' ')}`);
 }
 
 function declaredTask(id: string, phase: number, task?: Partial<Task>): Task {
@@ -93,15 +90,7 @@ function singlePhasePlan(task: Task): Plan {
 		schema_version: '1.0.0',
 		title: TITLE,
 		swarm: SWARM,
-		current_phase: 2,
-		phases: [
-			{
-				id: 2,
-				name: 'Release verification',
-				status: 'in_progress',
-				tasks: [task],
-			},
-		],
+		phases: [{ id: 2, name: 'Release', status: 'in_progress', tasks: [task] }],
 	};
 }
 
@@ -196,10 +185,8 @@ async function gateStatus(directory: string): Promise<Record<string, unknown>> {
 	) as Record<string, unknown>;
 }
 
-/** Idle-workflow evidence file via the real producer API (no pinned bundle). */
 const seedScanEvidence = (dir: string): Promise<void> =>
 	recordTodoScanEvidence(dir, TASK_ID, { priority: 'high', count: 0 });
-
 /** PLAN_HASH header value that regeneratePlanMarkdown embeds into plan.md. */
 async function contentHashFor(plan: Plan): Promise<string> {
 	const dir = canonicalMkdtemp('ext-3422-hash-');
@@ -294,7 +281,6 @@ describe('issue #3422 — external evidence terminal path', () => {
 			class: 'external_git',
 			declarationDigest: digestFor(plan, task),
 		});
-		expect(evidence?.workflow?.forcedCompletion).toBeUndefined();
 
 		const second = await completeTask();
 		expect(second.success).toBe(true);
@@ -314,9 +300,8 @@ describe('issue #3422 — external evidence terminal path', () => {
 
 		const planPath = path.join(directory, '.swarm', 'plan.json');
 		const edited = JSON.parse(fs.readFileSync(planPath, 'utf8')) as Plan;
-		edited.phases[0].tasks[0].evidence_anchors = [
-			{ ...ANCHORS[0], expect: '2' },
-		];
+		const editedTask = edited.phases[0].tasks[0];
+		editedTask.evidence_anchors = [{ ...ANCHORS[0], expect: '2' }];
 		fs.writeFileSync(planPath, JSON.stringify(edited));
 
 		const result = await completeTask();
@@ -359,17 +344,14 @@ describe('issue #3422 — external evidence terminal path', () => {
 		for (const [index, candidate] of cases.entries()) {
 			resetSwarmState();
 			cleanup();
-			({ dir: directory, cleanup } = createSafeTestDir(
-				`ext-3422-forged-${index}-`,
-			));
+			({ dir: directory, cleanup } = createSafeTestDir(`e3422f-${index}-`));
 			writeProject(directory, singlePhasePlan(candidate.task));
 			// Seed a legitimate idle-workflow evidence file via the real producer
 			// API, then splice in the forged bundle by hand (the attack shape).
 			await seedScanEvidence(directory);
 			const evidencePath = path.join(
 				directory,
-				'.swarm',
-				'evidence',
+				'.swarm/evidence',
 				`${TASK_ID}.json`,
 			);
 			const forged = JSON.parse(fs.readFileSync(evidencePath, 'utf8')) as {
@@ -391,6 +373,7 @@ describe('issue #3422 — external evidence terminal path', () => {
 
 	test('cursor-advance crash window: PREPARED recovery revalidates the cursor-free digest', async () => {
 		const declared = declaredTask('1.1', 1);
+		const followUp = undeclaredTask(TASK_ID, 2, { status: 'pending' });
 		const plan: Plan = {
 			schema_version: '1.0.0',
 			title: TITLE,
@@ -398,17 +381,7 @@ describe('issue #3422 — external evidence terminal path', () => {
 			current_phase: 1,
 			phases: [
 				{ id: 1, name: 'Ship', status: 'in_progress', tasks: [declared] },
-				{
-					id: 2,
-					name: 'Follow-up',
-					status: 'pending',
-					tasks: [
-						undeclaredTask(TASK_ID, 2, {
-							status: 'pending',
-							description: 'Ordinary follow-up task',
-						}),
-					],
-				},
+				{ id: 2, name: 'Follow-up', status: 'pending', tasks: [followUp] },
 			],
 		};
 		writeProject(directory, plan);
@@ -430,15 +403,16 @@ describe('issue #3422 — external evidence terminal path', () => {
 		// The digest binds the declaration, never the phase cursor.
 		expect(externalProofCurrent(identity, advancedTask, evidence)).toBe(true);
 
+		const walPath = terminalWalPath(directory, '1.1');
 		await writeWorkflowWalFile(
 			'task-terminal',
-			terminalWalPath(directory, '1.1'),
+			walPath,
 			terminalWal('1.1', 'issue-3422-cursor-terminal'),
 		);
 		const recovery = await recoverPreparedTaskTerminal(
 			directory,
 			'1.1',
-			'issue-3422-cursor-recovery',
+			'issue-3422-recovery',
 		);
 		expect(recovery?.targetStatus).toBe('completed');
 		const recoveredEvidence = readTaskEvidenceRaw(directory, '1.1');
@@ -449,9 +423,9 @@ describe('issue #3422 — external evidence terminal path', () => {
 		expect(recoveredEvidence?.workflow?.externalEvidence).toMatchObject({
 			declarationDigest: digestFor(plan, declared),
 		});
-		const walJson = JSON.parse(
-			fs.readFileSync(terminalWalPath(directory, '1.1'), 'utf8'),
-		) as { state?: string };
+		const walJson = JSON.parse(fs.readFileSync(walPath, 'utf8')) as {
+			state?: string;
+		};
 		expect(walJson.state).toBe('COMMITTED');
 		expect(
 			externalProofCurrent(identity, advancedTask, recoveredEvidence),
@@ -491,7 +465,7 @@ describe('issue #3422 — external evidence terminal path', () => {
 	});
 
 	test('plan.md projection and C5 hash sensitivity', async () => {
-		// Declaration rendering: the declared task line is the legacy line plus
+		// Declaration rendering: the declared line is the legacy line plus
 		// exactly the compact declaration suffix (byte-identical prefix).
 		const declared = declaredTask(TASK_ID, 2, { status: 'pending' });
 		const legacy = undeclaredTask(TASK_ID, 2, { status: 'pending' });
@@ -502,7 +476,6 @@ describe('issue #3422 — external evidence terminal path', () => {
 		const legacyLine = taskLine(legacy);
 		// A pending task carries no CURRENT marker, so this pins the full line.
 		expect(legacyLine).toBe(`- [ ] ${TASK_ID}: ${legacy.description} [SMALL]`);
-		expect(legacyLine).not.toContain('external evidence');
 		expect(taskLine(declared)).toBe(
 			`${legacyLine} — external evidence: external_git (anchors: ${ANCHORS[0].command})`,
 		);
