@@ -91,10 +91,9 @@ async function readBoundedOutput(
 			if (value.byteLength > remaining) {
 				// Mark truncated but KEEP DRAINING: stopping the read would
 				// apply backpressure and block the child's exit, turning an
-				// overflow into a timeout. The partial text that fit is
-				// retained for the NONZERO-exit arm's stderr tail
-				// (PRR-003's fix); the EOUTPUT arm names the bound instead,
-				// and the timeout arm cannot carry it — its race resolves
+				// overflow into a timeout. What fit is retained so the
+				// EOUTPUT arm can carry real stderr detail alongside the
+				// bound (PRR-003); the timeout arm cannot — its race resolves
 				// while these drains are still in flight.
 				if (remaining > 0) chunks.push(value.slice(0, remaining));
 				truncated = true;
@@ -242,11 +241,14 @@ async function readOnceDefault(
 		// reported as "exited with status 0" or as an unexplained nonzero —
 		// the bound is the measured cause.
 		if (result.stdout.truncated || result.stderr.truncated) {
+			// The partial collected stderr gives the refusal real detail
+			// alongside the bound (PRR-003's consumer).
+			const partialStderr = stderrTail(result.stderr.text);
 			return {
 				ok: false,
 				code: 'EOUTPUT',
 				status: null,
-				stderrTail: `output exceeded the ${maxBufferBytes}-byte bound`,
+				stderrTail: `output exceeded the ${maxBufferBytes}-byte bound${partialStderr ? `: ${partialStderr}` : ''}`,
 			};
 		}
 		if (

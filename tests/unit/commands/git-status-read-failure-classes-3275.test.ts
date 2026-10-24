@@ -77,7 +77,7 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 		const result = await readGitStatusAsync(
 			[
 				'-e',
-				"const b = Buffer.alloc(64 * 1024, 120); for (let i = 0; i < 4; i++) require('node:fs').writeSync(1, b);",
+				"require('node:fs').writeSync(2, 'EOUTPUT-STDERR-MARKER'); const b = Buffer.alloc(64 * 1024, 120); for (let i = 0; i < 4; i++) require('node:fs').writeSync(1, b);",
 			],
 			cwd,
 			{ timeoutMs: 20_000, maxBufferBytes: 16 * 1024 },
@@ -87,6 +87,9 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 			expect(result.code).toBe('EOUTPUT');
 			expect(result.status).toBeNull();
 			expect(result.stderrTail).toContain('exceeded');
+			// PRR-003's consumer: the retained partial stderr renders beside
+			// the bound (review round 2 — the earlier claim had no consumer).
+			expect(result.stderrTail).toContain('EOUTPUT-STDERR-MARKER');
 		}
 	}, 30_000);
 
