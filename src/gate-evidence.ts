@@ -883,20 +883,21 @@ export function deriveApplicableGateSet(
 			? true
 			: options.currentDeclaredFiles !== null &&
 				options.currentDeclaredFiles.length === 0);
-	// Issue #3422 (and #3432 review PRR-002): a task that reached the
-	// external_evidence_attested state through the attest transition with a
+	// Issue #3422 (and #3432 review PRR-002): a task whose LAST transition
+	// was the attest (lastOutcome external_evidence_attested) with a
 	// fully-matched bundle replaces the coder-mutation QA gate set — do not
 	// demand pre_check from a task whose deliverable can never produce one.
-	// The key is the attested STATE (reachable only through the attest
-	// transition, which refuses undeclared tasks), never bare bundle
-	// presence: a forged externalEvidence blob on an undeclared task must
-	// not change the derived gate set. Revocation drops back to a
-	// nonterminal state, so the demand returns. The declaration/digest match
-	// itself is enforced at completion admission
+	// The attest/revoke transitions are STATE-PRESERVING (the lifecycle state
+	// stays idle), so the key is the recorded OUTCOME, never bare bundle
+	// presence: a forged externalEvidence blob spliced into an idle workflow
+	// must not change the derived gate set. Revocation records its own
+	// outcome and any later coder-lifecycle transition overwrites it, so the
+	// demand returns in both cases. The declaration/digest match itself is
+	// enforced at completion admission
 	// (isExternalEvidenceInitialCompletionEligible); this derivation only
 	// keeps gate-status consumers honest between attests.
 	const externalEvidenceMatched =
-		workflow.state === 'external_evidence_attested' &&
+		workflow.lastOutcome === 'external_evidence_attested' &&
 		(workflow.externalEvidence?.anchors.length ?? 0) > 0 &&
 		workflow.externalEvidence!.anchors.every((anchor) => anchor.matched);
 	const requiredGates = [...new Set(evidence.required_gates ?? [])];
