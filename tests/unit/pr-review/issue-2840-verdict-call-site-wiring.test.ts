@@ -66,9 +66,12 @@ function productionCallSites(): Array<{
 
 describe('issue #2840 — allowedPrReviewReportVerdicts call-site wiring ratchet', () => {
 	test('the production call-site set is exactly the pinned five sites', () => {
-		const sites = productionCallSites().map(
-			(site) => `${site.file}:${site.line}`,
-		);
+		// readdirSync order is filesystem-dependent: self-hosted runners return
+		// src/ entries in a different order than GitHub's images, so the walk
+		// must be normalized to one deterministic order before pinning.
+		const sites = productionCallSites()
+			.map((site) => `${site.file}:${site.line}`)
+			.sort();
 		expect(sites).toEqual([
 			// Re-pinned after the #3312/#3313 feedback round (branch
 			// fix/3312-3313-honest-incomplete-lane-settlement) shifted the gate
