@@ -109,6 +109,7 @@ export { handlePlanCommand } from './plan';
 export { handlePreflightCommand } from './preflight';
 export { handlePromoteCommand } from './promote';
 export { handleQaGatesCommand } from './qa-gates';
+export { handleAttestCommand } from './attest';
 export { handleRecoverCommand } from './recover';
 export { handleHelpCommand } from './registry';
 export type {

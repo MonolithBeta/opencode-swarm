@@ -19,7 +19,9 @@ import {
 import type { transitionTaskWorkflowEvidence } from '../gate-evidence.js';
 import {
 	deriveApplicableGateSet,
+	externalProofCurrent,
 	getTaskWorkflowSnapshot,
+	isExternalEvidenceInitialCompletionEligible,
 	isReadOnlyNoMutationEligible,
 	readCurrentTaskDeclaredFiles,
 	readTaskEvidenceRaw,
@@ -295,7 +297,11 @@ export interface ReviewerGateResult {
 	requiredGates?: string[];
 	satisfiedGates?: string[];
 	missingGates?: string[];
-	source?: 'durable_exact_task' | 'legacy_compat' | 'turbo_policy';
+	source?:
+		| 'durable_exact_task'
+		| 'legacy_compat'
+		| 'turbo_policy'
+		| 'external_attest';
 	corrupt?: boolean;
 	contradictorySignals?: string[];
 	generation?: number;
@@ -571,6 +577,88 @@ export function checkReviewerGate(
 				// only for legacy tests/extensions until they write the workflow marker.
 				if (!fallbackDir && !sessionID && !evidence?.workflow)
 					throw legacyDirectCaller;
+				// External-evidence declarations (issue #3422): a task that declares
+				// external_git completes through its pinned anchor attestation, not
+				// Stage B. Consult the plan declaration before any coder-mutation
+				// refusal below; undeclared tasks fall through byte-stable.
+				try {
+					const planPath = path.join(authoritativeDir, '.swarm', 'plan.json');
+					const planRaw = fs.readFileSync(planPath, 'utf-8');
+					const plan = JSON.parse(planRaw) as {
+						title?: unknown;
+						swarm?: unknown;
+						phases?: Array<{
+							tasks?: Array<{
+								id: string;
+								evidence_class?: string;
+								evidence_anchors?: Array<{
+									command: string;
+									expect?: string;
+									expect_prefix?: string;
+								}>;
+							}>;
+						}>;
+					};
+					const declaredTask = (plan.phases ?? [])
+						.flatMap((phase) => phase.tasks ?? [])
+						.find((task) => task.id === taskId);
+					if (
+						declaredTask &&
+						declaredTask.evidence_class === 'external_git' &&
+						typeof plan.title === 'string' &&
+						typeof plan.swarm === 'string'
+					) {
+						const planIdentity = {
+							title: plan.title,
+							swarm: plan.swarm,
+						};
+						const workflow = getTaskWorkflowSnapshot(evidence);
+						if (
+							isExternalEvidenceInitialCompletionEligible(
+								planIdentity,
+								declaredTask,
+								evidence,
+							) ||
+							(workflow.state === 'complete' &&
+								externalProofCurrent(planIdentity, declaredTask, evidence))
+						) {
+							return reviewerGateDecision(
+								taskId,
+								sessionID,
+								{
+									blocked: false,
+									reason: `External evidence attested: task ${taskId} completed via the pinned external_git anchors (issue #3422)`,
+									requiredGates: [],
+									satisfiedGates: [],
+									missingGates: [],
+									source: 'external_attest',
+									generation: workflow.generation,
+								},
+								'durable_evidence_complete',
+								'fallback',
+							);
+						}
+						return reviewerGateDecision(
+							taskId,
+							sessionID,
+							{
+								blocked: true,
+								reason: `Task ${taskId} declares external_git evidence but no matched attestation exists yet. Run /swarm attest ${taskId} (or re-plan it as a thin coder dispatch).`,
+								requiredGates: [],
+								satisfiedGates: [],
+								missingGates: ['external_attest'],
+								source: 'durable_exact_task',
+								generation: workflow.generation,
+								nextAction: `Run /swarm attest ${taskId} (or re-plan it as a thin coder dispatch).`,
+							},
+							'required_gates_missing',
+							'block',
+						);
+					}
+				} catch {
+					// plan.json missing or unreadable — fall through to the
+					// coder-mutation gate branches below.
+				}
 				if (!evidence) {
 					return reviewerGateDecision(
 						taskId,
@@ -2186,6 +2274,11 @@ export async function executeUpdateTaskStatus(
 			const lockedPhaseRequiresReviewer =
 				!lockedTaskPhase?.required_agents ||
 				lockedTaskPhase.required_agents.includes('reviewer');
+			// #3422: an external_git declaration reroutes completion through the
+			// attested anchor bundle; the reviewer gate and council are code-QA
+			// machinery an externally verified deliverable replaces.
+			const lockedTaskDeclaresExternal =
+				lockedTask.evidence_class === 'external_git';
 			const terminalResult = await commitTaskTerminalUnderPlanLock({
 				directory,
 				taskId: args.task_id,
@@ -2193,18 +2286,55 @@ export async function executeUpdateTaskStatus(
 				transitionId: `plan-status:${args.task_id}:completed:${Date.now()}`,
 				currentPlanStatus: lockedTask.status,
 				targetStatus: 'completed',
-				qaExempt: !lockedPhaseRequiresReviewer,
+				qaExempt: !lockedPhaseRequiresReviewer && !lockedTaskDeclaresExternal,
 				resolveTerminal: (evidence) => ({
 					targetStatus: 'completed',
-					qaExempt: !lockedPhaseRequiresReviewer,
+					qaExempt: !lockedPhaseRequiresReviewer && !lockedTaskDeclaresExternal,
 					readOnlyNoMutation: !lockedPhaseRequiresReviewer
 						? false
 						: isReadOnlyNoMutationEligible(evidence, {
 								currentDeclaredFiles: lockedTask.files_touched,
 							}),
+					externalEvidence: lockedTaskDeclaresExternal,
 				}),
 				currentPlan: authoritativePlan,
 				validateEvidence: async () => {
+					if (lockedTaskDeclaresExternal) {
+						// Admission rests on the shared proof-currency predicates
+						// (#3422 R2F3): first completion needs initial eligibility,
+						// a duplicate also accepts a current proof in state
+						// 'complete'. The qaExempt escape never bypasses this.
+						const externalTaskEvidence = _internals.readTaskEvidenceRaw(
+							directory,
+							args.task_id,
+						);
+						const planIdentity = {
+							title: authoritativePlan.title,
+							swarm: authoritativePlan.swarm,
+						};
+						const externalWorkflow =
+							getTaskWorkflowSnapshot(externalTaskEvidence);
+						if (
+							!isExternalEvidenceInitialCompletionEligible(
+								planIdentity,
+								lockedTask,
+								externalTaskEvidence,
+							) &&
+							!(
+								externalWorkflow.state === 'complete' &&
+								externalProofCurrent(
+									planIdentity,
+									lockedTask,
+									externalTaskEvidence,
+								)
+							)
+						) {
+							throw new Error(
+								`TASK_COMPLETION_CAS_MISMATCH: Task ${args.task_id} declares external_git evidence but has no current matched attestation; run /swarm attest ${args.task_id} first`,
+							);
+						}
+						return;
+					}
 					const lockedGate = checkReviewerGate(
 						args.task_id,
 						directory,

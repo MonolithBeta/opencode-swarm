@@ -131,6 +131,7 @@ import { handlePrMonitorStatusCommand } from './pr-monitor-status.js';
 import { handlePrReviewCommand } from './pr-review.js';
 import { handlePrSubscribeCommand } from './pr-subscribe.js';
 import { handlePrUnsubscribeCommand } from './pr-unsubscribe.js';
+import { handleAttestCommand } from './attest.js';
 import { handlePreflightCommand } from './preflight.js';
 import { handlePromoteCommand } from './promote.js';
 import { handleQaGatesCommand } from './qa-gates.js';
@@ -1866,6 +1867,17 @@ export const COMMAND_REGISTRY = {
 		args: '--confirm=<token> (purge dirty/live lanes)',
 		category: 'utility',
 		toolPolicy: 'restricted',
+	},
+	attest: {
+		handler: (ctx) =>
+			handleAttestCommand(ctx.directory, ctx.args, ctx.sessionID),
+		description:
+			'Verify a git-external deliverable with pinned anchors [task_id]',
+		details:
+			"Runs the task's pinned read-only git evidence_anchors (issue #3422) inside the project root and records the durable external-evidence bundle that admits completion — the in-machine exit for tasks whose deliverable (commit/push, gh ops) can never produce a coder settlement. Fail-closed: the plan task must declare evidence_class external_git with 1..16 anchors (expect exact / expect_prefix non-empty), every anchor runs as a bounded no-shell argv spawn (stdin ignored, 10s per anchor, 30s total, output capped at the 4096-char evidence bound), and only positively-known read-only git subcommands/flags (rev-list, log, rev-parse, show, diff) are admitted. Undeclared tasks, mismatched anchors, and non-read-only commands refuse exactly as the completion gate does. Declaration changes revoke stale proofs (a fresh attest is then required). See docs/commands.md and docs/plan-durability.md.",
+		args: '<task_id>',
+		category: 'utility',
+		toolPolicy: 'agent',
 	},
 	recover: {
 		handler: (ctx) =>
