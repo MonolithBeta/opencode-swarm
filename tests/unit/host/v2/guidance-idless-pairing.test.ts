@@ -3,25 +3,30 @@
  * when the host's messages carry no `id`.
  *
  * The pinned v2 host hands `session.hook('context')` messages shaped
- * `{ role, content }` — no `id` (observed on opencode 2.1.3). `onV2ContextEvent`
- * (src/host/v2/guidance.ts) pairs each transformed v1 view back to its v2
- * message by `id`, falling back to POSITION for id-less messages. The v1
- * chain does change the view count: `materializeSystemGuidanceInPlace`
+ * `{ role, content }` - no `id` (observed on opencode 2.1.3). `onV2ContextEvent`
+ * (src/host/v2/guidance.ts) stamps every v1 view with its original index
+ * (`info.swarmV2Origin`) and pairs kept views back to their v2 message by
+ * object identity, then `id`, then that stamp. There is no positional
+ * fallback; chain-inserted views carry no stamp and are dropped.
+ *
+ * The v1 chain does change the view count: `materializeSystemGuidanceInPlace`
  * converts a mid-history `role:'system'` entry into a guidance carrier (which
  * is re-homed to `event.system` and removed from the list), and other stages
- * splice in verdict messages. Positional pairing then shifts every later view
- * onto the wrong v2 message and drops the trailing original — an assistant
+ * splice in verdict messages. Pairing by position shifts every later view onto
+ * the wrong v2 message and drops the trailing original - an assistant
  * `tool-call` loses its `tool` result and the provider rejects the request:
  *
  *   messages.N.content.0: unexpected `tool_use_id` found in `tool_result`
- *   blocks … must have a corresponding `tool_use` block in the previous message
+ *   blocks ... must have a corresponding `tool_use` block in the previous message
  *
  * Separately, `writeBackTextParts` rebuilt every message as
  * `[...nonText, ...text]`, moving an assistant's preamble text AFTER its
  * tool call.
  *
- * Tests 1–3 are RED at base and GREEN after the fix; 4, 5 and 7 are regression
- * floors; 6 pins the positional fallback against role confusion.
+ * Base-claim accuracy is recorded in the test titles ("RED at base" = fails
+ * against the pre-PR src/host/v2/guidance.ts). The rollback-clone, stamp
+ * mechanics, retention and non-array-content cases live in
+ * guidance-idless-pairing-stamp.test.ts.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
@@ -33,7 +38,7 @@ import type {
 	V2SessionContextEvent,
 } from '../../../../src/host/v2/types';
 import { resetSwarmState } from '../../../../src/state';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 type ViewMessage = {
 	info: { id?: string; role?: string; [key: string]: unknown };
@@ -123,8 +128,16 @@ const toolIds = (messages: V2Message[], type: string) =>
 		m.content.filter((p) => p.type === type).map((p) => p.id),
 	);
 
+const tempDirs: string[] = [];
+function tempDir(prefix: string): string {
+	const dir = canonicalMkdtemp(prefix);
+	tempDirs.push(dir);
+	return dir;
+}
+
 afterEach(() => {
 	resetSwarmState();
+	for (const dir of tempDirs.splice(0)) removeTreeWithRetry(dir);
 });
 
 describe('v2 context write-back with id-less host messages', () => {
@@ -135,7 +148,7 @@ describe('v2 context write-back with id-less host messages', () => {
 			hooksWith((messages) =>
 				materializeSystemGuidanceInPlace(messages as never),
 			),
-			canonicalMkdtemp('swarm-idless-materialize-'),
+			tempDir('swarm-idless-materialize-'),
 		);
 
 		expect(toolIds(ev.messages, 'tool-call')).toEqual(['t1', 't2', 't3']);
@@ -158,7 +171,7 @@ describe('v2 context write-back with id-less host messages', () => {
 					parts: [{ type: 'text', text: 'verdict' }],
 				});
 			}),
-			canonicalMkdtemp('swarm-idless-insert-'),
+			tempDir('swarm-idless-insert-'),
 		);
 
 		const texts = ev.messages.map((m) =>
@@ -185,7 +198,7 @@ describe('v2 context write-back with id-less host messages', () => {
 		await onV2ContextEvent(
 			ev,
 			hooksWith(() => {}),
-			canonicalMkdtemp('swarm-idless-order-'),
+			tempDir('swarm-idless-order-'),
 		);
 
 		for (const message of ev.messages.filter((m) => m.role === 'assistant')) {
@@ -207,7 +220,7 @@ describe('v2 context write-back with id-less host messages', () => {
 					}
 				}
 			}),
-			canonicalMkdtemp('swarm-idless-rewrite-'),
+			tempDir('swarm-idless-rewrite-'),
 		);
 
 		const assistantTexts = ev.messages
@@ -232,13 +245,14 @@ describe('v2 context write-back with id-less host messages', () => {
 				const index = messages.findIndex((m) => m.info.id === 'm2');
 				messages.splice(index, 1);
 			}),
-			canonicalMkdtemp('swarm-id-pairing-'),
+			tempDir('swarm-id-pairing-'),
 		);
 
 		expect(ev.messages.map((m) => m.id)).toEqual(['m1', 'm3']);
 		expect(ev.messages[1]?.content).toEqual([{ type: 'text', text: 'reply' }]);
 	});
-	test('hardening — a chain-inserted view never overwrites a message consumed as a carrier', async () => {
+
+	test('a chain-inserted view appended after carrier materialization is dropped and no message is overwritten', async () => {
 		const ev = event(idlessHistory());
 		await onV2ContextEvent(
 			ev,
@@ -249,48 +263,16 @@ describe('v2 context write-back with id-less host messages', () => {
 					parts: [{ type: 'text', text: 'injected verdict' }],
 				});
 			}),
-			canonicalMkdtemp('swarm-idless-carrier-insert-'),
+			tempDir('swarm-idless-carrier-insert-'),
 		);
 
 		expect(ev.messages.some((m) => m.role === 'system')).toBe(false);
 		const allText = JSON.stringify(ev.messages);
 		expect(allText).not.toContain('injected verdict');
-		expect(orphanedResults(ev.messages)).toEqual([]);
-	});
-
-	test('regression floor — views rebuilt as clones (retry rollback) still pair by role and order', async () => {
-		const ev = event(idlessHistory());
-		await onV2ContextEvent(
-			ev,
-			hooksWith((messages) => {
-				const clones = structuredClone(messages);
-				for (const clone of clones) {
-					for (const part of clone.parts) {
-						if (part.type === 'text') part.text = `${part.text}#`;
-					}
-				}
-				messages.length = 0;
-				for (const clone of clones) messages.push(clone);
-			}),
-			canonicalMkdtemp('swarm-idless-clone-'),
+		// No message other than the consumed carrier source changed.
+		expect(ev.messages).toEqual(
+			idlessHistory().filter((m) => m.role !== 'system'),
 		);
-
-		const texts = ev.messages.map((m) =>
-			m.content
-				.filter((p) => p.type === 'text')
-				.map((p) => p.text)
-				.join(''),
-		);
-		expect(texts).toEqual([
-			'run three steps#',
-			'step 1#',
-			'',
-			'mid-history reminder#',
-			'step 2#',
-			'',
-			'step 3#',
-			'',
-		]);
 		expect(orphanedResults(ev.messages)).toEqual([]);
 	});
 });

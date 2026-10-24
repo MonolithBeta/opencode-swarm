@@ -18,6 +18,13 @@
  * `event.agent` is an Agent.Info-shaped object on v2; it is normalized to a
  * name before any v1 agent comparison (frozen C4 header requirement).
  *
+ * View -> original pairing: every v1 view is stamped `info.swarmV2Origin` (its
+ * index in the original `event.messages`). Kept views are paired by object
+ * identity, then `id`, then that stamp (role-checked for non-carriers); there
+ * is no positional fallback. Views the chain INSERTS carry no stamp and are
+ * dropped — on v2, id-less chain inserts (full-auto verdict/continuation
+ * messages) are therefore not delivered.
+ *
  * Part-kind mapping (R10): text parts map 1:1; non-text content kinds
  * (media, tool-call, tool-result, reasoning, step-start, compaction, effort)
  * are preserved untouched on their message — the v1 chain's steps only read
@@ -40,18 +47,36 @@ import type {
 const V2_GUIDANCE_CHAIN_TIMEOUT_MS = 30_000;
 
 interface V1PartsMessageView {
-	info: { id?: string; role?: string; sessionID?: string };
+	info: {
+		id?: string;
+		role?: string;
+		sessionID?: string;
+		/**
+		 * Index of the source message in the ORIGINAL `event.messages` array. A
+		 * plain enumerable string key so it survives `structuredClone` and
+		 * `{...info}` spreads (the guardrails rollback clones views; stages such
+		 * as convertSystemEntryInPlace rebuild `info`). Views a chain INSERTS
+		 * never carry it.
+		 */
+		swarmV2Origin?: number;
+	};
 	parts: Array<{ type: string; text?: string }>;
+}
+
+/** `V2Message.content` is typed as an array; tolerate (never split) anything else. */
+function contentParts(message: V2Message): V2Message['content'] {
+	return Array.isArray(message.content) ? message.content : [];
 }
 
 /** Translate v2 messages into the v1 parts view the chain expects. */
 function toV1MessageView(
 	message: V2Message,
 	sessionID: string,
+	originIndex: number,
 	agentName?: string,
 ): V1PartsMessageView {
 	const textParts: Array<{ type: string; text?: string }> = [];
-	for (const part of message.content ?? []) {
+	for (const part of contentParts(message)) {
 		if (
 			part &&
 			typeof part === 'object' &&
@@ -66,6 +91,7 @@ function toV1MessageView(
 			id: typeof message.id === 'string' ? message.id : undefined,
 			role: message.role,
 			sessionID,
+			swarmV2Origin: originIndex,
 			// #3320: stamp the session's agent on USER views so the v1 message
 			// stages (which key on info.agent) can tell a plan/build turn from
 			// the architect main session. Absent when the event carries no agent
@@ -98,13 +124,15 @@ function writeBackTextParts(
 	message: V2Message,
 	parts: Array<{ type: string; text?: string }>,
 ): void {
+	// Out-of-contract (non-array) content is left untouched, never split.
+	if (!Array.isArray(message.content)) return;
 	const texts = parts
 		.filter((p) => p.type === 'text' && typeof p.text === 'string')
 		.map((p) => ({ type: 'text' as const, text: p.text as string }));
 	const content: V2Message['content'] = [];
 	let nextText = 0;
 	let afterLastText = 0;
-	for (const part of message.content ?? []) {
+	for (const part of message.content) {
 		if (part && typeof part === 'object' && part.type === 'text') {
 			if (nextText < texts.length) content.push(texts[nextText++]);
 			afterLastText = content.length;
@@ -118,7 +146,10 @@ function writeBackTextParts(
 
 /** True when a message carries anything the v1 text-only view cannot see. */
 function hasNonTextParts(message: V2Message): boolean {
-	return (message.content ?? []).some(
+	if (message.content === undefined) return false;
+	// Opaque (non-array) content is kept, not dropped.
+	if (!Array.isArray(message.content)) return true;
+	return message.content.some(
 		(part) => !(part && typeof part === 'object' && part.type === 'text'),
 	);
 }
@@ -150,13 +181,13 @@ export async function onV2ContextEvent(
 	const messagesTransform = hooks['experimental.chat.messages.transform'];
 	if (typeof messagesTransform === 'function') {
 		const originalMessages = [...(event.messages ?? [])];
-		const views = originalMessages.map((m) =>
-			toV1MessageView(m, sessionID, eventAgentName),
+		const views = originalMessages.map((m, i) =>
+			toV1MessageView(m, sessionID, i, eventAgentName),
 		);
 		// The v2 host's context messages carry no `id`, and the v1 chain changes
-		// the view count (carrier materialization, verdict inserts), so pair each
-		// view to its original by OBJECT IDENTITY — stages convert views in place
-		// (convertSystemEntryInPlace keeps the object, replaces `info`).
+		// the view count (carrier materialization, verdict inserts). Every view is
+		// stamped with its original index (`info.swarmV2Origin`); pairing below is
+		// object identity (stages convert views in place) -> `id` -> that stamp.
 		const originalByView = new Map<V1PartsMessageView, V2Message>();
 		for (let i = 0; i < views.length; i += 1) {
 			originalByView.set(views[i], originalMessages[i]);
@@ -175,33 +206,74 @@ export async function onV2ContextEvent(
 			// Restore the pre-transform views so a partial failure cannot corrupt content.
 			views.length = 0;
 			originalByView.clear();
-			for (const message of originalMessages) {
-				const view = toV1MessageView(message, sessionID, eventAgentName);
+			originalMessages.forEach((message, i) => {
+				const view = toV1MessageView(message, sessionID, i, eventAgentName);
 				views.push(view);
 				originalByView.set(view, message);
-			}
+			});
 		});
 
-		// Re-home carriers, then pair the kept views with their originals:
-		// object identity first, then `id`, then — only for views a stage
-		// rebuilt as new objects — position among the still-unclaimed id-less
-		// originals. Views with no match (chain inserts) are dropped.
+		// Pair each kept view with its original, in TWO passes so an exact match
+		// (object identity, then `id`) always outranks the weaker origin stamp:
+		//   pass 1: identity, then `id`;
+		//   pass 2: for still-unresolved views, `info.swarmV2Origin` (an integer in
+		//           range; non-carrier views must also match the original's role).
+		// First claim wins: an original already claimed by an earlier resolution is
+		// never reassigned and a later duplicate view is dropped. There is NO
+		// positional pairing. Views with no resolution — chain inserts, which carry
+		// no stamp — are dropped, so on v2 id-less chain inserts (full-auto verdict
+		// and continuation messages) are NOT delivered to the model.
 		const originalById = new Map<string, V2Message>();
 		for (const message of originalMessages) {
 			if (typeof message.id === 'string' && message.id.length > 0) {
 				originalById.set(message.id, message);
 			}
 		}
+		const isCarrier = (view: V1PartsMessageView): boolean =>
+			typeof view.info.id === 'string' &&
+			view.info.id.startsWith(GUIDANCE_CARRIER_ID_PREFIX);
+		const resolved = new Map<V1PartsMessageView, V2Message>();
+		const taken = new Set<V2Message>();
+		const resolve = (view: V1PartsMessageView, message: V2Message): void => {
+			if (taken.has(message)) return;
+			taken.add(message);
+			resolved.set(view, message);
+		};
+		const unresolved: V1PartsMessageView[] = [];
+		for (const view of views) {
+			const id = view.info.id;
+			const exact =
+				originalByView.get(view) ??
+				(typeof id === 'string' && id.length > 0
+					? originalById.get(id)
+					: undefined);
+			if (exact) resolve(view, exact);
+			else unresolved.push(view);
+		}
+		for (const view of unresolved) {
+			const origin: unknown = view.info.swarmV2Origin;
+			if (
+				typeof origin !== 'number' ||
+				!Number.isInteger(origin) ||
+				origin < 0 ||
+				origin >= originalMessages.length
+			) {
+				continue;
+			}
+			const original = originalMessages[origin];
+			if (!isCarrier(view) && view.info.role !== original.role) continue;
+			resolve(view, original);
+		}
+
 		const consumed = new Set<V2Message>();
 		const claimed = new Map<
 			V2Message,
 			Array<{ type: string; text?: string }>
 		>();
-		const unpaired: V1PartsMessageView[] = [];
 		event.system = event.system ?? [];
 		for (const view of views) {
-			const id = view.info.id;
-			if (typeof id === 'string' && id.startsWith(GUIDANCE_CARRIER_ID_PREFIX)) {
+			const source = resolved.get(view);
+			if (isCarrier(view)) {
 				// Re-homed carrier (R1): fenced text becomes a system part.
 				for (const part of view.parts) {
 					if (
@@ -212,62 +284,30 @@ export async function onV2ContextEvent(
 						event.system.push({ type: 'text', text: part.text });
 					}
 				}
-				const source = originalByView.get(view);
 				if (source) consumed.add(source);
-				continue;
-			}
-			const byIdentity = originalByView.get(view);
-			const byId =
-				typeof id === 'string' && id.length > 0
-					? originalById.get(id)
-					: undefined;
-			const message = byIdentity ?? byId;
-			if (message && !claimed.has(message)) claimed.set(message, view.parts);
-			else if (!message && (id === undefined || id.length === 0))
-				unpaired.push(view);
-		}
-		// Positional fallback, for views a stage rebuilt as new objects (the
-		// guardrails retry rollback restores a structuredClone): align them in
-		// order with still-unclaimed id-less originals of the SAME role. An
-		// original consumed as a carrier is excluded, so a chain-inserted view
-		// can never overwrite another role's message.
-		const candidates = originalMessages.filter(
-			(m) =>
-				!claimed.has(m) &&
-				!consumed.has(m) &&
-				!(typeof m.id === 'string' && m.id.length > 0),
-		);
-		let cursor = 0;
-		for (const view of unpaired) {
-			let match = cursor;
-			while (
-				match < candidates.length &&
-				candidates[match].role !== view.info.role
-			) {
-				match += 1;
-			}
-			if (match < candidates.length) {
-				claimed.set(candidates[match], view.parts);
-				cursor = match + 1;
+			} else if (source) {
+				claimed.set(source, view.parts);
 			}
 		}
 
 		// Rebuild in the HOST's order. A message whose view the chain dropped is
-		// removed only when it is text-only: tool calls/results and media are
-		// invisible to the v1 chain and removing them orphans tool pairs.
+		// removed when it is text-only or was consumed as a carrier source (its
+		// text now lives in event.system — one destination per guidance unit).
+		// Otherwise it is kept: tool calls/results and media are invisible to the
+		// v1 chain and removing them orphans tool pairs.
 		const kept: V2Message[] = [];
 		for (const message of originalMessages) {
 			const parts = claimed.get(message);
 			if (parts) {
 				writeBackTextParts(message, parts);
 				kept.push(message);
-			} else if (hasNonTextParts(message)) {
+			} else if (!consumed.has(message) && hasNonTextParts(message)) {
 				kept.push(message);
 			}
 		}
 		// In-place contract: the host reads its own arrays after the hook.
 		event.messages.length = 0;
-		event.messages.push(...kept);
+		for (const message of kept) event.messages.push(message);
 	}
 
 	const systemTransform = hooks['experimental.chat.system.transform'];
