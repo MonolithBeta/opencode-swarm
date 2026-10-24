@@ -1,6 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, mock } from 'bun:test';
-import * as realChildProcess from 'node:child_process';
-import { execFileSync, execSync } from 'node:child_process';
 
 import * as realFs from 'node:fs';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -43,11 +41,6 @@ mock.module('node:fs', () => ({
 	readFileSync: mock(() => '{"version":"7.99.6"}'),
 	statSync: mock(() => ({ isDirectory: () => true })),
 }));
-mock.module('node:child_process', () => ({
-	...realChildProcess,
-	execSync: mock(() => Buffer.from('.git')),
-	execFileSync: mock(() => Buffer.from('.git')),
-}));
 
 // Type assertions for mocks
 const mockLoadPlanJsonOnly = loadPlanJsonOnly as ReturnType<typeof mock>;
@@ -61,8 +54,6 @@ const mockReaddirSync = readdirSync as ReturnType<typeof mock>;
 const mockExistsSync = existsSync as ReturnType<typeof mock>;
 const mockReadFileSync = readFileSync as ReturnType<typeof mock>;
 const mockStatSync = statSync as ReturnType<typeof mock>;
-const mockExecSync = execSync as ReturnType<typeof mock>;
-const mockExecFileSync = execFileSync as ReturnType<typeof mock>;
 
 // Helper to create minimal valid plan object
 function makePlan(
@@ -123,11 +114,8 @@ beforeEach(() => {
 	mockExistsSync.mockReturnValue(true);
 	mockReadFileSync.mockReturnValue('{"version":"7.99.6"}');
 	mockStatSync.mockReturnValue({ isDirectory: () => true });
-	mockExecSync.mockReturnValue(Buffer.from('.git'));
-	mockExecFileSync.mockReturnValue(Buffer.from('.git'));
 	__seedGitExecutableForTests('git');
-	// #3317 PRR-023: the git-repo check reads through the async reader
-	// seam now — stub it so no real git spawns here (deterministic timing).
+	// #3317 PRR-023: stub the async reader seam so no real git spawns here.
 	diagnoseInternals.readGitRepositoryOnce = async () => ({
 		ok: true,
 		stdout: '.git',
