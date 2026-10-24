@@ -220,6 +220,11 @@ export async function handleRecoverCommand(
 					'2. manual close — flip the task status in the TUI and record the wedge plus the close reason in your execution trace.',
 					'3. Re-plan the task as a thin coder dispatch (the coder executes the pinned-scope git commands) so a settlement exists and the normal gate applies.',
 				);
+				if (listed.length > 0) {
+					report.push(
+						`Known tasks: ${listed.map((entry) => entry.taskId).join(', ')}`,
+					);
+				}
 			} else {
 				// Evidence exists but no WAL and no dispatch events — the
 				// incomplete-evidence shape: name what is missing instead of a
