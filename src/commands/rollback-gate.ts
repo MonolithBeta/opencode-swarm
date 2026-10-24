@@ -119,6 +119,28 @@ export function isRealGitRepository(directory: string): boolean {
 	return fsSync.existsSync(path.join(directory, '.git', 'HEAD'));
 }
 
+/** #3434: a parsed porcelain record whose path normalizes outside the repo root. */
+export function isOutOfRootRelativePath(rel: string): boolean {
+	if (rel === '') return false;
+	const normalized = path.posix.normalize(rel);
+	return (
+		normalized === '..' ||
+		normalized.startsWith('../') ||
+		normalized.startsWith('/')
+	);
+}
+
+/**
+ * The NUL-form parser's result contract (#3434): the in-root dirty paths that
+ * feed the destroy scope, plus any records whose path normalized outside the
+ * project root — excluded from the scope and surfaced for the diagnostic
+ * instead of being joined into the confirm-token digest unvalidated.
+ */
+export interface TrackedDirtyParseResult {
+	dirtyPaths: string[];
+	excludedOutOfRoot: string[];
+}
+
 /**
  * Parse `git status --porcelain -z` output into repo-relative tracked-dirty
  * paths. The -z form is NUL-terminated and NEVER quotes paths (core.quotepath
@@ -132,9 +154,23 @@ export function isRealGitRepository(directory: string): boolean {
  * (intent-to-add) — so the test must not anchor to the first column, or the
  * ORIG_PATH token of an R/C-initial file (README.md, CHANGELOG.md, …) is
  * misread as the start of a new record and swallows the next real entry.
+ *
+ * #3434: `../`-bearing (or absolute) records are excluded from the dirty
+ * set and recorded in `excludedOutOfRoot` — the legacy `string[]` export
+ * below returns only the in-root paths.
  */
-export function parseTrackedDirtyPaths(statusOutput: string): string[] {
+export function parseTrackedDirtyPathsWithExclusions(
+	statusOutput: string,
+): TrackedDirtyParseResult {
 	const dirtyPaths: string[] = [];
+	const excludedOutOfRoot: string[] = [];
+	const push = (candidate: string): void => {
+		if (isOutOfRootRelativePath(candidate)) {
+			excludedOutOfRoot.push(candidate);
+			return;
+		}
+		dirtyPaths.push(candidate);
+	};
 	const tokens = statusOutput.split('\0');
 	for (let i = 0; i < tokens.length; i += 1) {
 		const token = tokens[i];
@@ -143,13 +179,22 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
 		if (xy === '??') continue;
 		const filePath = token.slice(3);
 		if (!filePath) continue;
-		dirtyPaths.push(filePath);
+		push(filePath);
 		if (/[RC]/.test(xy) && i + 1 < tokens.length && tokens[i + 1] !== '') {
-			dirtyPaths.push(tokens[i + 1]);
+			push(tokens[i + 1]);
 			i += 1;
 		}
 	}
-	return dirtyPaths;
+	return { dirtyPaths, excludedOutOfRoot };
+}
+
+/**
+ * Legacy `string[]` view of the NUL-form parser (in-root paths only) — the
+ * export existing suites pin. New consumers that need the exclusion
+ * diagnostic use `parseTrackedDirtyPathsWithExclusions`.
+ */
+export function parseTrackedDirtyPaths(statusOutput: string): string[] {
+	return parseTrackedDirtyPathsWithExclusions(statusOutput).dirtyPaths;
 }
 
 /**
@@ -157,32 +202,60 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
  * index while a file sits on disk at that path. `git reset --hard` silently
  * overwrites exactly these untracked (or since-ignored) files when it
  * materializes the target tree, so they belong in the destruction scope
- * alongside tracked-dirty paths (#2976 review F-1). Returns [] when either
- * listing cannot be read — the tracked-dirty gate above still applies, and
- * the caller's unreadable-status refusal covers real-repo failures.
+ * alongside tracked-dirty paths (#2976 review F-1).
+ *
+ * #3434 fail-closed contract: `failure` is set when either listing cannot
+ * be read, carrying the reader's structured cause when it could tell. The
+ * caller must REFUSE on it — an unreadable enumeration may not read as a
+ * measured "nothing in the way" (the same class #3317 closed for the status
+ * reads). A non-git or bare-marker root returns empty paths with NO failure:
+ * nothing tracked can be in the way there (#2127 convention).
  */
 export async function untrackedPathsInTargetTree(
 	directory: string,
 	targetSha: string,
-): Promise<string[]> {
-	if (!isRealGitRepository(directory)) return [];
-	const targetTree = await readToString(
-		await _rollbackGateInternals.runGitBuffered(
-			['ls-tree', '-r', '-z', '--name-only', targetSha],
-			directory,
-		),
+): Promise<{
+	paths: string[];
+	failure: {
+		code: string | null;
+		status: number | null;
+		stderrTail: string;
+	} | null;
+}> {
+	if (!isRealGitRepository(directory)) {
+		return { paths: [], failure: null };
+	}
+	const targetTreeRaw = await _rollbackGateInternals.runGitBuffered(
+		['ls-tree', '-r', '-z', '--name-only', targetSha],
+		directory,
 	);
-	const index = await readToString(
-		await _rollbackGateInternals.runGitBuffered(['ls-files', '-z'], directory),
+	const targetTree = await readToString(targetTreeRaw);
+	if (targetTree === null) {
+		const detail = await readFailureDetail(targetTreeRaw);
+		return {
+			paths: [],
+			failure: detail ?? { code: null, status: null, stderrTail: '' },
+		};
+	}
+	const indexRaw = await _rollbackGateInternals.runGitBuffered(
+		['ls-files', '-z'],
+		directory,
 	);
-	if (targetTree === null || index === null) return [];
+	const index = await readToString(indexRaw);
+	if (index === null) {
+		const detail = await readFailureDetail(indexRaw);
+		return {
+			paths: [],
+			failure: detail ?? { code: null, status: null, stderrTail: '' },
+		};
+	}
 	const indexed = new Set(index.split('\0').filter((p) => p !== ''));
 	const inWay: string[] = [];
 	for (const rel of targetTree.split('\0')) {
 		if (rel === '' || indexed.has(rel)) continue;
 		if (fsSync.existsSync(path.join(directory, rel))) inWay.push(rel);
 	}
-	return inWay;
+	return { paths: inWay, failure: null };
 }
 
 /**
@@ -255,16 +328,25 @@ export function describeUnreadableCause(measurement: {
  * `targetSha` is provided, files that are untracked (or since-ignored) on
  * disk but tracked in the TARGET tree are included: `git reset --hard`
  * overwrites them silently, so they are part of the destruction set
- * (#2976 review F-1). `unreadable` means git status could not be read
- * inside a real repository — callers must fail closed on it (never treat
- * it as a clean tree). A non-git or bare-marker root returns an empty
- * dirty set: nothing tracked to destroy.
+ * (#2976 review F-1). `unreadable` means git status — or, #3434, the
+ * ls-tree/ls-files enumeration of the target tree — could not be read
+ * inside a real repository; callers must fail closed on it (never treat it
+ * as a clean tree, and never let a failed enumeration shrink the measured
+ * scope). A non-git or bare-marker root returns an empty dirty set: nothing
+ * tracked to destroy. `excludedOutOfRoot` carries porcelain records whose
+ * path normalized outside the project root (#3434) — excluded from the
+ * scope and surfaced for the preview diagnostic.
  */
 export async function measureGitDestruction(
 	directory: string,
 	targetSha?: string,
 ): Promise<
-	| { kind: 'ok'; dirtyRelPaths: string[] }
+	| {
+			kind: 'ok';
+			dirtyRelPaths: string[];
+			/** #3434: out-of-root porcelain records excluded from the scope. */
+			excludedOutOfRoot: string[];
+	  }
 	| {
 			kind: 'unreadable';
 			/** #3317: why the read failed, when the async reader could tell. */
@@ -274,7 +356,7 @@ export async function measureGitDestruction(
 	  }
 > {
 	if (!isRealGitRepository(directory)) {
-		return { kind: 'ok', dirtyRelPaths: [] };
+		return { kind: 'ok', dirtyRelPaths: [], excludedOutOfRoot: [] };
 	}
 	const raw = _rollbackGateInternals.runGit(
 		// #3317: read-only status must not contend on the index write lock.
@@ -293,11 +375,27 @@ export async function measureGitDestruction(
 				}
 			: { kind: 'unreadable' };
 	}
-	const dirtyRelPaths = parseTrackedDirtyPaths(status);
+	const { dirtyPaths: dirtyRelPaths, excludedOutOfRoot } =
+		parseTrackedDirtyPathsWithExclusions(status);
 	if (targetSha) {
-		for (const rel of await untrackedPathsInTargetTree(directory, targetSha)) {
+		const { paths, failure } = await untrackedPathsInTargetTree(
+			directory,
+			targetSha,
+		);
+		// #3434: an unreadable enumeration must refuse the measurement —
+		// folding an empty set here would silently shrink the destruction
+		// scope below what `git reset --hard` would actually overwrite.
+		if (failure) {
+			return {
+				kind: 'unreadable',
+				code: failure.code,
+				status: failure.status,
+				stderrTail: failure.stderrTail,
+			};
+		}
+		for (const rel of paths) {
 			if (!dirtyRelPaths.includes(rel)) dirtyRelPaths.push(rel);
 		}
 	}
-	return { kind: 'ok', dirtyRelPaths };
+	return { kind: 'ok', dirtyRelPaths, excludedOutOfRoot };
 }

@@ -7,6 +7,7 @@ import {
 	consumeConfirmToken,
 	issueConfirmToken,
 } from '../commands/destructive-purge';
+import { readGitRepositoryStatusAsync } from '../commands/git-status-read';
 import { backupTrackedChangesBeforeRollback } from '../commands/reset-backup';
 import {
 	describeUnreadableCause,
@@ -63,11 +64,6 @@ const CONTROL_CHAR_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/;
 const NON_ASCII_PATTERN = /[^\x20-\x7E]/;
 
 type MutationAction = 'save' | 'restore' | 'delete' | 'save_task_completion';
-
-interface GitRepoProbe {
-	isRepo: boolean;
-	warning?: string;
-}
 
 interface CheckpointEntry {
 	label: string;
@@ -372,31 +368,6 @@ function gitExec(args: string[], cwd: string): string {
 
 function getCurrentSha(directory: string): string {
 	return gitExec(['rev-parse', 'HEAD'], directory).trim();
-}
-
-function isGitRepo(directory: string): GitRepoProbe {
-	try {
-		gitExec(['rev-parse', '--git-dir'], directory);
-		return { isRepo: true };
-	} catch (e) {
-		const message = e instanceof Error ? e.message : String(e);
-		const isTransient =
-			/ETIMEDOUT|timed out/i.test(message) &&
-			!/not a git repository/i.test(message);
-
-		if (isTransient) {
-			return {
-				isRepo: false,
-				warning:
-					'git probe failed after retry exhaustion - treating as not a git repository',
-			};
-		}
-
-		return {
-			isRepo: false,
-			warning: 'git probe failed - directory may not be a git repository',
-		};
-	}
 }
 
 function findCommitByExactSubject(
@@ -741,8 +712,11 @@ export async function saveCheckpointRecord(
 				return { success: false, error: `duplicate label: "${label}"` };
 			}
 			let sha = '';
-			const repoProbe = isGitRepo(directory);
-			if (repoProbe.isRepo) {
+			// #3427: the repository probe rides the shared async reader
+			// (single-attempt, bounded, killable) instead of the local sync
+			// gitExec retry chain — on a host whose sync spawns stall
+			// (#3275), this leg no longer blocks the save path.
+			if (await readGitRepositoryStatusAsync(directory)) {
 				try {
 					sha = getCurrentSha(directory);
 				} catch {
@@ -810,13 +784,21 @@ async function handleRestore(
 		const measurement = await measureGitDestruction(directory, checkpoint.sha);
 		if (measurement.kind === 'unreadable') {
 			// #3317: name WHY the read failed when the async reader could tell
-			// (single shared source with the /swarm rollback command).
+			// (single shared source with the /swarm rollback command). #3434:
+			// this also covers an unreadable ls-tree/ls-files enumeration.
 			const cause = describeUnreadableCause(measurement);
 			return serializeResult('restore', {
 				success: false,
 				error: `cannot verify the working tree (git status unreadable; ${cause}) — refusing to restore without a preview.`,
 			});
 		}
+		// #3434: bounded diagnostic for out-of-root porcelain records
+		// excluded from the destroy scope — surfaced on the preview AND the
+		// clean-tree restore below, so an exclusion is never silent.
+		const exclusionNote =
+			measurement.excludedOutOfRoot.length > 0
+				? `${measurement.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from this scope (first: ${measurement.excludedOutOfRoot[0]})`
+				: null;
 		if (measurement.dirtyRelPaths.length > 0) {
 			const candidates = trackedDirtyCandidates(
 				directory,
@@ -837,6 +819,7 @@ async function handleRestore(
 						`Restoring to checkpoint "${label}" runs a hard git reset and would DESTROY ${candidates.length} uncommitted tracked file(s):`,
 						...shown.map((p) => `  - ${p}`),
 						...(overflow > 0 ? [`  (+${overflow} more)`] : []),
+						...(exclusionNote ? [`⚠ ${exclusionNote}`] : []),
 						'Backups are taken automatically once confirmed.',
 					],
 					confirm_token: token,
@@ -901,7 +884,9 @@ async function handleRestore(
 			});
 		}
 
-		// Clean tree: nothing tracked to destroy — single-call restore.
+		// Clean tree: nothing tracked to destroy — single-call restore. When
+		// every dirty record was out-of-root-excluded (#3434), the operator
+		// still sees what was dropped.
 		const logBeforeReset = log;
 		gitExec(['reset', '--hard', checkpoint.sha], directory);
 		writeCheckpointLog(logBeforeReset, directory);
@@ -910,7 +895,9 @@ async function handleRestore(
 			success: true,
 			label,
 			sha: checkpoint.sha,
-			message: `Restored to checkpoint: "${label}" (hard reset)`,
+			message: `Restored to checkpoint: "${label}" (hard reset)${
+				exclusionNote ? `; ⚠ ${exclusionNote}` : ''
+			}`,
 		});
 	} catch (e) {
 		return serializeResult('restore', {
@@ -1168,11 +1155,17 @@ export const checkpoint: ToolDefinition = createSwarmTool({
 			.describe('Plan task ID (required for save_task_completion), e.g. "1.1"'),
 	},
 	execute: async (args, directory) => {
-		const repoProbe = isGitRepo(directory);
-		if (!repoProbe.isRepo) {
+		// #3427: the entry preflight rides the shared async reader
+		// (single-attempt `rev-parse --git-dir`, bounded, killable) instead of
+		// the local sync gitExec retry chain — on a host whose sync child
+		// spawns stall (#3275), every checkpoint action (list and restore
+		// alike) no longer blocks up to the transient-retry horizon before
+		// refusing.
+		if (!(await readGitRepositoryStatusAsync(directory))) {
 			return serializeResult('unknown', {
 				success: false,
-				error: `${repoProbe.warning ?? 'not a git repository'} - checkpoint tools require a git repository`,
+				error:
+					'not a git repository - checkpoint tools require a git repository',
 			});
 		}
 

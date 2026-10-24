@@ -119,6 +119,23 @@ const SCANNED_FILES: readonly ScannedFile[] = [
 		changedFilesScan: true,
 		stripRecoveryProbe: false,
 	},
+	// #3427: the finalize align stage's repository probe moved off the sync
+	// gitExec chain onto the async detailed reader — the file is
+	// sync-spawn-free, so it joins SCANNED_FILES outright. Its sibling
+	// conversion site src/tools/checkpoint.ts CANNOT join this list: its
+	// save/restore action bodies intentionally retain sync gitExec spawns
+	// (out of #3427's scope). checkpoint.ts's PREFLIGHT conversion is guarded
+	// by a DIFFERENT guard, not this scanner (the detector does not model the
+	// repository-status seam): the spawn-slot-counting suite
+	// tests/unit/tools/checkpoint-preflight-async-3317.test.ts (C1) covers
+	// both its probe sites, and the await discipline of the align-stage seam
+	// is pinned by tests/unit/commands/align-stage-async-probe-3317.test.ts
+	// (C2).
+	{
+		path: 'src/commands/close/align-stage.ts',
+		changedFilesScan: false,
+		stripRecoveryProbe: false,
+	},
 ] as const;
 
 const SNAPSHOT_PATH = 'src/background/workspace-snapshot.ts';
@@ -136,6 +153,21 @@ describe('no-sync-spawn static ratchet (issue #2472 W10 / AC-11, W11 R-1..R-3)',
 			violations.length,
 			`sync subprocess calls reachable from hook paths (expected none): ${describeViolations(violations)}`,
 		).toBe(0);
+	});
+
+	test('#3427: SCANNED_FILES covers the align-stage conversion (runtime membership)', () => {
+		// Runtime membership assertion — a comment inside the array literal
+		// cannot satisfy it (the #3434 review's comment-vulnerability point).
+		// src/tools/checkpoint.ts is deliberately ABSENT from this list: its
+		// different guard (the spawn-slot-counting preflight suite named in
+		// the SCANNED_FILES comment above) covers its probe conversions,
+		// because the detector does not model the repository-status seam and
+		// checkpoint.ts intentionally retains sync spawns in its action bodies.
+		expect(
+			SCANNED_FILES.some(
+				(file) => file.path === 'src/commands/close/align-stage.ts',
+			),
+		).toBe(true);
 	});
 
 	test('scanned files do not bind or call the sync captureWorkspaceSnapshot (permitted DI seam forms stripped)', () => {

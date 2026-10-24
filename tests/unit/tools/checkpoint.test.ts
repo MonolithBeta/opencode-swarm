@@ -326,11 +326,11 @@ describe('checkpoint tool', () => {
 			const parsed = JSON.parse(result);
 
 			expect(parsed.success).toBe(false);
-			// Error must include the specific isGitRepo warning, not just a generic message.
-			// The entry guard now surfaces: "git probe failed — directory may not be a git repository"
-			expect(parsed.error).toMatch(
-				/git probe failed|may not be a git repository/,
-			);
+			// #3427: the entry preflight rides the shared async reader, so a
+			// failed probe (here: a real non-repo temp dir) is a uniform
+			// not-a-repository refusal — the old sync probe's retry-chain
+			// warning texts died with the local isGitRepo helper.
+			expect(parsed.error).toMatch(/not a git repository/);
 			expect(parsed.error).toContain(
 				'checkpoint tools require a git repository',
 			);

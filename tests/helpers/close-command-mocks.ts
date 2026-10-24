@@ -12,13 +12,33 @@
  */
 
 import { mock } from 'bun:test';
+import * as actualGitStatusRead from '../../src/commands/git-status-read.js';
 import * as actualEvidenceManager from '../../src/evidence/manager.js';
 import * as actualKnowledgeCurator from '../../src/hooks/knowledge-curator.js';
 import * as actualState from '../../src/state.js';
 
 const realSnapshotWriter = await import('../../src/session/snapshot-writer.js');
 
+/**
+ * #3427: the close align stage reads repository status through the async
+ * detailed reader (wired into the close internals seam), so a branch-module
+ * mock alone no longer covers the probe. This installs a `git-status-read`
+ * module mock that SPREADS the real module (orchestrator's `readGitStatusAsync`
+ * and dry-run's `readGitRepositoryStatusAsync` keep their real implementations)
+ * and overrides ONLY `readGitRepositoryStatusDetailedAsync` to a non-repo
+ * result — the async twin of the `getGitRepositoryStatus: () => ({ isRepo: false })`
+ * convention the branch mocks below already carry.
+ */
+export function mockGitStatusReadNonRepo(): void {
+	mock.module('../../src/commands/git-status-read.js', () => ({
+		...actualGitStatusRead,
+		readGitRepositoryStatusDetailedAsync: async () => ({ isRepo: false }),
+	}));
+}
+
 export function installCloseCommandMocks(): void {
+	// #3427: cover the align stage's async repository probe (see above).
+	mockGitStatusReadNonRepo();
 	mock.module('../../src/tools/write-retro.js', () => ({
 		executeWriteRetro: mock(async () =>
 			JSON.stringify({ success: true, phase: 1, task_id: 'r', message: 'ok' }),
