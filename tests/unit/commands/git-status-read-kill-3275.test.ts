@@ -69,4 +69,46 @@ describe('git-status reader kills the timed-out child (#3317 supplement)', () =>
 		}
 		expect(gone).toBe(true);
 	}, 30_000);
+
+	// Review round 2: pins the fragment's ESIGNAL claim ON A SIGNAL-REPORTING
+	// PLATFORM with a real external kill. Windows cannot express this shape
+	// (taskkill exits 1/255 with no signal code — declared residual in the
+	// fragment), so the leg is POSIX-only and runs on the Linux/macOS CI legs.
+	test.skipIf(process.platform === 'win32')(
+		'an externally SIGKILLed child classifies as ESIGNAL (POSIX signal path)',
+		async () => {
+			const cwd = canonicalMkdtemp('3317-kill-posix-');
+			tempRoots.push(cwd);
+			gitStatusReadInternals.resolveExecutable = async () => process.execPath;
+			const pidFile = path.join(cwd, 'child.pid');
+			const args = [
+				'-e',
+				`require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); await new Promise((r) => setTimeout(r, 30000));`,
+			];
+
+			const read = gitStatusReadInternals.readOnce(args, cwd, 15_000);
+			// Wait (bounded) for the child to announce itself, then kill it
+			// externally — well before the read's deadline, so the completed
+			// race (not the timeout) decides the class.
+			let pid = Number.NaN;
+			for (let i = 0; i < 100 && !Number.isInteger(pid); i++) {
+				if (fs.existsSync(pidFile)) {
+					pid = Number.parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
+				}
+				if (!Number.isInteger(pid)) {
+					await new Promise((r) => setTimeout(r, 50));
+				}
+			}
+			expect(Number.isInteger(pid)).toBe(true);
+			process.kill(pid, 'SIGKILL');
+
+			const result = await read;
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.code).toBe('ESIGNAL');
+				expect(result.status).toBeNull();
+			}
+		},
+		30_000,
+	);
 });

@@ -104,4 +104,41 @@ describe('async probe cycle honors its total budget (#3317 supplement)', () => {
 		// separates both shapes with wide margins on loaded CI runners.
 		expect(elapsedMs).toBeLessThan(200);
 	}, 30_000);
+
+	test('an all-timeout async cycle is not negative-cached: a second resolve re-probes', async () => {
+		const fixture = writeSimFixture(tmpDir, 'timeout-git');
+		setGitBinaryOverride(fixture.candidate);
+
+		let asyncSpawnCalls = 0;
+		// Real clock (no budget script): the override probe hangs and times
+		// out at the ordinary PER_PROBE_TIMEOUT_MS; later candidates stat-
+		// fail without spawning.
+		_internals.asyncSpawn = (() => {
+			asyncSpawnCalls += 1;
+			return {
+				stdout: { text: async () => '' },
+				stderr: { text: async () => '' },
+				exited: new Promise<number>(() => {}),
+				spawnError: undefined,
+				signalCode: null,
+				kill() {},
+			} as unknown as ReturnType<typeof bunSpawn>;
+		}) as typeof _internals.asyncSpawn;
+		_internals.spawnSync = (() => {
+			throw new Error('sync probe must not run in the async cycle');
+		}) as typeof _internals.spawnSync;
+
+		// First resolve: the timed-out cycle answers bare 'git' (the
+		// unknown-not-rejection shape) WITHOUT caching it (sawTimeout rule).
+		const first = await resolveGitExecutableAsync();
+		expect(first).toBe('git');
+		expect(asyncSpawnCalls).toBeGreaterThanOrEqual(1);
+
+		// Second resolve must re-probe — a negative cache here would pin the
+		// bare fallback for the whole TTL (the async half of AC7, which the
+		// sync-only C7 test never drives).
+		const second = await resolveGitExecutableAsync();
+		expect(second).toBe('git');
+		expect(asyncSpawnCalls).toBeGreaterThanOrEqual(2);
+	}, 30_000);
 });

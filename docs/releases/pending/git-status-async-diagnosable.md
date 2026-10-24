@@ -20,13 +20,14 @@ generic "Ensure git is available and the repository is readable" hint:
 - a missing git binary reports `ENOENT` with the install hint (git.binary is
   honored from your USER-level config only);
 - output larger than the read safety bound reports `EOUTPUT` and advises
-  shrinking the change footprint, and an externally killed child reports
-  `ESIGNAL` — neither is ever reported as a successful `status 0` exit or a
-  repository verdict;
-- `/swarm diagnose` distinguishes all of these rows honestly — a hang, a
-  kill, and a spawn failure show as "git state unknown" with the actual
-  cause, a missing binary names `ENOENT`, and only a real nonzero
-  `git rev-parse` says "Not a git repository".
+  shrinking the change footprint, and a signal-terminated child reports
+  `ESIGNAL` (POSIX signal deaths surfaced through `signalCode` or bun-compat's
+  `-1` sentinel) — neither is ever reported as a successful `status 0` exit or
+  a repository verdict;
+- `/swarm diagnose` distinguishes all of these rows honestly — a hang or a
+  signal kill shows as "git state unknown" with the actual cause, a spawn
+  failure shows as "could not be spawned", a missing binary names `ENOENT`,
+  and a nonzero `git rev-parse` answer says "Not a git repository".
 
 The fail-closed contracts are unchanged: an unreadable status still refuses
 the destructive pipeline with "Nothing was closed, archived, or destroyed",
@@ -55,6 +56,14 @@ mid-finalize `getGitRepositoryStatus` call — both still use the blocking
 retry chain and can wedge on a host where synchronous spawns stall. This
 change makes the GATE READS async and diagnosable; it does not make those
 two probes non-blocking.
+
+A probe terminated EXTERNALLY on Windows (taskkill, Stop-Process, EDR
+intervention) exits 1 or 255 with no signal code — indistinguishable from a
+plain nonzero exit at the process level — so it renders under the nonzero
+path (repair remedy; "Not a git repository" at diagnose) rather than
+`ESIGNAL`. The refusal stays fail-closed either way; only the cause label is
+coarse for that shape (measured 12/12 at the review round; the
+signal-reporting paths above all classify correctly).
 
 ## Why
 

@@ -32,10 +32,11 @@ export type GitStatusReadResult =
 			ok: false;
 			/**
 			 * Failure class: `ETIMEDOUT` (deadline), `ENOENT` (missing binary,
-			 * both runtimes), `ESIGNAL` (terminated externally), `EOUTPUT`
-			 * (output exceeded the read safety bound), or another spawn-error
-			 * code (`EPERM`, `EBUSY`, …). Null only when the child ran and
-			 * exited nonzero on its own.
+			 * both runtimes), `ESIGNAL` (signal-terminated — see the arm's
+			 * reachability note; Windows external termination lands in the
+			 * nonzero path), `EOUTPUT` (output exceeded the read safety
+			 * bound), or another spawn-error code (`EPERM`, `EBUSY`, …).
+			 * Null only when the child ran and exited nonzero on its own.
 			 */
 			code: string | null;
 			/** Child exit status when it ran and exited; null otherwise. */
@@ -90,8 +91,11 @@ async function readBoundedOutput(
 			if (value.byteLength > remaining) {
 				// Mark truncated but KEEP DRAINING: stopping the read would
 				// apply backpressure and block the child's exit, turning an
-				// overflow into a timeout. Collect what fit so a failure can
-				// still carry real stderr detail.
+				// overflow into a timeout. The partial text that fit is
+				// retained for the NONZERO-exit arm's stderr tail
+				// (PRR-003's fix); the EOUTPUT arm names the bound instead,
+				// and the timeout arm cannot carry it — its race resolves
+				// while these drains are still in flight.
 				if (remaining > 0) chunks.push(value.slice(0, remaining));
 				truncated = true;
 				totalBytes += remaining;
@@ -245,12 +249,20 @@ async function readOnceDefault(
 				stderrTail: `output exceeded the ${maxBufferBytes}-byte bound`,
 			};
 		}
-		if (result.exitCode === null || result.exitCode === -1) {
-			// Externally signal-terminated child. bun-compat resolves a
-			// signal-killed exit as `code ?? -1` (POSIX) or the platform kill
-			// result (Windows taskkill) — neither runtime surfaces a POSIX
-			// signal name through `exited`, so the uniform, consumer-friendly
-			// class is ESIGNAL (PRR-006).
+		if (
+			result.exitCode === null ||
+			result.exitCode === -1 ||
+			proc.signalCode != null
+		) {
+			// Signal-terminated child. Reachability, measured (review round 2):
+			// bun-compat resolves Node's signal exit as `code ?? -1` (-1);
+			// Bun's native signal exit lands as 128+signal WITH `signalCode`
+			// set (e.g. 137/SIGKILL); a POSIX external kill surfaces through
+			// the same `signalCode`. A Windows EXTERNAL termination
+			// (taskkill/Stop-Process/EDR) instead exits 1 or 255 with
+			// `signalCode` null — indistinguishable from a plain nonzero exit
+			// at the process level, so it stays in the nonzero arm below and
+			// is declared as a residual in the release fragment (PRR-006).
 			return {
 				ok: false,
 				code: 'ESIGNAL',

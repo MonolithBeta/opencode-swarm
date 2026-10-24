@@ -12,6 +12,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { handleCloseCommand } from '../../../src/commands/close/orchestrator';
 import {
+	_internals as purgeInternals,
+	recheckBeforeDestructive,
+} from '../../../src/commands/destructive-purge';
+import {
 	type GitStatusReadResult,
 	gitStatusReadInternals,
 	readGitStatusAsync,
@@ -25,11 +29,13 @@ const tempRoots: string[] = [];
 const originalReadOnce = gitStatusReadInternals.readOnce;
 const originalResolveExecutable = gitStatusReadInternals.resolveExecutable;
 const originalSpawn = gitStatusReadInternals.spawn;
+const originalRunGitStatus = purgeInternals.runGitStatus;
 
 afterEach(() => {
 	gitStatusReadInternals.readOnce = originalReadOnce;
 	gitStatusReadInternals.resolveExecutable = originalResolveExecutable;
 	gitStatusReadInternals.spawn = originalSpawn;
+	purgeInternals.runGitStatus = originalRunGitStatus;
 	for (const root of tempRoots.splice(0)) {
 		fs.rmSync(root, { recursive: true, force: true });
 	}
@@ -38,6 +44,7 @@ afterEach(() => {
 function stubSpawnResult(overrides: {
 	exitCode?: number | null;
 	spawnError?: Error | null;
+	signalCode?: string | null;
 }): ReturnType<typeof originalSpawn> {
 	return {
 		stdout: {
@@ -54,7 +61,7 @@ function stubSpawnResult(overrides: {
 		},
 		exited: Promise.resolve(overrides.exitCode ?? 0),
 		exitCode: null,
-		signalCode: null,
+		signalCode: overrides.signalCode ?? null,
 		spawnError: overrides.spawnError ?? null,
 		kill() {},
 	} as unknown as ReturnType<typeof originalSpawn>;
@@ -89,6 +96,23 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 		gitStatusReadInternals.resolveExecutable = async () => 'git';
 		gitStatusReadInternals.spawn = (() =>
 			stubSpawnResult({ exitCode: -1 })) as typeof gitStatusReadInternals.spawn;
+		const result = await readGitStatusAsync(['status'], cwd);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.code).toBe('ESIGNAL');
+			expect(result.status).toBeNull();
+		}
+	}, 30_000);
+
+	test('ESIGNAL: an exit carrying signalCode (Bun native / POSIX kill shape, e.g. 137/SIGKILL) is classed as terminated, not nonzero', async () => {
+		const cwd = canonicalMkdtemp('3317-fclass-sigcode-');
+		tempRoots.push(cwd);
+		gitStatusReadInternals.resolveExecutable = async () => 'git';
+		gitStatusReadInternals.spawn = (() =>
+			stubSpawnResult({
+				exitCode: 137,
+				signalCode: 'SIGKILL',
+			})) as typeof gitStatusReadInternals.spawn;
 		const result = await readGitStatusAsync(['status'], cwd);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
@@ -192,10 +216,78 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 			expect(out2).toContain('terminated before it answered');
 			expect(out2).not.toContain('failed to spawn');
 			expect(out2).not.toContain('Ensure git is available');
+
+			// PRR-027 pin: the ENOENT remedy arm the release fragment
+			// advertises ("install hint") must render at the close gate.
+			_closeGateInternals.runGit = async () =>
+				({
+					ok: false,
+					code: 'ENOENT',
+					status: null,
+					stderrTail: '',
+				}) satisfies GitStatusReadResult;
+			const out3 = await handleCloseCommand(root, []);
+			expect(out3).toContain('The git executable was not found (ENOENT)');
+			expect(out3).toContain('Install git on PATH');
+			expect(out3).toContain('USER-level config');
+			expect(out3).not.toContain('damaged .git/index');
+			expect(out3).toContain('Nothing was closed, archived, or destroyed');
 		} finally {
 			_closeGateInternals.runGit = originalRunGit;
 		}
 	}, 60_000);
+
+	test('the pre-destruction re-check carries the structured cause into its refusal (PRR-001 suffix branch)', async () => {
+		const cwd = canonicalMkdtemp('3317-fclass-recheck-');
+		tempRoots.push(cwd);
+		purgeInternals.runGitStatus = async () =>
+			({
+				ok: false,
+				code: 'ETIMEDOUT',
+				status: null,
+				stderrTail: '',
+			}) satisfies GitStatusReadResult;
+		const result = await recheckBeforeDestructive(cwd, []);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			// The generic sentence stays; the cause suffix is appended only
+			// when the reader produced a structured failure.
+			expect(result.reason).toContain(
+				'the confirmed scope cannot be re-verified',
+			);
+			expect(result.reason).toContain('. Cause: ');
+			expect(result.reason).toContain('timed out (ETIMEDOUT)');
+		}
+	}, 30_000);
+
+	test('an exact-bound read is NOT truncated; one byte over is EOUTPUT (strict > at the bound)', async () => {
+		const cwd = canonicalMkdtemp('3317-fclass-exact-');
+		tempRoots.push(cwd);
+		gitStatusReadInternals.resolveExecutable = async () => process.execPath;
+		const bound = 16 * 1024;
+		const exact = await readGitStatusAsync(
+			['-e', `require('node:fs').writeSync(1, Buffer.alloc(${bound}, 120));`],
+			cwd,
+			{ timeoutMs: 20_000, maxBufferBytes: bound },
+		);
+		expect(exact.ok).toBe(true);
+		if (exact.ok) {
+			expect(exact.stdout.length).toBe(bound);
+		}
+
+		const over = await readGitStatusAsync(
+			[
+				'-e',
+				`require('node:fs').writeSync(1, Buffer.alloc(${bound + 1}, 120));`,
+			],
+			cwd,
+			{ timeoutMs: 20_000, maxBufferBytes: bound },
+		);
+		expect(over.ok).toBe(false);
+		if (!over.ok) {
+			expect(over.code).toBe('EOUTPUT');
+		}
+	}, 30_000);
 
 	test('the shared rollback/checkpoint cause descriptor covers every reader class with a matched remedy', () => {
 		expect(
@@ -219,6 +311,15 @@ describe('git-status reader failure classes (#3317 feedback supplement)', () => 
 				stderrTail: '',
 			}),
 		).toContain('terminated before it answered');
+		// ENOENT carries the fragment's install hint at EVERY sink (round-2
+		// question: rollback/checkpoint previously fell to the generic arm).
+		expect(
+			describeUnreadableCause({
+				code: 'ENOENT',
+				status: null,
+				stderrTail: '',
+			}),
+		).toContain('install git on PATH');
 		expect(
 			describeUnreadableCause({
 				code: null,

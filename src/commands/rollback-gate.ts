@@ -234,6 +234,13 @@ export function describeUnreadableCause(measurement: {
 	if (measurement.code === 'ESIGNAL') {
 		return 'the git process was terminated before it answered (signal) — something external stopped it; retry, and inspect what terminates child processes if it recurs';
 	}
+	if (measurement.code === 'ENOENT') {
+		// Matches the fragment's install-hint bullet for EVERY sink that
+		// renders a cause (close, diagnose, rollback, checkpoint) — the
+		// rollback/checkpoint sinks previously fell to the generic code arm
+		// with no hint (review round 2 question).
+		return 'the git executable was not found (ENOENT) — install git on PATH, or set git.binary in your USER-level config, and retry';
+	}
 	if (measurement.status !== null && measurement.status !== undefined) {
 		return `git status exited with status ${measurement.status}${measurement.stderrTail ? `: ${measurement.stderrTail}` : ''} — repair the repository state and retry`;
 	}
