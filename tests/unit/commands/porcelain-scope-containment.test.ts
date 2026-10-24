@@ -39,8 +39,13 @@ const tempRoots: string[] = [];
 function makeRepo(): string {
 	const root = canonicalMkdtemp('c5-repo-');
 	tempRoots.push(root);
-	execSync('git init -q', { cwd: root });
-	execSync('git commit -q --allow-empty -m init', { cwd: root });
+	// CI runners carry no git user config — pass identity inline so the
+	// empty commit exists everywhere.
+	execSync('git -c init.defaultBranch=main init -q', { cwd: root });
+	execSync(
+		'git -c user.name=swarm-test -c user.email=swarm-test@example.com commit -q --allow-empty -m init',
+		{ cwd: root },
+	);
 	return root;
 }
 
