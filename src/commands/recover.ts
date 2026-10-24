@@ -232,11 +232,6 @@ export async function handleRecoverCommand(
 						'` if the task declares external_git evidence (or re-plan it to), or re-plan it as a thin coder dispatch so a settlement exists.',
 				);
 			}
-			if (!taskId && listed.length === 0) {
-				report.push(
-					'No coder settlement WALs found in .swarm/coder-settlements/ — nothing to recover.',
-				);
-			}
 		} else {
 			report.push(
 				'No coder settlement WALs found in .swarm/coder-settlements/ — nothing to recover.',

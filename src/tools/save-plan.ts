@@ -25,12 +25,12 @@ import {
 	getOrCreateProfileForIdentity,
 	getProfileLookupForIdentity,
 } from '../db/qa-gate-profile.js';
-import { taskEvidencePath } from '../evidence/task-file.js';
 import { isEpicModeConfigEnabled } from '../epic/config-gate.js';
 import {
 	computeSavePlanEpicShaping,
 	type EpicSavePlanShaping,
 } from '../epic/plan-shaping-seam.js';
+import { taskEvidencePath } from '../evidence/task-file.js';
 import { transitionTaskWorkflowEvidence } from '../gate-evidence';
 import { tryAcquireLock } from '../parallel/file-locks.js';
 import { writeCheckpoint } from '../plan/checkpoint';
@@ -296,29 +296,29 @@ function normalizePlanForReconcileComparison(
 						: {}),
 				}
 			: undefined,
-			phases: plan.phases.map((phase) => ({
-				id: phase.id,
-				name: phase.name,
-				status: phase.status,
-				tasks: phase.tasks.map((task) => ({
-					id: task.id,
-					phase: task.phase,
-					status: task.status,
-					size: task.size,
-					description: task.description,
-					depends: task.depends,
-					acceptance: task.acceptance,
-					files_touched: task.files_touched,
-					fr_refs: task.fr_refs,
-					// #3422: declaration edits are real semantic changes — a
-					// stale-projection reconcile that silently rewrote a
-					// declaration would bypass the revocation pass below.
-					evidence_class: task.evidence_class,
-					evidence_anchors: task.evidence_anchors,
-				})),
+		phases: plan.phases.map((phase) => ({
+			id: phase.id,
+			name: phase.name,
+			status: phase.status,
+			tasks: phase.tasks.map((task) => ({
+				id: task.id,
+				phase: task.phase,
+				status: task.status,
+				size: task.size,
+				description: task.description,
+				depends: task.depends,
+				acceptance: task.acceptance,
+				files_touched: task.files_touched,
+				fr_refs: task.fr_refs,
+				// #3422: declaration edits are real semantic changes — a
+				// stale-projection reconcile that silently rewrote a
+				// declaration would bypass the revocation pass below.
+				evidence_class: task.evidence_class,
+				evidence_anchors: task.evidence_anchors,
 			})),
-		};
-	}
+		})),
+	};
+}
 
 /**
  * Deterministic comparison key for an #3422 evidence declaration. Anchors are
@@ -1518,9 +1518,8 @@ export async function executeSavePlan(
 			// bundles are preserved as audit history, and a repair_idle
 			// reopen already forces a fresh attest on any reopened task.
 			const revocationErrors: string[] = [];
-			for (
-				const priorTask of existingPlan?.phases.flatMap((p) => p.tasks) ?? []
-			) {
+			for (const priorTask of existingPlan?.phases.flatMap((p) => p.tasks) ??
+				[]) {
 				if (priorTask.evidence_class !== 'external_git') continue;
 				const resolved = resolvedDeclarationById.get(priorTask.id);
 				// Absent from the incoming plan (undefined) and any changed

@@ -530,7 +530,23 @@ export async function executeAttestTask(
 		};
 	}
 
-	const existingEvidence = readTaskEvidenceRaw(directory, args.task_id);
+	// A corrupt existing evidence file must surface as a clean refusal (the
+	// tool's universal {success:false} shape), not an uncaught parse error.
+	let existingEvidence: ReturnType<typeof readTaskEvidenceRaw> = null;
+	try {
+		existingEvidence = readTaskEvidenceRaw(directory, args.task_id);
+	} catch (error) {
+		const message =
+			`the existing evidence file for task ${args.task_id} is unreadable (corrupt): ` +
+			`${error instanceof Error ? error.message.slice(0, 160) : String(error).slice(0, 160)}; ` +
+			'inspect the file before attesting';
+		return {
+			success: false,
+			message,
+			errors: [message],
+			task_id: args.task_id,
+		};
+	}
 	const generation = existingEvidence?.workflow?.generation ?? 0;
 	const transitionId = `attest:${args.task_id}:${startedAt}:${Math.random().toString(36).slice(2, 10)}`;
 	const bundle: ExternalEvidenceBundle = {

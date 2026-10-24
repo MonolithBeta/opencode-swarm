@@ -486,8 +486,10 @@ describe('save_plan external-evidence declaration surface (issue #3422)', () => 
 		// the plan-lock TASK_COMPLETION_CAS_MISMATCH validation for a
 		// reviewer-requiring phase: the attestation is gone, so completion
 		// fails closed naming the missing proof and the /swarm attest remedy.
+		// (The pre-lock reviewer precheck is bypassed for declared external
+		// tasks, so the under-lock refusal is the one that surfaces.)
 		expect(text).toContain(
-			'declares external_git evidence but no matched attestation exists yet',
+			'declares external_git evidence but has no current matched attestation',
 		);
 		expect(text).toContain('/swarm attest 9.1');
 	});

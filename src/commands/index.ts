@@ -34,6 +34,7 @@ export { handleAgentsCommand } from './agents';
 export { handleAnalyzeCommand } from './analyze';
 export { handleApproveWriteCommand } from './approve-write';
 export { handleArchiveCommand } from './archive';
+export { handleAttestCommand } from './attest';
 export { handleAutoProceedCommand } from './auto-proceed';
 export { handleBenchmarkCommand } from './benchmark';
 export { handleBrainstormCommand } from './brainstorm';
@@ -109,7 +110,6 @@ export { handlePlanCommand } from './plan';
 export { handlePreflightCommand } from './preflight';
 export { handlePromoteCommand } from './promote';
 export { handleQaGatesCommand } from './qa-gates';
-export { handleAttestCommand } from './attest';
 export { handleRecoverCommand } from './recover';
 export { handleHelpCommand } from './registry';
 export type {

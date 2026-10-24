@@ -2017,15 +2017,20 @@ export async function executeUpdateTaskStatus(
 			recoverTaskStateFromDelegations(args.task_id, directory);
 		}
 
-		// Check if the phase requires reviewer — non-code phases (acceptance, docs) may not
+		// Check if the phase requires reviewer — non-code phases (acceptance, docs) may not.
+		// Declared external-evidence tasks (#3422) also exempt: council gates and
+		// the reviewer precheck are code-QA machinery, inapplicable to a task whose
+		// completion authority is the pinned external anchors (the under-lock
+		// external arm owns the real admission check).
 		let phaseRequiresReviewer = true;
+		let taskDeclaresExternalEvidence = false;
 		try {
 			const planPath = path.join(directory, '.swarm', 'plan.json');
 			const planRaw = fs.readFileSync(planPath, 'utf-8');
 			const plan: {
 				phases: Array<{
 					id: number;
-					tasks: Array<{ id: string }>;
+					tasks: Array<{ id: string; evidence_class?: string }>;
 					required_agents?: string[];
 				}>;
 			} = JSON.parse(planRaw);
@@ -2038,6 +2043,9 @@ export async function executeUpdateTaskStatus(
 			) {
 				phaseRequiresReviewer = false;
 			}
+			taskDeclaresExternalEvidence =
+				taskPhase?.tasks.find((t) => t.id === args.task_id)?.evidence_class ===
+				'external_git';
 		} catch {
 			// plan.json missing or unreadable — default to requiring reviewer
 		}
@@ -2045,7 +2053,12 @@ export async function executeUpdateTaskStatus(
 		// Council gate: when council_mode is active, council evidence replaces
 		// Stage B (reviewer/test_engineer). Check council first so the right error
 		// is surfaced; when council is active, skip the reviewer gate entirely.
-		const councilCheck = checkCouncilGate(directory, args.task_id);
+		// Declared external-evidence tasks (#3422) bypass council — the external
+		// anchors replace every code-QA admission, and an external task can never
+		// reach the pre_check_passed + verdict state the council gate demands.
+		const councilCheck = taskDeclaresExternalEvidence
+			? { blocked: false as const, active: false as const }
+			: checkCouncilGate(directory, args.task_id);
 		if (councilCheck.blocked) {
 			// A blocked completion attempt is a real task failure with an in-band
 			// reason — the exact signal run memory exists to replay next session.
@@ -2069,7 +2082,13 @@ export async function executeUpdateTaskStatus(
 		// operator on SUCCESSFUL completions too, not only when the gate
 		// blocks — otherwise the degraded-fallback disclosure is discarded
 		// on exactly the common path it exists to describe.
-		if (phaseRequiresReviewer && !councilCheck.active) {
+		// Declared external-evidence tasks (#3422) skip this precheck: the
+		// under-lock external arm runs the authoritative admission instead.
+		if (
+			phaseRequiresReviewer &&
+			!councilCheck.active &&
+			!taskDeclaresExternalEvidence
+		) {
 			const reviewerCheck = await checkReviewerGateWithScope(
 				args.task_id,
 				directory,

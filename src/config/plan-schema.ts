@@ -85,7 +85,9 @@ export const ExternalEvidenceAnchorSchema = z.object({
 	expect: z.string().max(4096).optional(),
 	expect_prefix: z.string().min(1).max(4096).optional(),
 });
-export type ExternalEvidenceAnchor = z.infer<typeof ExternalEvidenceAnchorSchema>;
+export type ExternalEvidenceAnchor = z.infer<
+	typeof ExternalEvidenceAnchorSchema
+>;
 
 // Task schema
 export const TaskSchema = z.object({
