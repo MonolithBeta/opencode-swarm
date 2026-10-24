@@ -17,6 +17,7 @@ import { resetSwarmArtifactCache } from '../utils/swarm-artifact-cache';
 import { consumeConfirmToken, issueConfirmToken } from './destructive-purge';
 import { backupSwarmStateBeforeReset } from './reset-backup';
 import {
+	describeUnreadableCause,
 	measureGitDestruction,
 	ROLLBACK_GIT_KIND,
 	ROLLBACK_PHASE_KIND,
@@ -205,9 +206,12 @@ async function restoreGitCheckpointGated(
 	selected: GitCheckpoint,
 	flags: { confirmToken?: string; yes?: boolean },
 ): Promise<string> {
-	const measurement = measureGitDestruction(directory, selected.sha);
+	const measurement = await measureGitDestruction(directory, selected.sha);
 	if (measurement.kind === 'unreadable') {
-		return 'Error: cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.';
+		// #3317: name WHY the read failed when the async reader could tell
+		// (single shared source with the checkpoint tool sink).
+		const cause = describeUnreadableCause(measurement);
+		return `Error: cannot verify the working tree (git status unreadable; ${cause}) — refusing to restore without a preview.`;
 	}
 	if (flags.yes && flags.confirmToken) {
 		return 'Error: pass either --yes or --confirm=<token>, not both.';

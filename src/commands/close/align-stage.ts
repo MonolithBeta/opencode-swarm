@@ -57,7 +57,7 @@ export async function guardResetWithRecheck(
 	cwd: string,
 	options?: GuardedResetToMainOptions,
 ): Promise<GuardedResetToMainResult> {
-	const recheck = recheckBeforeDestructive(
+	const recheck = await recheckBeforeDestructive(
 		cwd,
 		options?.expectedDirtyPaths ?? [],
 	);
