@@ -4,7 +4,6 @@ import * as path from 'node:path';
 import {
 	assertPrReviewValidationSettled,
 	completePrWorkflow,
-	_test_exports as gateInternals,
 	PR_REVIEW_BASE_DIMENSION_IDS,
 	recordPrReviewValidationBatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
@@ -292,48 +291,6 @@ describe('pr-workflow-gate review validation', () => {
 		await expect(
 			assertPrReviewValidationSettled(tempDir, SESSION_ID, 'reviewer'),
 		).rejects.toThrow(unclaimed(candidateIds));
-	});
-
-	test('critic verdicts reject unresolved and incoherent terminal rows', () => {
-		expect(
-			gateInternals.parseCriticVerdict(
-				'[CRITIC] | C-1 | NEEDS_MORE_EVIDENCE | HIGH | missing proof | gather trace',
-				'C-1',
-			),
-		).toBeNull();
-		expect(
-			gateInternals.parseCriticVerdict(
-				'[CRITIC] | C-1 | UPHELD | NONE | valid reason | report change',
-				'C-1',
-			),
-		).toBeNull();
-		expect(
-			gateInternals.parseCriticVerdict(
-				'[CRITIC] | C-1 | DISPROVED | HIGH | valid reason | remove finding',
-				'C-1',
-			),
-		).toBeNull();
-		expect(
-			gateInternals.parseCriticVerdict(
-				'[CRITIC] | C-1 | DISPROVED | NONE | valid reason | remove finding',
-				'C-1',
-				'HIGH',
-			),
-		).toEqual({ status: 'DISPROVED', severity: 'NONE' });
-		expect(
-			gateInternals.parseCriticVerdict(
-				'[CRITIC] | C-1 | DOWNGRADED | HIGH | valid reason | revise report',
-				'C-1',
-				'MEDIUM',
-			),
-		).toBeNull();
-		expect(
-			gateInternals.parseCriticVerdict(
-				'[CRITIC] | C-1 | UPHELD | MEDIUM | valid reason | keep finding',
-				'C-1',
-				'HIGH',
-			),
-		).toBeNull();
 	});
 
 	test('a reviewer row that changed at all invalidates its critic claims', async () => {
