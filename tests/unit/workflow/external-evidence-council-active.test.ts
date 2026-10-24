@@ -1,12 +1,12 @@
+import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { closeProjectDb } from '../../../src/db/project-db.js';
 import { setGatesForIdentity } from '../../../src/db/qa-gate-profile.js';
 import {
 	computeExternalDeclarationDigest,
-	transitionTaskWorkflowEvidence,
 	type ExternalEvidenceBundle,
+	transitionTaskWorkflowEvidence,
 } from '../../../src/gate-evidence.js';
 import { executeUpdateTaskStatus } from '../../../src/tools/update-task-status.js';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
@@ -92,7 +92,9 @@ afterEach(() => {
 });
 
 test('a declared external task completes with an ACTIVE, unsatisfied council gate (F3 bypass)', async () => {
-	const anchors = [{ command: 'git rev-parse --verify HEAD', expect_prefix: '1' }];
+	const anchors = [
+		{ command: 'git rev-parse --verify HEAD', expect_prefix: '1' },
+	];
 	const bundle: ExternalEvidenceBundle = {
 		class: 'external_git',
 		transitionId: 'attest:5.1:static:0001',
