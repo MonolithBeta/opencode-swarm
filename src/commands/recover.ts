@@ -215,7 +215,7 @@ export async function handleRecoverCommand(
 					'',
 					'This is the git-external-deliverable shape (issue #3422): if the work was commit/push/gh ops done outside a coder lane, there is nothing to recover — the coder-mutation gate cannot be satisfied by recovery. Options:',
 					'1. If the task declares evidence_class external_git (or you can re-plan it to): run `/swarm attest ' + taskId + '` to verify the deliverable with its pinned anchors and admit completion.',
-					'2. Manual close: flip the task status in the TUI and record the wedge plus the close reason in your execution trace.',
+					'2. manual close — flip the task status in the TUI and record the wedge plus the close reason in your execution trace.',
 					'3. Re-plan the task as a thin coder dispatch (the coder executes the pinned-scope git commands) so a settlement exists and the normal gate applies.',
 				);
 			} else {

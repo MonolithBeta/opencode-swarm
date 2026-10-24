@@ -130,7 +130,7 @@ Three exits, in order of preference:
    external-evidence bundle that admits completion. A task whose PLAN status
    was left `blocked` as a wedge record first reopens via the audited
    `blocked → in_progress` transition, then attests, then completes.
-2. **Manual close** — flip the task status in the TUI and record the wedge plus
+2. **manual close** — flip the task status in the TUI and record the wedge plus
    the close reason in your execution trace.
 3. **Re-plan as a thin coder dispatch** — the coder executes the pinned-scope
    git commands, a settlement exists, and the normal completion gate applies.

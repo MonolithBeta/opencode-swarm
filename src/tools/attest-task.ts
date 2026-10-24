@@ -164,7 +164,10 @@ export function buildAnchorArgv(
 			refusal: `git "${subcommand}" is not in the read-only git subcommand allowlist (rev-list, log, rev-parse, show, diff)`,
 		};
 	}
-	const finalTokens: string[] = [tokens[0]!, tokens[1]!];
+	// finalTokens carries the SUBCOMMAND and its args only — the git binary
+	// and the producer's own safety prefix are prepended at the end, so the
+	// anchor's leading `git` token must not be duplicated.
+	const finalTokens: string[] = [subcommand];
 	for (let i = 2; i < tokens.length; i++) {
 		const token = tokens[i]!;
 		if (token.startsWith('-')) {
@@ -209,7 +212,7 @@ export function buildAnchorArgv(
 		if (REMOTE_HELPER_PATTERN.test(token)) {
 			return {
 				argv: null,
-				refusal: `anchor argument "${token.slice(0, 32)}" looks like a remote-helper URL; remote helpers can execute commands`,
+				refusal: `anchor argument "${token.slice(0, 32)}" looks like a remote-helper URL; remote helpers can execute commands and are not read-only git invocations`,
 			};
 		}
 		finalTokens.push(token);
@@ -244,12 +247,17 @@ async function runAnchor(
 	});
 	try {
 		const exited = await proc.exited;
-		const stdout = typeof proc.stdout === 'string' ? proc.stdout : '';
+		// bunSpawn exposes stdout/stderr as buffered BunCompatStreams, not
+		// plain strings; read them to text AFTER exit (the maxBuffer cap
+		// owns the bound).
+		const stdout = await proc.stdout.text();
 		if (exited !== 0) {
+			const stderr = await proc.stderr.text();
+			const detail = stderr.trim().slice(0, 200);
 			return {
 				exitCode: exited,
 				stdout,
-				refusal: `anchor command exited with code ${exited}`,
+				refusal: `anchor command exited with code ${exited}${detail ? `: ${detail}` : ''}`,
 			};
 		}
 		return { exitCode: exited, stdout, refusal: null };
@@ -319,7 +327,23 @@ export async function executeAttestTask(
 		return { success: false, message, errors: [message] };
 	}
 
-	const found = _internals.loadPlanTask(directory, args.task_id);
+	let found: ReturnType<typeof _internals.loadPlanTask>;
+	try {
+		found = _internals.loadPlanTask(directory, args.task_id);
+	} catch (error) {
+		// A schema-invalid plan must surface as a clean refusal, never a
+		// thrown zod error (#3422): an anchor the schema already forbids
+		// (e.g. an empty expect_prefix, which would match any output) is
+		// reported through the same `expect` vocabulary attest uses for
+		// malformed anchors.
+		const message = error instanceof Error ? error.message : String(error);
+		if (message.includes('expect_prefix') || message.includes('evidence_anchors')) {
+			const refusal =
+				'the plan declares an invalid external-evidence anchor: every anchor must carry expect and/or a non-empty expect_prefix (an empty prefix would match any output)';
+			return { success: false, message: refusal, errors: [refusal], task_id: args.task_id };
+		}
+		throw error;
+	}
 	if (!found) {
 		const message = `Task ${args.task_id} not found in the plan at ${directory}`;
 		return { success: false, message, errors: [message], task_id: args.task_id };
