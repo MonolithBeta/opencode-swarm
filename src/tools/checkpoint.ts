@@ -9,6 +9,7 @@ import {
 } from '../commands/destructive-purge';
 import { backupTrackedChangesBeforeRollback } from '../commands/reset-backup';
 import {
+	describeUnreadableCause,
 	measureGitDestruction,
 	ROLLBACK_GIT_KIND,
 	trackedDirtyCandidates,
@@ -783,11 +784,11 @@ export async function saveCheckpointRecord(
 	});
 }
 
-function handleRestore(
+async function handleRestore(
 	label: string,
 	directory: string,
 	confirmToken?: string,
-): string {
+): Promise<string> {
 	try {
 		const log = readCheckpointLog(directory);
 		const checkpoint = log.checkpoints.find(
@@ -806,12 +807,14 @@ function handleRestore(
 		// contract. The candidate set is derived by the shared rollback-gate
 		// module so a token minted by /swarm rollback or /swarm checkpoint
 		// (command layer) is consumable here at the sink — and vice versa.
-		const measurement = measureGitDestruction(directory, checkpoint.sha);
+		const measurement = await measureGitDestruction(directory, checkpoint.sha);
 		if (measurement.kind === 'unreadable') {
+			// #3317: name WHY the read failed when the async reader could tell
+			// (single shared source with the /swarm rollback command).
+			const cause = describeUnreadableCause(measurement);
 			return serializeResult('restore', {
 				success: false,
-				error:
-					'cannot verify the working tree (git status unreadable) — refusing to restore without a preview. Retry, or inspect git status manually.',
+				error: `cannot verify the working tree (git status unreadable; ${cause}) — refusing to restore without a preview.`,
 			});
 		}
 		if (measurement.dirtyRelPaths.length > 0) {
@@ -1250,7 +1253,7 @@ export const checkpoint: ToolDefinition = createSwarmTool({
 					action: 'restore',
 					directory,
 					operationKey: `restore-${label!}`,
-					run: async () => handleRestore(label!, directory, confirmToken),
+					run: async () => await handleRestore(label!, directory, confirmToken),
 				});
 			case 'list':
 				return handleList(directory);
