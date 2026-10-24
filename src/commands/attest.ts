@@ -1,5 +1,3 @@
-import { executeAttestTask } from '../tools/attest-task.js';
-
 /**
  * `/swarm attest <task_id>` (issue #3422): verify a git-external deliverable
  * with the task's pinned read-only git anchors and record the durable
@@ -25,6 +23,11 @@ export async function handleAttestCommand(
 		].join('\n');
 	}
 	const taskId = positional[0]!;
+	// Lazy import: a static one would pull tools/update-task-status.js's heavy
+	// state graph into every src/commands barrel consumer and break the
+	// close-command suites that mock src/state.js with a partial stub object
+	// ("Export named 'hasModifiedFilesForTask' not found", the #2415 class).
+	const { executeAttestTask } = await import('../tools/attest-task.js');
 	const result = await executeAttestTask(
 		{
 			task_id: taskId,
