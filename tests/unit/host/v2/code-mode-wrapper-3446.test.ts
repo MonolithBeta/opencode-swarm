@@ -1,11 +1,10 @@
 /**
  * #3446 — the v2 adapter marks the host's Code Mode `execute` wrapper per call
- * so the Full-Auto classifier can tell it from a plugin- or MCP-provided tool
- * that merely shares the name.
+ * for the Full-Auto classifier. The mark is not proof of provenance (a v2 tool
+ * event carries no owner field), so the pass-through is an operator opt-in.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import type { PluginConfig } from '../../../../src/config';
 import {
@@ -14,9 +13,14 @@ import {
 } from '../../../../src/full-auto/state';
 import {
 	isCodeModeWrapperCall,
+	recordCodeModeWrapperCall,
 	resetCodeModeWrapperCalls,
 } from '../../../../src/hooks/code-mode-wrapper';
 import { createFullAutoPermissionHook } from '../../../../src/hooks/full-auto-permission';
+import {
+	configureV2ToolBeforeBudget,
+	resetV2ToolBeforeBudget,
+} from '../../../../src/host/v2/hook-budget';
 import { registerV2ToolHooks } from '../../../../src/host/v2/hooks';
 import type {
 	V1HooksSubset,
@@ -27,6 +31,18 @@ import {
 	_internals as stateInternals,
 	swarmState,
 } from '../../../../src/state';
+import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+
+function makeHooksWith(overrides: Record<string, unknown>): V1HooksSubset {
+	return {
+		tool: {},
+		agent: {},
+		config: async () => {},
+		event: async () => {},
+		dispose: async () => {},
+		...overrides,
+	} as unknown as V1HooksSubset;
+}
 
 function makeHooks(
 	onBefore: (input: Record<string, unknown>) => void = () => {},
@@ -101,9 +117,12 @@ describe('v2 adapter marks the Code Mode execute wrapper (#3446)', () => {
 		expect(markedWhenChainRan).toBe(true);
 	});
 
-	test('clears the mark once the call completes', async () => {
+	test('the mark is consumed by the before chain and cleared when it ends; the after hook clears defensively', async () => {
 		const { before, after } = await capture(makeHooks());
 		await before?.(event());
+		expect(isCodeModeWrapperCall('s1', 'c1')).toBe(false);
+		// Defensive: a mark recorded some other way is still dropped by the after hook.
+		recordCodeModeWrapperCall('s1', 'c1');
 		expect(isCodeModeWrapperCall('s1', 'c1')).toBe(true);
 		await after?.(event({ status: 'completed', result: { content: 'ok' } }));
 		expect(isCodeModeWrapperCall('s1', 'c1')).toBe(false);
@@ -139,7 +158,7 @@ describe('real v2 adapter + real Full-Auto permission hook (#3446)', () => {
 	let origClient: typeof stateInternals.swarmState.opencodeClient;
 
 	beforeEach(() => {
-		tmp = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'v2-hook-')));
+		tmp = canonicalMkdtemp('v2-hook-');
 		fs.mkdirSync(path.join(tmp, '.swarm'), { recursive: true });
 		origClient = stateInternals.swarmState.opencodeClient;
 		stateInternals.swarmState.opencodeClient = null; // any critic dispatch fails closed
@@ -201,5 +220,58 @@ describe('real v2 adapter + real Full-Auto permission hook (#3446)', () => {
 			runThroughAdapter(true, { code: "return await fetch('http://x');" }),
 		).rejects.toThrow();
 		expect(loadFullAutoRunState(tmp, SESSION)?.status).toBe('paused');
+	});
+});
+
+describe('mark lifetime on a failed before chain (#3446 review F-4)', () => {
+	function rejectingHooks(delayMs = 0): V1HooksSubset {
+		return makeHooksWith({
+			'tool.execute.before': async () => {
+				if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+				throw new Error('FULL_AUTO_BLOCKED: test rejection');
+			},
+		});
+	}
+
+	test('a rejected before chain does not leave the mark behind', async () => {
+		const { before } = await capture(rejectingHooks());
+		await expect(before?.(event({ id: 'rej-1' }))).rejects.toThrow(
+			/FULL_AUTO_BLOCKED/,
+		);
+		expect(isCodeModeWrapperCall('s1', 'rej-1')).toBe(false);
+	});
+
+	test('a timed-out before chain does not leave the mark behind', async () => {
+		configureV2ToolBeforeBudget({ oversight: { hook_timeout_ms: 30 } });
+		const slow = makeHooksWith({
+			'tool.execute.before': async () => {
+				await new Promise((r) => setTimeout(r, 250));
+			},
+		});
+		const { before } = await capture(slow);
+		await expect(before?.(event({ id: 'slow-1' }))).rejects.toThrow(
+			/exceeded budget/,
+		);
+		expect(isCodeModeWrapperCall('s1', 'slow-1')).toBe(false);
+		resetV2ToolBeforeBudget();
+	});
+
+	test('the mark is present while the chain runs and gone afterwards', async () => {
+		let during: boolean | undefined;
+		const { before } = await capture(
+			makeHooks(() => {
+				during = isCodeModeWrapperCall('s1', 'life-1');
+			}),
+		);
+		await before?.(event({ id: 'life-1' }));
+		expect(during).toBe(true);
+		expect(isCodeModeWrapperCall('s1', 'life-1')).toBe(false);
+	});
+
+	test('a nested call sharing the wrapper id does not matter once the wrapper chain finished', async () => {
+		const { before } = await capture(makeHooks());
+		await before?.(event({ id: 'shared-1' }));
+		await before?.(event({ tool: 'swarm_status', id: 'shared-1', input: {} }));
+		expect(isCodeModeWrapperCall('s1', 'shared-1')).toBe(false);
 	});
 });

@@ -5,20 +5,18 @@
  */
 import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import * as fs from 'node:fs';
-import * as os from 'node:os';
 import * as path from 'node:path';
 import { FULL_AUTO_CRITIC_DENIED_TOOLS } from '../../../src/full-auto/critic-tools';
 import { dispatchFullAutoOversight } from '../../../src/full-auto/oversight';
 import { startFullAutoRun } from '../../../src/full-auto/state';
 import { _internals as stateInternals } from '../../../src/state';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 let tmpDir: string;
 let origClient: typeof stateInternals.swarmState.opencodeClient;
 
 beforeEach(() => {
-	tmpDir = fs.realpathSync(
-		fs.mkdtempSync(path.join(os.tmpdir(), 'full-auto-critic-bounds-')),
-	);
+	tmpDir = canonicalMkdtemp('full-auto-critic-bounds-');
 	fs.mkdirSync(path.join(tmpDir, '.swarm'), { recursive: true });
 	origClient = stateInternals.swarmState.opencodeClient;
 });

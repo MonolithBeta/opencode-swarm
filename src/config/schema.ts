@@ -4531,7 +4531,7 @@ export const PluginConfigSchema = z.object({
 					// a tool is host-owned, so a third-party tool that merely shares
 					// the name `execute` cannot be told apart. Enable only when you
 					// control the plugin and MCP set (#3446).
-					trust_code_mode_wrapper: z.boolean().default(false),
+					trust_code_mode_wrapper: z.boolean().optional(),
 				})
 				.default(() => ({
 					enabled: true,
@@ -4561,7 +4561,6 @@ export const PluginConfigSchema = z.object({
 						'dist',
 					],
 					allow_defaults: true,
-					trust_code_mode_wrapper: false,
 				})),
 			denials: z
 				.object({
@@ -4668,7 +4667,6 @@ export const PluginConfigSchema = z.object({
 					'dist',
 				],
 				allow_defaults: true,
-				trust_code_mode_wrapper: false,
 			},
 			denials: {
 				max_consecutive: 3,

@@ -71,6 +71,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	resetCodeModeWrapperCalls();
 	stateInternals.swarmState.opencodeClient = origClient;
 	swarmState.activeAgent.delete(SESSION_ID);
 	swarmState.agentSessions.delete(SESSION_ID);

@@ -104,9 +104,10 @@ export interface FullAutoClassifierInput {
 	changedFiles?: string[];
 	fullAutoConfig: FullAutoPolicyConfig | undefined;
 	/**
-	 * True only for a call the OpenCode v2 adapter marked as the host's Code
-	 * Mode `execute` wrapper (see `src/hooks/code-mode-wrapper.ts`). A plugin-
-	 * or MCP-provided tool that merely shares the name is never marked.
+	 * True for a call the OpenCode v2 adapter marked as the host's Code Mode
+	 * `execute` wrapper (see `src/hooks/code-mode-wrapper.ts`). The mark is not
+	 * proof of provenance (a same-named third-party tool is marked too), so it
+	 * is only honoured with the operator opt-in `trust_code_mode_wrapper`.
 	 */
 	hostCodeModeWrapper?: boolean;
 	/**

@@ -50,7 +50,7 @@ describe('isSingleToolCallProgram — rejects anything that can run non-tool cod
 		['prototype segment', 'return tools.x.prototype.y({});'],
 		['proto key in argument', 'return tools.x({ __proto__: { a: 1 } });'],
 		['identifier value', 'return tools.x({ a: b });'],
-		['call in value', 'return tools.x({ a: Date.now() });'],
+		['call in value', 'return tools.x({ a: Math.random() });'],
 		['spread', 'return tools.x(...args);'],
 		['computed object key', 'return tools.x({ ["a"]: 1 });'],
 		['arrow function', 'return tools.x(() => 1);'],
@@ -90,5 +90,41 @@ describe('isSingleToolCallProgram — input hygiene', () => {
 		for (const v of [undefined, null, 42, {}, []]) {
 			expect(isSingleToolCallProgram(v as unknown as string)).toBe(false);
 		}
+	});
+});
+
+describe('isSingleToolCallProgram — exact boundaries', () => {
+	const pad = (len: number): string => {
+		const head = 'return tools.x({ a: "';
+		const tail = '" });';
+		return head + 'a'.repeat(len - head.length - tail.length) + tail;
+	};
+	const nest = (n: number): string =>
+		`return tools.x(${'['.repeat(n)}${']'.repeat(n)});`;
+
+	test('program length: 20000 chars accepted, 20001 rejected', () => {
+		expect(pad(20_000)).toHaveLength(20_000);
+		expect(isSingleToolCallProgram(pad(20_000))).toBe(true);
+		expect(isSingleToolCallProgram(pad(20_001))).toBe(false);
+	});
+
+	test('argument nesting: 9 levels accepted, 10 rejected', () => {
+		expect(isSingleToolCallProgram(nest(9))).toBe(true);
+		expect(isSingleToolCallProgram(nest(10))).toBe(false);
+	});
+
+	test('bracketed tool name: 100 chars accepted, 101 rejected', () => {
+		expect(isSingleToolCallProgram(`tools["${'a'.repeat(100)}"]({})`)).toBe(
+			true,
+		);
+		expect(isSingleToolCallProgram(`tools["${'a'.repeat(101)}"]({})`)).toBe(
+			false,
+		);
+	});
+
+	test('a hyphenated MCP-style bracket name is accepted', () => {
+		expect(isSingleToolCallProgram('tools["mcp-mesh"].mesh_call({})')).toBe(
+			true,
+		);
 	});
 });

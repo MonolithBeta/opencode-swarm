@@ -4,17 +4,21 @@
  * process-spawning commands, so it is not a safety classification.
  */
 import { describe, expect, test } from 'bun:test';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { executeSwarmCommand } from '../../../src/commands/command-dispatch';
+import { classifySwarmCommandToolUse } from '../../../src/commands/tool-policy';
 import {
 	isSwarmCommandReadOnly,
 	READ_ONLY_SWARM_COMMANDS,
 } from '../../../src/hooks/full-auto-permission';
+import { canonicalMkdtemp } from '../../helpers/tmpdir';
 
 describe('isSwarmCommandReadOnly', () => {
 	test('true for read-only commands the tool policy permits', () => {
 		for (const args of [
 			{ command: 'status', args: [] },
 			{ command: 'status' },
-			{ command: 'diagnose', args: [] },
 			{ command: 'sdd status', args: [] },
 			{ command: 'sdd validate', args: [] },
 			{ command: 'show-plan', args: [] },
@@ -27,6 +31,9 @@ describe('isSwarmCommandReadOnly', () => {
 
 	test('false for state-changing or process-spawning commands that the tool policy allows an agent to run', () => {
 		for (const command of [
+			'diagnose',
+			'doctor tools',
+			'pr status',
 			'sdd project',
 			'auto-proceed',
 			'guardrail reset',
@@ -95,4 +102,52 @@ describe('isSwarmCommandReadOnly', () => {
 			expect(Object.hasOwn(COMMAND_REGISTRY, key)).toBe(true);
 		}
 	});
+});
+
+describe('READ_ONLY_SWARM_COMMANDS — effect confinement', () => {
+	// Snapshot every file outside `.swarm/` (path, size, mtime) so a command that
+	// touches source, plan or any operator-visible file is caught.
+	function snapshot(root: string): Map<string, string> {
+		const out = new Map<string, string>();
+		const walk = (dir: string): void => {
+			for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+				const full = path.join(dir, entry.name);
+				const rel = path.relative(root, full);
+				if (rel === '.swarm' || rel.startsWith(`.swarm${path.sep}`)) continue;
+				if (entry.isDirectory()) {
+					out.set(`${rel}/`, 'dir');
+					walk(full);
+				} else {
+					const st = fs.statSync(full);
+					out.set(rel, `${st.size}:${st.mtimeMs}`);
+				}
+			}
+		};
+		walk(root);
+		return out;
+	}
+
+	test('every key leaves the tree outside .swarm/ untouched', async () => {
+		for (const key of [...READ_ONLY_SWARM_COMMANDS].sort()) {
+			const dir = canonicalMkdtemp('ro-swarm-cmd-');
+			try {
+				fs.writeFileSync(path.join(dir, 'README.md'), 'x\n');
+				const before = snapshot(dir);
+				await executeSwarmCommand({
+					directory: dir,
+					agents: {},
+					sessionID: 'ro-confinement',
+					tokens: key.split(' '),
+					policy: classifySwarmCommandToolUse,
+				});
+				const after = snapshot(dir);
+				expect({ key, tree: [...after] }).toEqual({
+					key,
+					tree: [...before],
+				});
+			} finally {
+				fs.rmSync(dir, { recursive: true, force: true });
+			}
+		}
+	}, 120_000);
 });

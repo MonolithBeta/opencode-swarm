@@ -5,9 +5,12 @@
  * tool whose input is a JS program (`{ code }`); every nested `tools.<name>()`
  * call is dispatched through the tool.execute.before chain under its own name.
  * Only the v2 adapter sees the host's real tool id, so only the adapter can
- * say a call IS that wrapper. A plugin- or MCP-provided tool that merely shares
- * the name `execute` and a string `code` argument (any host) is never marked,
- * and the Full-Auto classifier keeps escalating it.
+ * mark a call. The mark is NOT proof of provenance: a v2 tool event is just
+ * {tool, sessionID, agent, messageID, id, input}, so a plugin- or MCP-provided
+ * tool that shares the name `execute` and takes a string `code` is marked too.
+ * That is why the Full-Auto classifier only honours the mark when the operator
+ * opts in (`permission_policy.trust_code_mode_wrapper`, default false) and the
+ * program is exactly one plain-data tool call. On a v1 host nothing is marked.
  *
  * Side-channel shape mirrors `src/sandbox/skip-state.ts` (keyed by
  * session + call, bounded, FIFO-evicted) so session state stays bounded

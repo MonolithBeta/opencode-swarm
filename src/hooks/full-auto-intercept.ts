@@ -1115,7 +1115,7 @@ export function createFullAutoInterceptHook(
  * Builds additional context to append to the autonomous oversight prompt.
  * This provides the architect's question/output for the critic to evaluate.
  */
-function buildCriticContext(
+export function buildCriticContext(
 	architectOutput: string,
 	escalationType: 'phase_completion' | 'question',
 ): string {
@@ -1136,6 +1136,8 @@ ${truncatedOutput}
 
 ### YOUR TASK:
 Evaluate the architect's output and provide a response. If this is a question, answer it directly if you have sufficient information. If this is a phase completion, verify all tasks are complete and provide APPROVED or NEEDS_REVISION.
+
+Be brief: make at most 5 tool calls, keep every search inside the project directory (never search or recurse over the home directory), and answer as soon as you have enough evidence. If you cannot verify quickly, say so.
 
 Remember: You are the sole quality gate. Default posture is REJECT unless you have positive evidence of correctness.`;
 }

@@ -89,16 +89,23 @@ export interface FullAutoPermissionHookOptions {
  * the tool policy's agent allowlist, which also contains state-changing and
  * process-spawning commands (`auto-proceed`, `guardrail reset`, `attest`,
  * `ci-simulate`, `gate-audit`, `review`, `post-mortem`, `pr subscribe`,
- * `sdd project`, `*-opt` runs, ...). Canonical keys; their handler modules
- * contain no write or spawn calls (#3446).
+ * `sdd project`, `*-opt` runs, ...). Canonical keys.
+ *
+ * The invariant is: no change to source, plan, gates or any operator-visible
+ * state, and no process spawn or network egress. Some of these commands do
+ * refresh bookkeeping under `.swarm/` (e.g. `report` writes `.swarm/swarm.db`
+ * and a cohort manifest, `memory *` create `.swarm/memory/memory.db`, and
+ * commands that load the plan may regenerate `plan.md`): writes are confined
+ * to `.swarm/`, which `tests/unit/hooks/full-auto-swarm-command-policy-3446.test.ts`
+ * pins by running every key and diffing the tree outside `.swarm/`. Keys that
+ * were shown to spawn processes (`diagnose`, `doctor tools`) or contact
+ * GitHub (`pr status`) are NOT in this set.
  */
 export const READ_ONLY_SWARM_COMMANDS: ReadonlySet<string> = new Set([
 	'status',
 	'history',
 	'show-plan',
 	'help',
-	'diagnose',
-	'doctor tools',
 	'agents',
 	'lanes',
 	'learning',
@@ -125,7 +132,6 @@ export const READ_ONLY_SWARM_COMMANDS: ReadonlySet<string> = new Set([
 	'memory link status',
 	'harness-opt history',
 	'harness-opt status',
-	'pr status',
 ]);
 
 /**

@@ -41,8 +41,12 @@ const BLOCKED_NAMES = new Set([
 
 const IDENT_START = /[A-Za-z_$]/;
 const IDENT_PART = /[A-Za-z0-9_$]/;
-/** Characters allowed in a bracketed tool-name literal, e.g. tools["mcp-mesh"]. */
-const SEGMENT_NAME = /^[A-Za-z0-9_.-]{1,100}$/;
+/**
+ * Characters allowed in a bracketed tool-name literal, e.g. tools["mcp-mesh"].
+ * No `.`: a dotted literal such as "a.b" could be resolved by the host as a
+ * path, which is not a plain segment.
+ */
+const SEGMENT_NAME = /^[A-Za-z0-9_-]{1,100}$/;
 const WHITESPACE = /[ \t\r\n]/;
 const SIMPLE_ESCAPES = new Set(['n', 'r', 't', '"', "'", '\\', '/']);
 

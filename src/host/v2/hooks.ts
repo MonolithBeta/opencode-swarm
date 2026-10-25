@@ -61,6 +61,16 @@ const V2_HOOK_TIMEOUT_MS = 60_000;
 
 /** Mirrors `isTaskToolId`'s shape (dotted SDK form OR normalized base name).
  * Exported for the event pump's progress-event gating (issue #3401). */
+export function isV2SubagentToolId(
+	toolName: string | null | undefined,
+): boolean {
+	if (!toolName) return false;
+	if (toolName.includes('.')) {
+		return /^tool\.[^.:]+\.subagent$/i.test(toolName);
+	}
+	return normalizeToolNameLowerCase(toolName) === 'subagent';
+}
+
 /**
  * True for the host's Code Mode wrapper (#3446): the host-owned `execute`
  * tool whose input is a JS program. The host id is matched exactly (no
@@ -75,16 +85,6 @@ export function isV2CodeModeWrapper(event: {
 		isPlainObject(event.input) &&
 		typeof (event.input as Record<string, unknown>).code === 'string'
 	);
-}
-
-export function isV2SubagentToolId(
-	toolName: string | null | undefined,
-): boolean {
-	if (!toolName) return false;
-	if (toolName.includes('.')) {
-		return /^tool\.[^.:]+\.subagent$/i.test(toolName);
-	}
-	return normalizeToolNameLowerCase(toolName) === 'subagent';
 }
 
 /**
@@ -228,46 +228,54 @@ async function onV2ToolBefore(
 	// The host's Code Mode wrapper (#3446): only this adapter sees the host's
 	// real tool id, so it marks the call for the Full-Auto classifier. Nested
 	// `tools.<name>()` calls arrive as their own events under their own names.
-	if (isV2CodeModeWrapper(event)) {
+	// The mark is consumed by the permission hook inside this before chain, so
+	// it is cleared in `finally` — a rejected or timed-out chain must not leave
+	// it behind (the after hook may never fire for a rejected before).
+	const wrapperMarked = isV2CodeModeWrapper(event);
+	if (wrapperMarked) {
 		recordCodeModeWrapperCall(event.sessionID, event.id);
 	}
-	const output = {
-		args: isSubagent ? mapV2SubagentArgsToV1(event.input) : event.input,
-	};
-	const budgetMs = resolveV2ToolBeforeBudgetMs(
-		isFullAutoRunActive(directory, event.sessionID),
-	);
-	await withTimeout(
-		Promise.resolve(
-			handler(
-				{
-					tool: isSubagent ? 'task' : event.tool,
-					sessionID: event.sessionID,
-					callID: event.id,
-					agent: normalizeV2AgentRef(event.agent),
-					messageID: event.messageID,
-				},
-				output,
+	try {
+		const output = {
+			args: isSubagent ? mapV2SubagentArgsToV1(event.input) : event.input,
+		};
+		const budgetMs = resolveV2ToolBeforeBudgetMs(
+			isFullAutoRunActive(directory, event.sessionID),
+		);
+		await withTimeout(
+			Promise.resolve(
+				handler(
+					{
+						tool: isSubagent ? 'task' : event.tool,
+						sessionID: event.sessionID,
+						callID: event.id,
+						agent: normalizeV2AgentRef(event.agent),
+						messageID: event.messageID,
+					},
+					output,
+				),
 			),
-		),
-		budgetMs,
-		new Error(
-			`[opencode-swarm] v2: tool.execute.before exceeded budget (${budgetMs} ms; set full_auto.oversight.hook_timeout_ms to change)`,
-		),
-	);
-	if (isSubagent) {
-		// Write back IN PLACE onto the retained original input object: the v2
-		// host may hold its own reference to the event payload (the v1
-		// invariant-10 class), so reassignment could be invisible to it.
-		const mapped = mapV1TaskArgsToV2(output.args);
-		if (isPlainObject(event.input) && isPlainObject(mapped)) {
-			for (const key of Object.keys(event.input)) {
-				delete (event.input as Record<string, unknown>)[key];
+			budgetMs,
+			new Error(
+				`[opencode-swarm] v2: tool.execute.before exceeded budget (${budgetMs} ms; set full_auto.oversight.hook_timeout_ms to change)`,
+			),
+		);
+		if (isSubagent) {
+			// Write back IN PLACE onto the retained original input object: the v2
+			// host may hold its own reference to the event payload (the v1
+			// invariant-10 class), so reassignment could be invisible to it.
+			const mapped = mapV1TaskArgsToV2(output.args);
+			if (isPlainObject(event.input) && isPlainObject(mapped)) {
+				for (const key of Object.keys(event.input)) {
+					delete (event.input as Record<string, unknown>)[key];
+				}
+				Object.assign(event.input as Record<string, unknown>, mapped);
 			}
-			Object.assign(event.input as Record<string, unknown>, mapped);
+		} else {
+			event.input = output.args;
 		}
-	} else {
-		event.input = output.args;
+	} finally {
+		if (wrapperMarked) clearCodeModeWrapperCall(event.sessionID, event.id);
 	}
 }
 

@@ -5156,8 +5156,7 @@
             "src/tools/phase-complete.ts",
             "dist"
           ],
-          "allow_defaults": true,
-          "trust_code_mode_wrapper": false
+          "allow_defaults": true
         },
         "denials": {
           "max_consecutive": 3,
@@ -5256,8 +5255,7 @@
               "src/tools/phase-complete.ts",
               "dist"
             ],
-            "allow_defaults": true,
-            "trust_code_mode_wrapper": false
+            "allow_defaults": true
           },
           "type": "object",
           "properties": {
@@ -5315,7 +5313,6 @@
               "type": "boolean"
             },
             "trust_code_mode_wrapper": {
-              "default": false,
               "type": "boolean"
             }
           }
