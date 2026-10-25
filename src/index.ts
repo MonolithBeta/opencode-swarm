@@ -6454,6 +6454,11 @@ function applySwarmRegistrationTables(
 			description:
 				'Use /swarm recover to settle wedged coder settlements [task_id] [--force]',
 		},
+		'swarm-attest': {
+			template: '/swarm attest $ARGUMENTS',
+			description:
+				'Use /swarm attest to verify a git-external deliverable with pinned read-only anchors [task_id]',
+		},
 		'swarm-simulate': {
 			template: '/swarm simulate $ARGUMENTS',
 			description: 'Use /swarm simulate to run a simulated agent session',
