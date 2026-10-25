@@ -1866,7 +1866,7 @@ export const COMMAND_REGISTRY = {
 		description:
 			'Clear session state while preserving plan, evidence, and knowledge',
 		details:
-			"Deletes only .swarm/session/state.json and other session files. Clears in-memory agent sessions, delegation chains, and active-agent mappings. Preserves plan, evidence, and knowledge. Also releases this session's pending knowledge-gate obligations (#2398) and recovers stale coder settlements so dispatches cannot wedge on CODER_DISPATCH_IN_PROGRESS (#2268). Auto-backs up removed files to .swarm/reset-backups/ (newest 5 kept).",
+			"Deletes .swarm/session/state.json plus other session files; clears in-memory sessions, chains, and active-agent maps. Preserves plan, evidence, and knowledge; releases this session's pending knowledge-gate obligations (#2398); recovers coder settlements wedged on CODER_DISPATCH_IN_PROGRESS (#2268); backs up to .swarm/reset-backups/ (newest 5 kept). If a cleanup step fails, the closing guard stays closed by design, writes pause (an advisory says why), and a reset re-run or restart recovers.",
 		args: '--confirm=<token> (purge dirty/live lanes)',
 		category: 'utility',
 		toolPolicy: 'restricted',
