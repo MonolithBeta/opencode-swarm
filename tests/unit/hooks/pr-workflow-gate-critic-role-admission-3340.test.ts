@@ -13,27 +13,11 @@
 // `swarm-pr-review:critic` artifacts instead of only checking that the artifact
 // role matches the delegation record.
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { mkdirSync } from 'node:fs';
-import * as path from 'node:path';
-import { storeLaneOutput } from '../../../src/background/lane-output-store.js';
-import {
-	appendDelegationTransition,
-	recordPendingDelegation,
-} from '../../../src/background/pending-delegations.js';
 import {
 	_test_exports,
-	activatePrWorkflow,
-	assertPrFeedbackGatePhaseSettled,
-	declarePrFeedbackInventory,
-	enforcePrFeedbackVerificationOwnership,
 	PR_REVIEW_BASE_DIMENSION_IDS,
-	type PrFeedbackGatePhase,
-	recordPrFeedbackGateBatch,
-	recordPrFeedbackStageA,
 	recordPrReviewValidationBatch,
 } from '../../../src/hooks/pr-workflow-gate.js';
-import { safeRmRecursive } from '../../helpers/safe-test-dir.js';
-import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 import {
 	establishReviewPrerequisites,
 	HEAD_SHA,
