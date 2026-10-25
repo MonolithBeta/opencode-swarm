@@ -576,6 +576,11 @@ function isClosingRefusal(message: string): boolean {
 function adviseClosingStop(directory: string): void {
 	const status = getSnapshotCoordinationStatus(directory);
 	if (status.state !== 'closing') return;
+	// PRR-001 (#3445 review): an in-flight reset window (closing with no
+	// origin markers) stays silent WITHOUT consuming the root's one-shot
+	// advisory budget — the add below must only run on paths that emit, so
+	// a later genuine strand on this root is still loud.
+	if (!status.pendingPriorAttempt && !status.closingReason) return;
 	const root = canonicalProjectKey(directory);
 	if (closingStopAdvisedRoots.has(root)) return;
 	if (closingStopAdvisedRoots.size >= MAX_CLOSING_STOP_ROOTS) {
@@ -634,8 +639,12 @@ export async function writeSnapshot(
 		);
 		await ensureSnapshotCoordinationReady(directory);
 		// Readiness succeeded: the stop (if any) is over — re-arm the
-		// writer advisory for a future strand on this root.
-		closingStopAdvisedRoots.delete(canonicalProjectKey(directory));
+		// writer advisory for a future strand on this root. Size-guarded so
+		// the common path (nothing ever advised) skips the extra
+		// canonicalize entirely (PRR-018, #3445 review).
+		if (closingStopAdvisedRoots.size > 0) {
+			closingStopAdvisedRoots.delete(canonicalProjectKey(directory));
+		}
 		// Build SnapshotData object from state
 		const snapshot: SnapshotData = {
 			version: 3,

@@ -728,7 +728,7 @@ Clear session state while preserving plan, evidence, and knowledge
 
 **Args:** `--confirm=<token> (purge dirty/live lanes)`
 
-Deletes .swarm/session/state.json and other session files; clears in-memory sessions, delegation chains, and active-agent mappings. Preserves plan, evidence, and knowledge; releases knowledge-gate obligations (#2398); recovers stale coder settlements (#2268); backs up to .swarm/reset-backups/. If a cleanup step fails (SQLite rows, projection, or state.json), the closing guard stays installed on purpose, snapshot writes pause (an advisory says why), and a reset re-run or restart recovers.
+Deletes .swarm/session/state.json plus other session files; clears in-memory sessions, chains, and active-agent maps. Preserves plan, evidence, and knowledge; releases this session's pending knowledge-gate obligations (#2398); recovers coder settlements wedged on CODER_DISPATCH_IN_PROGRESS (#2268); backs up to .swarm/reset-backups/ (newest 5 kept). If a cleanup step fails, the closing guard stays closed by design, writes pause (an advisory says why), and a reset re-run or restart recovers.
 
 ### `/swarm attest`
 

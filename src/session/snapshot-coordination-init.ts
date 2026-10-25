@@ -108,6 +108,11 @@ export interface SnapshotCoordinationResetGuard {
 }
 
 const entries = new Map<string, ReadinessEntry>();
+// PRR-002 (#3445 review): one settlement observer per ORIGINAL pending
+// initializer promise, ever — replacement guards share the same original,
+// so per-guard observers would accumulate one reaction (and one retained
+// guard) per reset re-entry until it settles.
+const pendingSettlementObserved = new WeakSet<Promise<void>>();
 let nextAttemptId = 1;
 
 // #2794: bounded, counts-only supersession bookkeeping (invariant 8 posture:
@@ -613,21 +618,28 @@ export async function beginSnapshotCoordinationReset(
 		...(pendingPriorUnderlying ? { pendingPriorUnderlying } : {}),
 	};
 	entries.set(root, guard);
-	if (guard.pendingPriorAttempt && pendingPriorUnderlying) {
-		// #2963 settlement lifecycle: when the ORIGINAL attempt settles, clear
-		// the live guard's pending flag in place. Identity-guarded so the
-		// observer can only ever clear its OWN guard object while it is the
-		// live entry; both promise arms are handled (the rejection's real
-		// consumers already observe it elsewhere), so no unhandled rejection
-		// is introduced.
-		void pendingPriorUnderlying.then(
-			() => {
-				if (entries.get(root) === guard) guard.pendingPriorAttempt = false;
-			},
-			() => {
-				if (entries.get(root) === guard) guard.pendingPriorAttempt = false;
-			},
-		);
+	if (
+		guard.pendingPriorAttempt &&
+		pendingPriorUnderlying &&
+		!pendingSettlementObserved.has(pendingPriorUnderlying)
+	) {
+		// #2963 settlement lifecycle, ONE observer per ORIGINAL promise
+		// (PRR-002, #3445 review): replacement guards inherit the same
+		// original, so a per-guard .then would accumulate one reaction per
+		// re-entry and retain every superseded guard until the original
+		// settles. The single observer clears whichever entry is live at
+		// settlement (identity via the propagated promise reference) and
+		// drops the settled promise from that entry. Both arms are handled
+		// (the rejection's real consumers already observe it elsewhere), so
+		// no unhandled rejection is introduced.
+		pendingSettlementObserved.add(pendingPriorUnderlying);
+		const clearPending = () => {
+			const live = entries.get(root);
+			if (live?.pendingPriorUnderlying !== pendingPriorUnderlying) return;
+			live.pendingPriorAttempt = false;
+			live.pendingPriorUnderlying = undefined;
+		};
+		void pendingPriorUnderlying.then(clearPending, clearPending);
 	}
 	let released = false;
 	const release = () => {
@@ -679,7 +691,9 @@ export function markSnapshotCoordinationClosing(directory: string): void {
 		entry.state = 'closing';
 		// #2963: shutdown-marked closing carries its own origin so consumers
 		// render the restart contract instead of a reset-recovery one.
-		entry.closingReason = 'shutdown';
+		// PRR-003 (#3445 review): never clobber a recorded origin — an entry
+		// already stranded as 'reset-cleanup-failed' keeps that contract.
+		if (!entry.closingReason) entry.closingReason = 'shutdown';
 	}
 }
 

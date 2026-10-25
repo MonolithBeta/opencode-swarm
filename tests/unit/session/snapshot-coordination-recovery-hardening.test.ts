@@ -1,18 +1,15 @@
 /**
  * #2963 hardening tests for the closing-origin recovery contract (plan D7;
  * NOT part of the frozen acceptance spec — the frozen contract lives in
- * snapshot-coordination-recovery-contract.test.ts). These pin the scenarios
- * the plan critic demanded across five review rounds: guard ownership,
- * combined-state precedence, settlement lifecycle, F3/F4 origins, and the
- * bounded writer advisory.
- *
- * Origin model (see the approved plan): every closing entry carries an
- * explicit origin — stranded (reset cleanup failed), shutdown, pendingPrior
- * (a prior initializer is still settling), or none (an in-flight reset).
- * Consumers never infer "stranded" from `settled` alone.
+ * snapshot-coordination-recovery-contract.test.ts, and the combined-origin
+ * (P1) coverage lives in snapshot-coordination-recovery-combined-origin
+ * .test.ts). These pin the scenarios the plan critic demanded across five
+ * review rounds: guard ownership, settlement lifecycle, F2/F3/F4 origins,
+ * and the bounded writer advisory. Consumers never infer "stranded" from
+ * `settled` alone.
  */
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import * as path from 'node:path';
 import { handleRecoverCommand } from '../../../src/commands/recover';
 import {
@@ -42,14 +39,26 @@ import {
 	writeSnapshot,
 } from '../../../src/session/snapshot-writer.js';
 import { resetSwarmState, swarmState } from '../../../src/state';
+import { safeRmRecursive } from '../../helpers/safe-test-dir';
 import { canonicalMkdtemp } from '../../helpers/tmpdir.js';
 
 let testDir: string;
 
-const STOP_ADVISORY_RE = /reset-session|persistence|snapshot|stop/i;
+// PRR-013 (#3445 review): conjunctive filter — an advisory counts as a stop
+// advisory only when it names reset-session AND the persistence/snapshot
+// topic AND a stop verb, so unrelated 'snapshot'-mentioning advisories
+// (e.g. the projection-write warning) cannot satisfy an exact count.
+const NAMES_RESET_SESSION_RE = /reset-session/;
+const STOP_TOPIC_RE = /persistence|snapshot/i;
+const STOP_VERB_RE = /stop/i;
 
 function stopAdvisoryCount(): number {
-	return getDeferredWarnings().filter((w) => STOP_ADVISORY_RE.test(w)).length;
+	return getDeferredWarnings().filter(
+		(w) =>
+			NAMES_RESET_SESSION_RE.test(w) &&
+			STOP_TOPIC_RE.test(w) &&
+			STOP_VERB_RE.test(w),
+	).length;
 }
 
 function seedRows(dir: string): void {
@@ -100,11 +109,11 @@ beforeEach(() => {
 
 afterEach(() => {
 	closeProjectDb(testDir);
-	try {
-		rmSync(testDir, { recursive: true, force: true });
-	} catch {
-		// Best-effort cleanup
-	}
+	// PRR-014 (#3445 review / Copilot): the repo's bounded teardown helper
+	// (EBUSY/EPERM retry + tmpdir containment) instead of a swallowed
+	// rmSync — this suite opens SQLite coordination DBs, exactly the
+	// Windows locking family that leaks temp dirs.
+	safeRmRecursive(testDir);
 	clearDeferredWarnings();
 	_snapshotCoordinationInternals.entries.clear();
 });
@@ -258,24 +267,33 @@ describe('#2963 closing-origin hardening', () => {
 			timeoutMs: _snapshotCoordinationInternals.timeoutMs,
 			initialize: _snapshotCoordinationInternals.initialize,
 		};
-		_snapshotCoordinationInternals.timeoutMs = 5;
-		_snapshotCoordinationInternals.initialize = () =>
-			blocked.then(() => 'succeeded' as const);
-		const underlying = startSnapshotCoordinationInitialization(testDir);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		const guardA = await beginSnapshotCoordinationReset(testDir);
+		let underlying!: Promise<'succeeded'>;
+		let guardA!: Awaited<ReturnType<typeof beginSnapshotCoordinationReset>>;
+		// PRR-014 (#3445 review): the seam overrides are installed INSIDE the
+		// try whose finally restores them — a throw in the setup region must
+		// not leak a 5ms coordination timeout to later suites.
 		try {
+			_snapshotCoordinationInternals.timeoutMs = 5;
+			_snapshotCoordinationInternals.initialize = () =>
+				blocked.then(() => 'succeeded' as const);
+			underlying = startSnapshotCoordinationInitialization(testDir);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			guardA = await beginSnapshotCoordinationReset(testDir);
 			// Direct F2: pending prior, settle-wait everywhere.
 			let status = getSnapshotCoordinationStatus(testDir);
 			expect(status.pendingPriorAttempt).toBe(true);
 			expect(() => retrySnapshotCoordinationInitialization(testDir)).toThrow(
 				/still settling/,
 			);
+			// PRR-013 companion: the P2 status branch must NOT claim the
+			// combined "Once it settles" re-run line (that text is exclusive
+			// to the combined pending+stranded shape).
 			let recoverOut = await handleRecoverCommand(testDir, ['--coordination']);
 			expect(recoverOut).toContain(
 				'wait for that underlying attempt to settle',
 			);
 			expect(recoverOut).not.toContain('partially-failed');
+			expect(recoverOut).not.toContain('Once it settles');
 			let md = formatStatusMarkdown({
 				...baseStatus(),
 				coordination: status,
@@ -299,6 +317,22 @@ describe('#2963 closing-origin hardening', () => {
 			);
 			expect(recoverOut).toContain('Once it settles');
 
+			// PRR-012: the combined (P1) STATUS branch — the highest-precedence
+			// origin — renders its own line while both markers are set. Re-read
+			// the status AFTER markStranded (the pre-strand snapshot lacks the
+			// closingReason marker).
+			status = getSnapshotCoordinationStatus(testDir);
+			md = formatStatusMarkdown({
+				...baseStatus(),
+				coordination: status,
+			});
+			expect(md).toContain(
+				'wait for the settling initialization attempt, then re-run',
+			);
+			expect(md).not.toContain(
+				'an unsettled timed-out attempt must finish before retry',
+			);
+
 			// The original settles: the live guard's pending flag clears in
 			// place and the entry falls back to the stranded (P3) contract.
 			releaseOriginal();
@@ -320,8 +354,9 @@ describe('#2963 closing-origin hardening', () => {
 		} finally {
 			_snapshotCoordinationInternals.timeoutMs = originalInternals.timeoutMs;
 			_snapshotCoordinationInternals.initialize = originalInternals.initialize;
-			guardA.release();
+			if (guardA) guardA.release();
 			releaseOriginal();
+			await underlying.catch(() => undefined);
 		}
 	});
 
@@ -335,13 +370,16 @@ describe('#2963 closing-origin hardening', () => {
 			timeoutMs: _snapshotCoordinationInternals.timeoutMs,
 			initialize: _snapshotCoordinationInternals.initialize,
 		};
-		_snapshotCoordinationInternals.timeoutMs = 5;
-		_snapshotCoordinationInternals.initialize = () =>
-			blocked.then(() => 'succeeded' as const);
-		const underlying = startSnapshotCoordinationInitialization(testDir);
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		const guard = await beginSnapshotCoordinationReset(testDir);
+		let underlying!: Promise<'succeeded'>;
+		let guard!: Awaited<ReturnType<typeof beginSnapshotCoordinationReset>>;
+		// PRR-014: seam overrides inside the try that restores them.
 		try {
+			_snapshotCoordinationInternals.timeoutMs = 5;
+			_snapshotCoordinationInternals.initialize = () =>
+				blocked.then(() => 'succeeded' as const);
+			underlying = startSnapshotCoordinationInitialization(testDir);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			guard = await beginSnapshotCoordinationReset(testDir);
 			clearDeferredWarnings();
 			await writeSnapshot(testDir, swarmState);
 			await writeSnapshot(testDir, swarmState);
@@ -352,7 +390,7 @@ describe('#2963 closing-origin hardening', () => {
 		} finally {
 			_snapshotCoordinationInternals.timeoutMs = originalInternals.timeoutMs;
 			_snapshotCoordinationInternals.initialize = originalInternals.initialize;
-			guard.release();
+			if (guard) guard.release();
 			releaseOriginal();
 			await underlying.catch(() => undefined);
 		}
@@ -393,11 +431,11 @@ describe('#2963 closing-origin hardening', () => {
 
 	test('an ordinary (non-closing) writeSnapshot failure emits no closing advisory', async () => {
 		seedRows(testDir);
-		const root = testDir;
 		// A settled failed entry makes readiness fail with a non-closing
 		// error: the writer catch must stay silent for that class.
-		const entry = _snapshotCoordinationInternals.entries.get(testDir);
-		expect(entry).toBeUndefined();
+		// (PRR-013: the previous version's `entries.get(testDir)` lookup was
+		// vacuous — the map is keyed by canonicalProjectKey, not the raw
+		// path, and ran before any write could create an entry.)
 		const originalInternals = {
 			initialize: _snapshotCoordinationInternals.initialize,
 		};
@@ -408,9 +446,48 @@ describe('#2963 closing-origin hardening', () => {
 			clearDeferredWarnings();
 			await writeSnapshot(testDir, swarmState);
 			expect(stopAdvisoryCount()).toBe(0);
-			void root;
 		} finally {
 			_snapshotCoordinationInternals.initialize = originalInternals.initialize;
+		}
+	});
+
+	test('combined P1 writer advisory fires once and names both the settle-wait and the re-run', async () => {
+		// PRR-012 (#3445 review): the combined shape (pendingPriorAttempt AND
+		// stranded) previously had no coverage on the writer surface.
+		seedRows(testDir);
+		let releaseOriginal!: () => void;
+		const blocked = new Promise<void>((resolve) => {
+			releaseOriginal = resolve;
+		});
+		const originalInternals = {
+			timeoutMs: _snapshotCoordinationInternals.timeoutMs,
+			initialize: _snapshotCoordinationInternals.initialize,
+		};
+		let underlying!: Promise<'succeeded'>;
+		let guard!: Awaited<ReturnType<typeof beginSnapshotCoordinationReset>>;
+		try {
+			_snapshotCoordinationInternals.timeoutMs = 5;
+			_snapshotCoordinationInternals.initialize = () =>
+				blocked.then(() => 'succeeded' as const);
+			underlying = startSnapshotCoordinationInitialization(testDir);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			guard = await beginSnapshotCoordinationReset(testDir);
+			expect(guard.markStranded()).toBe(true);
+			clearDeferredWarnings();
+			await writeSnapshot(testDir, swarmState);
+			const combined = getDeferredWarnings().filter((w) =>
+				/still settling/.test(w),
+			);
+			expect(combined).toHaveLength(1);
+			expect(combined[0]).toMatch(/partially failed/);
+			expect(combined[0]).toMatch(/wait for that attempt to settle/);
+			expect(combined[0]).toMatch(/re-run \/swarm reset-session/);
+		} finally {
+			_snapshotCoordinationInternals.timeoutMs = originalInternals.timeoutMs;
+			_snapshotCoordinationInternals.initialize = originalInternals.initialize;
+			if (guard) guard.release();
+			releaseOriginal();
+			await underlying.catch(() => undefined);
 		}
 	});
 
