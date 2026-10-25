@@ -227,6 +227,7 @@ describe('config/loader', () => {
 						enabled: true,
 						allow_defaults: true,
 						trusted_roots: ['.'],
+						trust_code_mode_wrapper: false,
 						trusted_domains: [],
 						protected_paths: [
 							'.git',

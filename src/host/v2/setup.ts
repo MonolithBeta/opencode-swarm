@@ -55,6 +55,41 @@ async function deferredV2StartupModelPreflight(
 }
 
 /**
+ * Read `full_auto.oversight` once and size the v2 tool.execute.before budget
+ * from it (#3446). Bounded and fail-open: on any error the 60 s base applies.
+ */
+async function deferredV2ConfigureToolBeforeBudget(
+	directory: string,
+): Promise<void> {
+	try {
+		const loaded = await withTimeout(
+			loadPluginConfigWithMetaAsync(directory),
+			V2_PREFLIGHT_CONFIG_TIMEOUT_MS,
+			new Error('[opencode-swarm] v2: hook-budget config read exceeded budget'),
+		);
+		configureV2ToolBeforeBudget(loaded?.config?.full_auto);
+	} catch (err) {
+		log('v2 hook-budget config read failed (non-fatal)', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
+ * Size the before-chain budget from config, then register the tool hooks.
+ * Bounded as a whole by the parallel-registration budget in setup (#3327).
+ */
+async function deferredV2RegisterToolHooks(
+	ctx: V2PluginContext,
+	hooks: V1HooksSubset,
+	directory: string,
+	registrations: V2Registration[],
+): Promise<void> {
+	await deferredV2ConfigureToolBeforeBudget(directory);
+	await registerV2ToolHooks(ctx, hooks, directory, registrations);
+}
+
+/**
  * OpenCode 2 (v2 plugin API) setup entrypoint — issue #3004 / #2910.
  *
  * The v2 host validates the plugin's default export against
@@ -109,6 +144,7 @@ import { withTimeout } from '../../utils/timeout';
 import { registerV2AgentsAndCommands } from './agents-commands';
 import { clearToolNameRegistry, startDeferredEventPump } from './events';
 import { registerV2ContextHook } from './guidance';
+import { configureV2ToolBeforeBudget } from './hook-budget';
 import { registerV2SessionHooks, registerV2ToolHooks } from './hooks';
 import {
 	clearV2AgentTransformSurface,
@@ -289,7 +325,7 @@ export async function openCodeSwarmV2Setup(
 				registerV2ContextHook(ctx, hooks, directory, state.registrations),
 			),
 			runRegistration('tool-hook', () =>
-				registerV2ToolHooks(ctx, hooks, directory, state.registrations),
+				deferredV2RegisterToolHooks(ctx, hooks, directory, state.registrations),
 			),
 			runRegistration('prompt-hook', () =>
 				registerV2SessionHooks(ctx, hooks, directory, state.registrations),

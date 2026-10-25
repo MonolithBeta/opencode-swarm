@@ -27,6 +27,7 @@ import {
 	type ParsedCriticResponse,
 	parseCriticResponseFields,
 } from '../full-auto/critic-response-parser';
+import { FULL_AUTO_CRITIC_DENIED_TOOLS } from '../full-auto/critic-tools';
 import {
 	type FullAutoOversightEvent as V2FullAutoOversightEvent,
 	writeFullAutoOversightEvent as v2WriteOversightEvent,
@@ -661,7 +662,7 @@ export async function dispatchCriticAndWriteEvent(
 							body: {
 								agent: oversightAgentName,
 								...(modelOverride ? { model: modelOverride } : {}),
-								tools: { write: false, edit: false, patch: false },
+								tools: { ...FULL_AUTO_CRITIC_DENIED_TOOLS },
 								parts: [{ type: 'text', text: criticContext }],
 							},
 							signal: promptController.signal,
