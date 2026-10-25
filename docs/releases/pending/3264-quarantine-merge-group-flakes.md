@@ -48,13 +48,26 @@ against post-detection root fixes:
   2026-10-18 and all three later merge-group runs execute both files
   green), and `tests/unit/hooks/w3368-diag-temp.test.ts` (deliberate
   fail-on-purpose diagnostic, deleted by `473df7e07`).
-- NOT quarantined, watch list: the remaining single-detection candidates
+- NOT quarantined, watch list: the remaining storm-window candidates
   whose only evidence falls inside the 2026-10-14/18 windows teardown
-  storms and which have been green in every run since (including the
-  2026-10-14 coverage-shard trio and the coverage CORE-TREE pair), plus
+  storms and which have been green in every run since (the 2026-10-14
+  coverage-shard trio — `src/__tests__/cli-version.test.ts`,
+  `src/commands/commands.test.ts`, `tests/unit/cli/run-command.test.ts` —
+  was named in all four cohort issue bodies, a same-day four-detection
+  cohort with zero recurrences in the 11 harvested runs through
+  2026-10-20, and the coverage CORE-TREE pair), plus
   `pr-subscriptions-checkpoint.test.ts` (its storm-window retry satisfies
   the #2973 re-add rule's floor but is plausibly storm-correlated — left
   for human adjudication).
+- One correction to that triage thread, whose attribution this fragment
+  otherwise follows: its aside that the issue-body candidates "don't
+  exist in the current tree — they only appear in docs/archive" is wrong
+  — all six body candidates are tracked on `origin/main` with long
+  history. They stay off the ledgers on evidence, not existence: zero
+  post-2026-10-14 recurrences across the cohort threads and no
+  attributable triggering run (the issue bodies, unlike the comment
+  batches, carry no run URL), so no honest OWNER/EXPIRY evidence block
+  could be written for them.
 - No CORE-TREE file (`tests/unit/{scope,agents,hooks}/**`) was mechanically
   quarantined, per detector rule C and the issue's triage comment.
 

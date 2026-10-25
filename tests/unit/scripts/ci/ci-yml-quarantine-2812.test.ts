@@ -88,9 +88,9 @@ describe('ci.yml integration — windows quarantine ledger entries for issue #28
 		// pins its presence, scoping, and expiry. This assertion
 		// supersedes this file's original absence guard for this one
 		// path; the other four #2812 rows stay retired above.
-		expect(
-			activeEntries(WINDOWS_LEDGER_PATH),
-		).toContain('tests/unit/commands/archive.test.ts');
+		expect(activeEntries(WINDOWS_LEDGER_PATH)).toContain(
+			'tests/unit/commands/archive.test.ts',
+		);
 	});
 
 	test.each(

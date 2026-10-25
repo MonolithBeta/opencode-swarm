@@ -96,75 +96,80 @@ function activeEntries(ledgerPath: string): string[] {
 }
 
 describe('ci.yml integration — quarantine ledger entries for issue #3264 (this PR)', () => {
-	test.each(THIS_PR_ENTRIES)(
-		'$path is an active entry in the $ledgerName ledger',
-		({ path, ledgerPath }) => {
-			// Regression guard for the seven net-new #3264 entries: without
-			// them, the attributed merge-group unit/coverage shards keep
-			// running these files and Rule A of the flake detector keeps
-			// re-filing duplicate issues (it only drops candidates already
-			// present in a ledger).
-			expect(existsSync(ledgerPath)).toBe(true);
-			expect(activeEntries(ledgerPath)).toContain(path);
-		},
-	);
+	test.each(
+		THIS_PR_ENTRIES,
+	)('$path is an active entry in the $ledgerName ledger', ({
+		path,
+		ledgerPath,
+	}) => {
+		// Regression guard for the seven net-new #3264 entries: without
+		// them, the attributed merge-group unit/coverage shards keep
+		// running these files and Rule A of the flake detector keeps
+		// re-filing duplicate issues (it only drops candidates already
+		// present in a ledger).
+		expect(existsSync(ledgerPath)).toBe(true);
+		expect(activeEntries(ledgerPath)).toContain(path);
+	});
 
-	test.each(THIS_PR_ENTRIES)(
-		'$path is scoped to the $ledgerName ledger only (no cross-ledger duplicate)',
-		({ path, ledgerPath }) => {
-			// Cross-ledger duplicates would falsely imply cross-OS evidence:
-			// every windows/macos entry here is single-OS (green sibling-OS
-			// shards in the same runs) and the general entry is the sole
-			// ubuntu-reachable ledger. A stray duplicate would suppress the
-			// file on OSes where it has never flaked. The general ledger
-			// applies on every RUNNER_OS, the per-OS ledgers on their named
-			// OS, and the integration ledger for the `integration` job.
-			for (const ledger of ALL_LEDGER_PATHS) {
-				if (ledger === ledgerPath) continue;
-				expect(activeEntries(ledger)).not.toContain(path);
-			}
-		},
-	);
+	test.each(
+		THIS_PR_ENTRIES,
+	)('$path is scoped to the $ledgerName ledger only (no cross-ledger duplicate)', ({
+		path,
+		ledgerPath,
+	}) => {
+		// Cross-ledger duplicates would falsely imply cross-OS evidence:
+		// every windows/macos entry here is single-OS (green sibling-OS
+		// shards in the same runs) and the general entry is the sole
+		// ubuntu-reachable ledger. A stray duplicate would suppress the
+		// file on OSes where it has never flaked. The general ledger
+		// applies on every RUNNER_OS, the per-OS ledgers on their named
+		// OS, and the integration ledger for the `integration` job.
+		for (const ledger of ALL_LEDGER_PATHS) {
+			if (ledger === ledgerPath) continue;
+			expect(activeEntries(ledger)).not.toContain(path);
+		}
+	});
 
-	test.each(THIS_PR_ENTRIES)(
-		'$path exists on disk and is discovered by the ci.yml find chain',
-		({ path }) => {
-			// A typo'd ledger path would be a silent no-op: CI's comm -23
-			// gated set would never exclude it (the path never appears in
-			// all-tests.txt) and the flake-detection workflow would keep
-			// re-filing. The unit discovery chain globs
-			// tests/unit/**/*.test.ts, so the on-disk file must exist at
-			// exactly the ledger path relative to the repo root.
-			expect(existsSync(join(REPO_ROOT, path))).toBe(true);
-		},
-	);
+	test.each(
+		THIS_PR_ENTRIES,
+	)('$path exists on disk and is discovered by the ci.yml find chain', ({
+		path,
+	}) => {
+		// A typo'd ledger path would be a silent no-op: CI's comm -23
+		// gated set would never exclude it (the path never appears in
+		// all-tests.txt) and the flake-detection workflow would keep
+		// re-filing. The unit discovery chain globs
+		// tests/unit/**/*.test.ts, so the on-disk file must exist at
+		// exactly the ledger path relative to the repo root.
+		expect(existsSync(join(REPO_ROOT, path))).toBe(true);
+	});
 
-	test.each(THIS_PR_ENTRIES)(
-		'$path carries the issue #2477 OWNER + EXPIRY metadata block',
-		({ path, ledgerPath }) => {
-			// Every active entry in scripts/ci/quarantined-tests*.txt must
-			// carry, in the comment block directly above it, an OWNER and
-			// an EXPIRY line. scripts/check-invariants.ts Check 7 fails the
-			// gate if either is missing. The grep window is the contiguous
-			// comment block (lines starting with `#`) directly preceding
-			// the non-comment path line — bounded to the entry's own header
-			// so the test does not spuriously pass against metadata that
-			// belongs to a neighbour entry.
-			const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
-			const lines = raw.split('\n');
-			const entryIndex = lines.findIndex(
-				(line: string) => line.trim() === path,
-			);
-			expect(entryIndex).toBeGreaterThan(0);
-			let blockStart = entryIndex;
-			while (blockStart > 0 && lines[blockStart - 1]?.startsWith('#')) {
-				blockStart -= 1;
-			}
-			const block = lines.slice(blockStart, entryIndex).join('\n');
-			expect(block).toMatch(/^# OWNER: .*#3264/m);
-			expect(block).toMatch(/^# EXPIRY: 2026-11-20/m);
-		},
-	);
+	test.each(
+		THIS_PR_ENTRIES,
+	)('$path carries the issue #2477 OWNER + EXPIRY metadata block', ({
+		path,
+		ledgerPath,
+	}) => {
+		// Every active entry in scripts/ci/quarantined-tests*.txt must
+		// carry, in the comment block directly above it, an OWNER and
+		// an EXPIRY line. scripts/check-invariants.ts Check 7 fails the
+		// gate if either is missing. The grep window is the contiguous
+		// comment block (lines starting with `#`) directly preceding
+		// the non-comment path line — bounded to the entry's own header
+		// so the test does not spuriously pass against metadata that
+		// belongs to a neighbour entry.
+		const raw = readFileSync(ledgerPath, 'utf8').replace(/\r\n/g, '\n');
+		const lines = raw.split('\n');
+		const entryIndex = lines.findIndex((line: string) => line.trim() === path);
+		expect(entryIndex).toBeGreaterThan(0);
+		let blockStart = entryIndex;
+		while (blockStart > 0 && lines[blockStart - 1]?.startsWith('#')) {
+			blockStart -= 1;
+		}
+		const block = lines.slice(blockStart, entryIndex).join('\n');
+		expect(block).toMatch(/^# OWNER: .*#3264/m);
+		expect(block).toMatch(/^# EXPIRY: 2026-11-20/m);
+	});
 
 	test('windows ledger STATUS header count matches its active-entry count', () => {
 		// The windows ledger's re-add policy tracks its active entry count
