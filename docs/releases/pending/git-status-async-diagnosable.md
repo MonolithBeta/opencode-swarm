@@ -49,6 +49,13 @@ blocking wrappers it replaced cannot return.
 
 ### Known residual (not fixed here)
 
+> **Superseded in this same release by the #3427 follow-up (PR #3441):
+> both probe sites below now ride the shared async reader — the checkpoint
+> tool's entry preflight and `saveCheckpointRecord`'s probe use
+> `readGitRepositoryStatusAsync`/`readGitStatusAsync`, and the align stage's
+> mid-finalize probe uses the new `readGitRepositoryStatusDetailedAsync`.
+> The residual described here no longer exists once that PR lands.**
+
 Two synchronous git probes remain on adjacent paths and are tracked in
 follow-up issue #3427: the checkpoint tool's `isGitRepo` preflight (every
 git-checkpoint `/swarm rollback` crosses it first) and the align stage's

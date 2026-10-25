@@ -19,10 +19,16 @@
  * losing racer carries a no-op catch so a late completion can never surface
  * an unhandled rejection.
  */
+
+import {
+	gitBinaryMissingMessage,
+	isNotGitRepositoryMessage,
+} from '../git/branch';
 import {
 	type BunCompatSpawnOptions,
 	type BunCompatSubprocess,
 	bunSpawn,
+	classifySpawnFailure,
 } from '../utils/bun-compat';
 import { resolveGitExecutableAsync } from '../utils/git-executable';
 
@@ -387,4 +393,88 @@ export async function readGitRepositoryStatusAsync(
 		GIT_READ_DEFAULT_TIMEOUT_MS,
 	);
 	return result.ok;
+}
+
+/**
+ * Detailed twin of `readGitRepositoryStatusAsync` (issue #3427): the same
+ * single-attempt `rev-parse --git-dir` read, mapped to the SAME
+ * `GitRepositoryStatus` vocabulary the sync `branch.getGitRepositoryStatus`
+ * produces — `{isRepo:true}` / `not_git_repo` / `git_unavailable` /
+ * `git_error` with a message — so the finalize align stage can move off the
+ * blocking sync probe without losing its reason-specific skip diagnostics.
+ *
+ * Classification parity with `src/git/branch.ts`:
+ * - ENOENT goes through the shared #2236 `classifySpawnFailure` split — a
+ *   cwd fault is `git_error` NAMING the cwd (never `git_unavailable`);
+ *   binary-missing keeps the full `gitBinaryMissingMessage` remediation text.
+ * - A nonzero child exit is `not_git_repo` only when the bounded stderr
+ *   matches the shared `isNotGitRepositoryMessage` vocabulary; every other
+ *   nonzero exit is `git_error` carrying the status.
+ * - Spawn-class failures (ETIMEDOUT/ESIGNAL/…) are `git_error` with the
+ *   failure code ALWAYS carried in the message — empty stderr never
+ *   discards the class.
+ *
+ * `ignoreOutput` is deliberately NOT set: the bounded stderr feeds the
+ * repo-detection classification.
+ */
+export async function readGitRepositoryStatusDetailedAsync(
+	cwd: string,
+): Promise<import('../git/branch.js').GitRepositoryStatus> {
+	const result = await gitStatusReadInternals.readOnce(
+		['rev-parse', '--git-dir'],
+		cwd,
+		GIT_READ_DEFAULT_TIMEOUT_MS,
+	);
+	if (result.ok) return { isRepo: true };
+	if (result.code === 'ENOENT') {
+		const failureClass = classifySpawnFailure({ code: result.code }, cwd);
+		if (failureClass === 'cwd-missing') {
+			return {
+				isRepo: false,
+				reason: 'git_error',
+				message: `git spawn cwd is missing: ${cwd} (ENOENT)`,
+			};
+		}
+		if (failureClass === 'cwd-unreadable') {
+			return {
+				isRepo: false,
+				reason: 'git_error',
+				message: `git spawn cwd could not be inspected: ${cwd} (ENOENT)`,
+			};
+		}
+		return {
+			isRepo: false,
+			reason: 'git_unavailable',
+			message: gitBinaryMissingMessage(cwd),
+		};
+	}
+	if (result.code === null) {
+		const stderrTail = result.stderrTail ?? '';
+		if (isNotGitRepositoryMessage(stderrTail)) {
+			return {
+				isRepo: false,
+				reason: 'not_git_repo',
+				message: stderrTail || `rev-parse exited ${result.status}`,
+			};
+		}
+		// An errno-less spawn exception surfaces from the reader's catch arm
+		// as code:null AND status:null (the "child exited nonzero" contract
+		// only covers a real child); render that shape as a failure to run,
+		// not the nonsensical "rev-parse exited null".
+		const exitNote =
+			result.status === null
+				? 'rev-parse failed (no exit status reported)'
+				: `rev-parse exited ${result.status}`;
+		return {
+			isRepo: false,
+			reason: 'git_error',
+			message: `${exitNote}${stderrTail ? `: ${stderrTail}` : ''}`,
+		};
+	}
+	const tail = result.stderrTail ?? '';
+	return {
+		isRepo: false,
+		reason: 'git_error',
+		message: `git read failed (${result.code})${tail ? `: ${tail}` : ''}`,
+	};
 }

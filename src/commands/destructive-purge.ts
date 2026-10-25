@@ -35,7 +35,10 @@ import {
 	type GitStatusReadResult,
 	readGitStatusAsync,
 } from './git-status-read.js';
-import { describeUnreadableCause } from './rollback-gate';
+import {
+	describeUnreadableCause,
+	isOutOfRootRelativePath,
+} from './rollback-gate';
 
 // validateSwarmPath joins `.swarm/` itself — keep this filename-only.
 const PENDING_PURGE_PATH = 'pending-purge.json';
@@ -152,9 +155,25 @@ async function runGitStatusRead(
  * `src/commands/rollback-gate.ts` exports a same-named parser for
  * NUL-terminated `--porcelain -z` output (J1/#2946); the two are deliberately
  * not consolidated in this PR.
+ *
+ * #3434: `../`-bearing (or absolute) records are excluded from the dirty
+ * set and recorded in `excludedOutOfRoot` — the legacy `string[]` export
+ * below returns only the in-root paths. The containment predicate itself is
+ * the rollback-gate module's `isOutOfRootRelativePath` (single shared
+ * definition; the parsers stay separate by design).
  */
-export function parseTrackedDirtyPaths(statusOutput: string): string[] {
+export function parseTrackedDirtyPathsWithExclusions(
+	statusOutput: string,
+): import('./rollback-gate.js').TrackedDirtyParseResult {
 	const dirtyPaths: string[] = [];
+	const excludedOutOfRoot: string[] = [];
+	const push = (candidate: string): void => {
+		if (isOutOfRootRelativePath(candidate)) {
+			excludedOutOfRoot.push(candidate);
+			return;
+		}
+		dirtyPaths.push(candidate);
+	};
 	for (const line of statusOutput.split('\n')) {
 		if (!line) continue;
 		if (line.startsWith('??')) continue;
@@ -163,13 +182,22 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
 		if (/[RC]/.test(line.slice(0, 2)) && filePath.includes(' -> ')) {
 			for (const side of filePath.split(' -> ')) {
 				const cleaned = side.trim().replace(/^"|"$/g, '');
-				if (cleaned) dirtyPaths.push(cleaned);
+				if (cleaned) push(cleaned);
 			}
 		} else {
-			dirtyPaths.push(filePath);
+			push(filePath);
 		}
 	}
-	return dirtyPaths;
+	return { dirtyPaths, excludedOutOfRoot };
+}
+
+/**
+ * Legacy `string[]` view of the newline-form parser (in-root paths only) —
+ * the export existing suites pin. New consumers that need the exclusion
+ * diagnostic use `parseTrackedDirtyPathsWithExclusions`.
+ */
+export function parseTrackedDirtyPaths(statusOutput: string): string[] {
+	return parseTrackedDirtyPathsWithExclusions(statusOutput).dirtyPaths;
 }
 
 /**
@@ -180,11 +208,14 @@ export function parseTrackedDirtyPaths(statusOutput: string): string[] {
  * helper, so its existing #2508 fail-closed tests keep their injection point.
  * #3317: async — the read is bounded and killable, and legacy sync stubs
  * keep working (awaiting a plain value is a no-op).
+ * #3434: the ok arm carries `excludedOutOfRoot` so the #2953 re-check
+ * compares against the SAME filtered set the operator confirmed.
  */
 export async function readTrackedDirtyPaths(directory: string): Promise<
 	| {
 			ok: true;
 			dirtyPaths: string[];
+			excludedOutOfRoot: string[];
 	  }
 	| {
 			ok: false;
@@ -199,7 +230,9 @@ export async function readTrackedDirtyPaths(directory: string): Promise<
 	const read = await runGitStatusRead(GIT_STATUS_ARGS, directory);
 	if (read === null) return { ok: false };
 	if ('cause' in read) return { ok: false, failure: read.cause };
-	return { ok: true, dirtyPaths: parseTrackedDirtyPaths(read.stdout) };
+	const { dirtyPaths, excludedOutOfRoot } =
+		parseTrackedDirtyPathsWithExclusions(read.stdout);
+	return { ok: true, dirtyPaths, excludedOutOfRoot };
 }
 
 /**
