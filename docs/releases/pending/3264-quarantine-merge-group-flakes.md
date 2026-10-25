@@ -7,7 +7,9 @@ comment batches, 2026-10-14 through 2026-10-20) are quarantined with full
 OWNER/EXPIRY metadata (issue #2477 grammar, `check:invariants` Check 7),
 after per-run evidence attribution from all eleven triggering CI runs:
 
-- `scripts/ci/quarantined-tests-windows.txt` (+5, STATUS 6 → 11 active):
+- `scripts/ci/quarantined-tests-windows.txt` (+5; STATUS 3 → 8 active after
+  the #3411 retirement of the 3-entry #3261 EBUSY cohort landed mid-PR —
+  the branch was cut when the ledger held 6):
   `tests/unit/tools/test-runner-feedback-regressions.test.ts` (passed-on-
   retry on windows-latest three times in five days, the last after the
   2026-10-18 worktree-storm fixes), `tests/unit/full-auto/state-locking.test.ts`
@@ -30,7 +32,7 @@ after per-run evidence attribution from all eleven triggering CI runs:
   ledger-pinning regression test (the #2761/#2826/#2867 pattern) asserting
   each of the seven entries is active in exactly its attributed ledger,
   carries the OWNER/EXPIRY block, exists on disk, the windows STATUS header
-  stays honest (11), and same-basename sibling
+  stays honest (declared == actual, 8 at the shipped head), and same-basename sibling
   `tests/unit/evidence/archive.test.ts` stays in the gated set.
 
 ## Why
@@ -88,6 +90,8 @@ on their attributed OS (general ledger: all OS) from the next run.
 - All seven entries expire 2026-11-20 with three-consecutive-green
   retirement criteria; Check 7 warns from that date and hard-fails 14 days
   later.
-- Pre-existing grace-window warnings for `delegation-gate-background-coder`
-  (expired 2026-10-20) and `j02-failure-rejection-distinct` (expired
-  2026-10-17) are untouched by this change.
+- At the branch point, `delegation-gate-background-coder` (expired
+  2026-10-20) and `j02-failure-rejection-distinct` (expired 2026-10-17)
+  sat inside the Check 7 grace window; the #3203 renewal (merged mid-PR
+  as #3411) has since renewed both to EXPIRY 2026-11-18, so this change
+  ships with no grace-window warnings for them.
