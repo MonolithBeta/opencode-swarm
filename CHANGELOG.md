@@ -1,5 +1,86 @@
 # Changelog
 
+## [7.200.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.6...v7.200.0) (2026-10-24)
+
+
+### Features
+
+* **workflow:** external-evidence task class + /swarm attest — in-machine exit for git-external deliverables ([6457cc9](https://github.com/ZaxbyHub/opencode-swarm/commit/6457cc95b07481e340a2e37c3b8ffa75a408a4c8))
+
+
+### Bug Fixes
+
+* close review findings on web-fetch entity decoding and sibling inherited-key lookups ([099d677](https://github.com/ZaxbyHub/opencode-swarm/commit/099d677f72f48cf79e1c36ae9a7e3c037ab718c7))
+* own-key lookups for web-fetch entities, lean-turbo scopes and concurrency presets; spec-safe numeric entity decoding ([60ff250](https://github.com/ZaxbyHub/opencode-swarm/commit/60ff25052cd902738e3c422629a873e67d7f6aec))
+
+## [7.199.6](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.5...v7.199.6) (2026-10-24)
+
+
+### Bug Fixes
+
+* **host/v2:** keep tool-call pairing when v2 context messages carry no id ([d30353f](https://github.com/ZaxbyHub/opencode-swarm/commit/d30353f65e564e40127055ae95847391d4b04268))
+
+## [7.199.5](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.4...v7.199.5) (2026-10-24)
+
+
+### Bug Fixes
+
+* **citations:** re-pin target-constant-tmp producer after checkpoint.ts shift (CI round 6) ([cb96a2d](https://github.com/ZaxbyHub/opencode-swarm/commit/cb96a2d7f3a85329899d91b76dc08e3b3b5f1634))
+* **close:** async, diagnosable git-status gate reads for close, rollback, and diagnose ([#3317](https://github.com/ZaxbyHub/opencode-swarm/issues/3317)) ([8e5cfd3](https://github.com/ZaxbyHub/opencode-swarm/commit/8e5cfd3872851b57f8ae3cfb25d0fc06bc0cac85))
+* **close:** close out swarm-pr-review [#3426](https://github.com/ZaxbyHub/opencode-swarm/issues/3426) findings — failure classes, Node ENOENT, deadline honesty ([d695ffe](https://github.com/ZaxbyHub/opencode-swarm/commit/d695ffe2e08eaac988a2801277c475ab7a69f504))
+* **git-status-read:** classify signalCode exits ESIGNAL, rescoping kill claims to measured reachability + close five coverage pins (review round 2) ([c2615bc](https://github.com/ZaxbyHub/opencode-swarm/commit/c2615bc3dfcd8573c776a14cb1255daf8a9aa639))
+* **git-status-read:** give the retained partial stderr its EOUTPUT consumer (review round 2 nit) ([48c20db](https://github.com/ZaxbyHub/opencode-swarm/commit/48c20db55a56928bbcc48a725f73e7ef887b44d3))
+* **git-status-read:** race resolution against the deadline + cap async probes by remaining budget (automation review) ([7e3bc29](https://github.com/ZaxbyHub/opencode-swarm/commit/7e3bc29ffe795a5ab9d8b7303d1a57c795a792e1))
+* **pr-review:** reach a disclosed INCOMPLETE and settle finished lanes ([#3312](https://github.com/ZaxbyHub/opencode-swarm/issues/3312) [#3313](https://github.com/ZaxbyHub/opencode-swarm/issues/3313)) ([f11fbea](https://github.com/ZaxbyHub/opencode-swarm/commit/f11fbea9059382a0fde40a6cd7744a95e40d38bb))
+
+## [7.199.4](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.3...v7.199.4) (2026-10-23)
+
+
+### Bug Fixes
+
+* stop rolling back release-please-owned files ([0920b8c](https://github.com/ZaxbyHub/opencode-swarm/commit/0920b8c8d9241d974a9efda0c51c891c5bc26d5b))
+
+## [7.199.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.2...v7.199.3) (2026-10-22)
+
+
+### Bug Fixes
+
+* **ci:** correct stale action version comments after dependabot pin merges ([d404333](https://github.com/ZaxbyHub/opencode-swarm/commit/d404333a18952780bf90d848597c6430bc008298))
+* **ci:** correct stale action version comments after dependabot pin merges ([282c8ec](https://github.com/ZaxbyHub/opencode-swarm/commit/282c8ecde47a2a11e0ddd2f070ee57c1a56d425a))
+* **pr-feedback:** close PR-review findings PRR-001..015 ([#3419](https://github.com/ZaxbyHub/opencode-swarm/issues/3419)) ([d4d39f3](https://github.com/ZaxbyHub/opencode-swarm/commit/d4d39f33b5f94953362299ca18be1cf7d5e16949))
+* **pr-feedback:** make rework recoverable — scope-bound writes, one sanctioned soft reset, re-dispatchable verification ([#3316](https://github.com/ZaxbyHub/opencode-swarm/issues/3316)) ([ed0dd10](https://github.com/ZaxbyHub/opencode-swarm/commit/ed0dd10d8e6de915038f75d422d1229ee1c90b04))
+* **pr-feedback:** make rework recoverable — scope-bound writes, one sanctioned soft reset, re-dispatchable verification ([#3316](https://github.com/ZaxbyHub/opencode-swarm/issues/3316)) ([b40614c](https://github.com/ZaxbyHub/opencode-swarm/commit/b40614cf5353b8242a53bf76dd597ca5f8d05c49))
+* **pr-feedback:** resolved-path containment for consumed-scope writes + traversal/foreign-mismatch floor legs (review round 1) ([94a148c](https://github.com/ZaxbyHub/opencode-swarm/commit/94a148c4382df60dafb0be5f624fa8fab353a2fc))
+* **tui:** address PR review findings on the [#3405](https://github.com/ZaxbyHub/opencode-swarm/issues/3405) init-path change ([70f2b4e](https://github.com/ZaxbyHub/opencode-swarm/commit/70f2b4eada36affce24d0ad0d0feca51aa2add43)), closes [#3416](https://github.com/ZaxbyHub/opencode-swarm/issues/3416)
+* **tui:** close the console-emitter gaps the review round found ([4cc33fa](https://github.com/ZaxbyHub/opencode-swarm/commit/4cc33fa999b0efbd45e5e150d15130382ad6cd4b)), closes [#3416](https://github.com/ZaxbyHub/opencode-swarm/issues/3416)
+* **tui:** drop raw console.warn legs on the init path ([6c68fc7](https://github.com/ZaxbyHub/opencode-swarm/commit/6c68fc7af4e3638632243dff1b500027d9b491ed))
+
+## [7.199.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.1...v7.199.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **host/v2:** contain a throwing metadata accessor on the envelope property itself ([61fa08e](https://github.com/ZaxbyHub/opencode-swarm/commit/61fa08e3451b91febdc66fa135128275f84119c0))
+* **host/v2:** translate subagent progress into the v1 scope-activation part ([#3401](https://github.com/ZaxbyHub/opencode-swarm/issues/3401)) ([76a918c](https://github.com/ZaxbyHub/opencode-swarm/commit/76a918c6d4006c4c9552ff621a7eacd04b84bce6))
+* **host/v2:** translate subagent progress into the v1 scope-activation part ([#3401](https://github.com/ZaxbyHub/opencode-swarm/issues/3401)) ([6f33b29](https://github.com/ZaxbyHub/opencode-swarm/commit/6f33b299d27616338e808a3fe40ab3f7c92ebcd7))
+* **pr-feedback:** admit dot-initial segments in git-show reads (critic round) ([33bf533](https://github.com/ZaxbyHub/opencode-swarm/commit/33bf533542249c018131a362fc7f3f85a26ee619))
+* **pr-feedback:** canonicalize temp-root usage in the commit-message tool test (FR-011/test-clock) ([12372a6](https://github.com/ZaxbyHub/opencode-swarm/commit/12372a61c9c674dcaa0c264e83f43ca1c2ea5f49))
+* **pr-feedback:** mark the two sanctioned tautology sites vacuous-ok (issue [#2903](https://github.com/ZaxbyHub/opencode-swarm/issues/2903) ratchet) ([044fc79](https://github.com/ZaxbyHub/opencode-swarm/commit/044fc791fd863eca2b31d2309506f497cc6cff7e))
+* **pr-feedback:** resolve the PR [#3400](https://github.com/ZaxbyHub/opencode-swarm/issues/3400) review findings (PRR/FB round 2) ([fca7e0b](https://github.com/ZaxbyHub/opencode-swarm/commit/fca7e0b8349bce933d85c86a0440efe6aa511329))
+* **pr-feedback:** reviewer-round findings — drop the dead compensation guard clause, correct the tokenized-add docstring ([d2cda90](https://github.com/ZaxbyHub/opencode-swarm/commit/d2cda905856ed6f11d42204147eaddeb154d6ea4))
+* **pr-feedback:** teach the git-show reader the ./ form; unmocked reader pin (review round) ([2272829](https://github.com/ZaxbyHub/opencode-swarm/commit/2272829f57229bbb1cdfde312187f73b299edcb7))
+* **pr-feedback:** trust base-identical compound package scripts in Stage A ([#3314](https://github.com/ZaxbyHub/opencode-swarm/issues/3314)) ([c626ef0](https://github.com/ZaxbyHub/opencode-swarm/commit/c626ef06cc1679f4089467ad9d32d82c5b6a92fc))
+* **pr-workflow:** close the quoted-flag and non-ASCII-separator tokenizer gaps ([#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315) review round 3) ([c866124](https://github.com/ZaxbyHub/opencode-swarm/commit/c8661245fe45884ba8001b71fd7a0e48a2da7a7e))
+* **pr-workflow:** every prescribed tool and command is reachable under the PR gates ([#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315)) ([fb2d21c](https://github.com/ZaxbyHub/opencode-swarm/commit/fb2d21c97924ebcb4eabd68f06b94ee2234c2a18))
+* **pr-workflow:** every prescribed tool and command is reachable under the PR gates ([#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315)) ([49cf930](https://github.com/ZaxbyHub/opencode-swarm/commit/49cf9301aeed0c552595646946ea9a97cdd7b9e2))
+* **pr-workflow:** git-commit option grammar for the message-file extraction ([#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315) review round 4) ([ba3b9d3](https://github.com/ZaxbyHub/opencode-swarm/commit/ba3b9d3915c145407cf83971a58078988518c0f2))
+* **pr-workflow:** keep the fail-closed refusal byte-identical for every non-sanctioned git add form ([#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315) review fix) ([5a2d515](https://github.com/ZaxbyHub/opencode-swarm/commit/5a2d51553dc205ef24175554915b255d4cb43489))
+* **pr-workflow:** re-pin the [#2908](https://github.com/ZaxbyHub/opencode-swarm/issues/2908) settle/admit census rows to the fresh scan ([96f59df](https://github.com/ZaxbyHub/opencode-swarm/commit/96f59dfe61b00da41d234b704343afaa89082d67))
+* **pr-workflow:** resolve implementation-review findings on [#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315) ([4dd6427](https://github.com/ZaxbyHub/opencode-swarm/commit/4dd642763866feaeb1af7955822c7fe2ba1a5668))
+* **pr-workflow:** shell-faithful tokenizer for the commit message-file checks ([#3315](https://github.com/ZaxbyHub/opencode-swarm/issues/3315) review round 2) ([3f3cd65](https://github.com/ZaxbyHub/opencode-swarm/commit/3f3cd656145fa8abace9de9b1a10ffbad6237ec8))
+* **skills:** close the three pre-existing frontmatter items deferred from PR [#3387](https://github.com/ZaxbyHub/opencode-swarm/issues/3387) ([382a21e](https://github.com/ZaxbyHub/opencode-swarm/commit/382a21ef7f2a1f6a0df8558d19cbb0765d8a3991))
+* **skills:** quote-strip base parity and claim corrections (PR [#3392](https://github.com/ZaxbyHub/opencode-swarm/issues/3392) follow-up review) ([6cb4e42](https://github.com/ZaxbyHub/opencode-swarm/commit/6cb4e421d405d864b475bad4c7e7c1944f85911b))
+
 ## [7.199.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.0...v7.199.1) (2026-10-18)
 
 
