@@ -47,7 +47,7 @@ export async function handleAttestCommand(
 		directory,
 	);
 	const lines = ['## External Evidence Attestation', ''];
-	lines.push(result.success ? '✅ ' + result.message : '❌ ' + result.message);
+	lines.push(result.success ? `✅ ${result.message}` : `❌ ${result.message}`);
 	for (const error of result.errors ?? []) {
 		lines.push(`- ${error}`);
 	}

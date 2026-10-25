@@ -371,6 +371,10 @@ function describeUnreadableStatusCause(measurement: {
  * the one place their bytes are rendered.
  */
 export function formatExcludedRecord(rel: string): string {
+	// Security sanitization — collapsing ANSI/CR/LF/NUL bytes out of
+	// untrusted porcelain output before it reaches operator-visible text
+	// (same exemption as checkpoint.ts's CONTROL_CHAR_PATTERN).
+	// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional sanitization
 	const sanitized = rel.replace(/[\x00-\x1f\x7f]+/g, ' ').trim();
 	return sanitized.length > 200 ? `${sanitized.slice(0, 200)}…` : sanitized;
 }
