@@ -51,7 +51,9 @@ export const _internals = {
 	// branch.getGitRepositoryStatus produced, so the reason-specific skip
 	// diagnostics survive) — the slot keeps its name; only the return type
 	// became a Promise. Legacy sync stubs keep working at runtime (awaiting
-	// a plain value is a no-op); the type change surfaces every typed stub.
+	// a plain value is a no-op) — note the test tree is NOT typechecked
+	// (tsconfig includes src/ only), so that tolerance, not the compiler,
+	// is what keeps older sync stubs passing.
 	getGitRepositoryStatus:
 		undefined as unknown as typeof import('../../commands/git-status-read.js').readGitRepositoryStatusDetailedAsync,
 	// #2953: the seam value is guardResetWithRecheck (installed by

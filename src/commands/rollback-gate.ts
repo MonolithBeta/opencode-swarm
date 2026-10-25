@@ -291,9 +291,47 @@ export function swarmOverwriteCandidates(
 /**
  * #3317: cause-matched wording for an unreadable destruction measurement —
  * single source shared by the /swarm rollback command and the checkpoint
- * tool sink so the two refusal texts cannot drift.
+ * tool sink so the two refusal texts cannot drift. `source` (#3434
+ * feedback round) names WHICH read failed: the default 'status' keeps the
+ * historical wording BYTE-IDENTICAL (pinned by the #3317 round-2 trace
+ * suite checkpoint-restore-cause-3275); 'enumeration' rewords the arms to
+ * name the ls-tree/ls-files listing so the operator is pointed at the read
+ * that actually failed.
  */
-export function describeUnreadableCause(measurement: {
+export function describeUnreadableCause(
+	measurement: {
+		code?: string | null;
+		status?: number | null;
+		stderrTail?: string;
+	},
+	source: 'status' | 'enumeration' = 'status',
+): string {
+	if (source === 'status') {
+		return describeUnreadableStatusCause(measurement);
+	}
+	if (measurement.code === 'ETIMEDOUT') {
+		return 'the target-tree listing read timed out (ETIMEDOUT) — the host may be unable to complete child spawns while loaded; restart the host and retry';
+	}
+	if (measurement.code === 'EOUTPUT') {
+		return `the listing output exceeded the read safety bound (${measurement.stderrTail ?? 'output too large'}) — reduce the change footprint (commit or stash some work, or remove untracked bulk) and retry`;
+	}
+	if (measurement.code === 'ESIGNAL') {
+		return 'the target-tree listing process was terminated before it answered (signal) — something external stopped it; retry, and inspect what terminates child processes if it recurs';
+	}
+	if (measurement.code === 'ENOENT') {
+		return 'the git executable was not found (ENOENT) — install git on PATH, or set git.binary in your USER-level config, and retry';
+	}
+	if (measurement.status !== null && measurement.status !== undefined) {
+		return `the target-tree listing exited with status ${measurement.status}${measurement.stderrTail ? `: ${measurement.stderrTail}` : ''} — repair the repository state and retry`;
+	}
+	if (measurement.code) {
+		return `the listing read failed with code ${measurement.code} — retry, or inspect the repository state manually`;
+	}
+	return 'retry, or inspect the repository state manually';
+}
+
+/** Historical status-worded arms — BYTE-IDENTICAL to the pre-#3434 text. */
+function describeUnreadableStatusCause(measurement: {
 	code?: string | null;
 	status?: number | null;
 	stderrTail?: string;
@@ -321,6 +359,20 @@ export function describeUnreadableCause(measurement: {
 		return `the read failed with code ${measurement.code} — retry, or inspect git status manually`;
 	}
 	return 'retry, or inspect git status manually';
+}
+
+/**
+ * Sanitize a repo-controlled porcelain record for operator/agent-facing
+ * diagnostic text (#3434 feedback round): collapse control characters
+ * (ANSI/CR/LF/NUL cannot smuggle terminal escapes or forged lines) and
+ * bound the excerpt — the same house discipline as the reader's
+ * `stderrTail` and `excerptProbeOutput`. Excluded records never enter the
+ * scope digest, so the digest's own NUL/newline rejection does not cover
+ * the one place their bytes are rendered.
+ */
+export function formatExcludedRecord(rel: string): string {
+	const sanitized = rel.replace(/[\x00-\x1f\x7f]+/g, ' ').trim();
+	return sanitized.length > 200 ? `${sanitized.slice(0, 200)}…` : sanitized;
 }
 
 /**
@@ -353,6 +405,18 @@ export async function measureGitDestruction(
 			code?: string | null;
 			status?: number | null;
 			stderrTail?: string;
+			/**
+			 * #3434 feedback: WHICH read failed — the status read or the
+			 * ls-tree/ls-files enumeration. Consumers word the refusal
+			 * accordingly instead of always blaming git status.
+			 */
+			source: 'status' | 'enumeration';
+			/**
+			 * Out-of-root records already parsed from a SUCCESSFUL status
+			 * read before the enumeration failed — carried so the refusal
+			 * can still disclose them instead of dropping them silently.
+			 */
+			excludedOutOfRoot?: string[];
 	  }
 > {
 	if (!isRealGitRepository(directory)) {
@@ -372,8 +436,9 @@ export async function measureGitDestruction(
 					code: failure.code,
 					status: failure.status,
 					stderrTail: failure.stderrTail,
+					source: 'status',
 				}
-			: { kind: 'unreadable' };
+			: { kind: 'unreadable', source: 'status' };
 	}
 	const { dirtyPaths: dirtyRelPaths, excludedOutOfRoot } =
 		parseTrackedDirtyPathsWithExclusions(status);
@@ -385,12 +450,16 @@ export async function measureGitDestruction(
 		// #3434: an unreadable enumeration must refuse the measurement —
 		// folding an empty set here would silently shrink the destruction
 		// scope below what `git reset --hard` would actually overwrite.
+		// The exclusions already parsed from the successful status read are
+		// carried on the refusal (feedback round: never silently dropped).
 		if (failure) {
 			return {
 				kind: 'unreadable',
 				code: failure.code,
 				status: failure.status,
 				stderrTail: failure.stderrTail,
+				source: 'enumeration',
+				excludedOutOfRoot,
 			};
 		}
 		for (const rel of paths) {

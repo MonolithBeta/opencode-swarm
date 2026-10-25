@@ -32,7 +32,13 @@ const realSnapshotWriter = await import('../../src/session/snapshot-writer.js');
 export function mockGitStatusReadNonRepo(): void {
 	mock.module('../../src/commands/git-status-read.js', () => ({
 		...actualGitStatusRead,
-		readGitRepositoryStatusDetailedAsync: async () => ({ isRepo: false }),
+		// Contract-shaped (GitRepositoryStatus requires reason/message on the
+		// false arm) so the align stage's reason dispatch stays exercisable.
+		readGitRepositoryStatusDetailedAsync: async () => ({
+			isRepo: false,
+			reason: 'not_git_repo',
+			message: 'rev-parse failed (close-command mock)',
+		}),
 	}));
 }
 

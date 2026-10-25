@@ -457,10 +457,18 @@ export async function readGitRepositoryStatusDetailedAsync(
 				message: stderrTail || `rev-parse exited ${result.status}`,
 			};
 		}
+		// An errno-less spawn exception surfaces from the reader's catch arm
+		// as code:null AND status:null (the "child exited nonzero" contract
+		// only covers a real child); render that shape as a failure to run,
+		// not the nonsensical "rev-parse exited null".
+		const exitNote =
+			result.status === null
+				? 'rev-parse failed (no exit status reported)'
+				: `rev-parse exited ${result.status}`;
 		return {
 			isRepo: false,
 			reason: 'git_error',
-			message: `rev-parse exited ${result.status}${stderrTail ? `: ${stderrTail}` : ''}`,
+			message: `${exitNote}${stderrTail ? `: ${stderrTail}` : ''}`,
 		};
 	}
 	const tail = result.stderrTail ?? '';

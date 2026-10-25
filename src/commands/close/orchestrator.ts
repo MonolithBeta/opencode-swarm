@@ -24,6 +24,7 @@ import {
 	type GitStatusReadResult,
 	readGitStatusAsync,
 } from '../git-status-read.js';
+import { formatExcludedRecord } from '../rollback-gate.js';
 import { runAlignStage } from './align-stage.js';
 import { emitCloseArchiveResult, runArchiveStage } from './archive-stage.js';
 import { runCleanStage } from './clean-stage.js';
@@ -199,7 +200,7 @@ export async function evaluateClosePurgeGate(
 	swarmDir: string,
 ): Promise<ClosePurgeGate> {
 	// #2953: the gate measurement consumes the SAME argv (GIT_STATUS_ARGS) and
-	// the SAME parser (parseTrackedDirtyPaths) as the align-stage guard's
+	// the SAME parser family as the align-stage guard's
 	// pre-destruction re-check — both live in destructive-purge.ts, so both
 	// reads parse identically. (Separate spawn wrappers by design: this one
 	// keeps the #2508 test seam.)
@@ -401,7 +402,7 @@ export async function handleCloseCommand(
 			...(purgeGate.excludedOutOfRoot.length > 0
 				? [
 						'',
-						`⚠ ${purgeGate.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from this scope (first: ${purgeGate.excludedOutOfRoot[0]})`,
+						`⚠ ${purgeGate.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from this scope (first: ${formatExcludedRecord(purgeGate.excludedOutOfRoot[0])})`,
 					]
 				: []),
 			'',
@@ -498,7 +499,7 @@ export async function handleCloseCommand(
 			warnings:
 				purgeGate.excludedOutOfRoot.length > 0
 					? [
-							`⚠ ${purgeGate.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from the destructive scope (first: ${purgeGate.excludedOutOfRoot[0]})`,
+							`⚠ ${purgeGate.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from the destructive scope (first: ${formatExcludedRecord(purgeGate.excludedOutOfRoot[0])})`,
 						]
 					: [],
 			closedPhases: [],

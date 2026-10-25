@@ -9,11 +9,13 @@ Follow-ups from PR #3426, collated (issues #3427 + #3434):
   instead of the local sync `gitExec` retry chain — on a host whose sync
   child spawns stall (#3275), `/swarm checkpoint` no longer blocks up to the
   transient-retry horizon (~150 s) before refusing. Behavior change to note:
-  the checkpoint preflight's refusal text is now the uniform
-  `not a git repository - checkpoint tools require a git repository` for
-  every failure mode (timeout, missing binary, EACCES alike) — the old sync
-  probe's reason-bearing warning texts were part of the removed helper;
-  reason-specific checkpoint refusal is tracked as a follow-up. The finalize
+  the entry preflight's refusal now names its cause — `not a git
+  repository - …`, `git executable is not available - …`, or
+  `git probe failed (<reader message>) - …` — instead of a single uniform
+  text; `saveCheckpointRecord`'s probe keeps bounded transient tolerance
+  (`readGitStatusAsync` retries a transient spawn failure once) so a
+  single EBUSY/EPERM/ETIMEDOUT cannot silently record a SHA-less
+  checkpoint. The finalize
   align stage's repository probe moved to the same reader through a new
   `readGitRepositoryStatusDetailedAsync` that preserves the exact
   `GitRepositoryStatus` reason vocabulary (`not_git_repo`,
@@ -29,13 +31,16 @@ Follow-ups from PR #3426, collated (issues #3427 + #3434):
   bounded diagnostic on every consumer — the `/swarm rollback` preview and
   clean-tree restore, the checkpoint restore preview and clean-tree
   response, and the `/swarm close` early confirmation preview plus close
-  summary warnings — instead of joining them into the confirm-token scope
-  digest unvalidated.
-- The no-sync-spawn ratchet covers `src/commands/close/align-stage.ts`
-  (sync-spawn-free after the conversion) with a runtime membership
-  self-pin; `src/tools/checkpoint.ts`'s probe conversions are guarded by a
-  dedicated spawn-slot-counting suite named in the ratchet as their
-  different guard.
+  summary warnings, and the confirmed destructive restore — instead of
+  joining them into the confirm-token scope digest unvalidated. The
+  interpolated record bytes are sanitized and bounded before rendering.
+- The no-sync-spawn ratchet's `SCANNED_FILES` gains
+  `src/commands/close/align-stage.ts` with a runtime membership self-pin —
+  this asserts direct-spawn hygiene for that file; the probe conversion
+  itself is guarded by dedicated suites (the checkpoint spawn-slot-counting
+  suite for `src/tools/checkpoint.ts`, the awaited-call and true-repo legs
+  for the align-stage seam), named as the different guards in the ratchet's
+  own comment.
 
 ## Why
 

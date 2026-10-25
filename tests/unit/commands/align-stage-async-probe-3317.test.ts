@@ -59,6 +59,21 @@ function makeCtx(directory: string): CloseStageContext {
 }
 
 describe('align stage reads through the async reader seam (#3427 C2)', () => {
+	test('feedback PRR-013: wireCloseInternals installs the async reader as the seam value', async () => {
+		// The call-site pins below would stay green if wiring.ts reverted to
+		// the sync branch.getGitRepositoryStatus (the suites overwrite the
+		// seam themselves) — this pin binds the INSTALL: after the real
+		// wireCloseInternals() runs, the seam slot IS the detailed reader.
+		const { wireCloseInternals } = await import(
+			'../../../src/commands/close/wiring'
+		);
+		const { readGitRepositoryStatusDetailedAsync: reader } = await import(
+			'../../../src/commands/git-status-read'
+		);
+		wireCloseInternals();
+		expect(closeInternals.getGitRepositoryStatus).toBe(reader);
+	});
+
 	test('source pin: the repository probe is the exact awaited seam call', () => {
 		const src = readSource('src/commands/close/align-stage.ts');
 		// The awaited form is the discrimination target: the pre-#3427

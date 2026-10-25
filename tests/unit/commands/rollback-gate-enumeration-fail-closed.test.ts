@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
 	_rollbackGateInternals,
+	describeUnreadableCause,
 	measureGitDestruction,
 	untrackedPathsInTargetTree,
 } from '../../../src/commands/rollback-gate';
@@ -30,12 +31,16 @@ const tempRoots: string[] = [];
 function makeRepo(): string {
 	const root = canonicalMkdtemp('c4-repo-');
 	tempRoots.push(root);
-	// CI runners carry no git user config — pass identity inline so the
-	// empty commit exists everywhere.
-	execSync('git -c init.defaultBranch=main init -q', { cwd: root });
+	// Host-hardened fixture (feedback PRR-012): identity inline, gpgsign off,
+	// hooks/templates isolated, bounded spawn — a global commit.gpgsign=true
+	// or hook-y init.templateDir/core.hooksPath must not break the suite.
+	execSync('git -c init.defaultBranch=main -c init.templateDir= init -q', {
+		cwd: root,
+		timeout: 30_000,
+	});
 	execSync(
-		'git -c user.name=swarm-test -c user.email=swarm-test@example.com commit -q --allow-empty -m init',
-		{ cwd: root },
+		'git -c user.name=swarm-test -c user.email=swarm-test@example.com -c commit.gpgsign=false -c core.hooksPath= commit -q --allow-empty --no-verify -m init',
+		{ cwd: root, timeout: 30_000 },
 	);
 	return root;
 }
@@ -85,6 +90,12 @@ describe('measureGitDestruction fails closed on an unreadable enumeration (#3434
 			expect(measurement.code).toBe('ETIMEDOUT');
 			expect(measurement.status).toBeNull();
 			expect(measurement.stderrTail).toBe('child timed out');
+			// Feedback PRR-004: the refusal must name the ENUMERATION, not
+			// git status — the source field drives the consumer wording.
+			expect(measurement.source).toBe('enumeration');
+			const cause = describeUnreadableCause(measurement, measurement.source);
+			expect(cause).toContain('target-tree listing');
+			expect(cause).not.toContain('git status exited');
 		}
 	});
 
@@ -101,10 +112,11 @@ describe('measureGitDestruction fails closed on an unreadable enumeration (#3434
 		if (measurement.kind === 'unreadable') {
 			expect(measurement.code).toBe('ETIMEDOUT');
 			expect(measurement.stderrTail).toBe('child timed out');
+			expect(measurement.source).toBe('enumeration');
 		}
 	});
 
-	test('both reads fail: kind unreadable with the cause', async () => {
+	test('both reads fail: kind unreadable with the cause (ls-tree short-circuits before ls-files — same code path as the ls-tree-only leg)', async () => {
 		const root = makeRepo();
 		stubStatusOk();
 		stubEnumeration({ lsTreeFails: true, lsFilesFails: true });

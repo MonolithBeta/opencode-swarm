@@ -49,30 +49,23 @@ mock.module('node:child_process', () => ({
 	spawnSync: mockSpawnSync,
 }));
 
-// #3427: the preflight probe is stubbed at the reader seam. The mock spreads
-// the real module (every other export keeps its real implementation) and
-// overrides only readGitRepositoryStatusAsync with a controllable boolean.
-// Partial-coverage note: the detailed twin
-// (readGitRepositoryStatusDetailedAsync) has its own classifier tests in
-// tests/unit/commands/align-stage-async-probe-3317.test.ts — not re-tested
-// here.
-import * as realGitStatusRead from '../../../src/commands/git-status-read';
-
+// #3427 feedback (PRR-011): the reader probes are stubbed through the
+// _internals seams by PROPERTY ASSIGNMENT (restored in afterEach) — the
+// previous mock.module registration on the git-status-read module was
+// process-global and poisoned co-run files. `setupReader` arms both seams:
+// the preflight reads the DETAILED twin (#3442 cause-specific refusal), the
+// save probe reads the boolean-ok twin.
 let repoProbeResult = false;
 let readerCalls = 0;
 
-mock.module('../../../src/commands/git-status-read', () => ({
-	...realGitStatusRead,
-	readGitRepositoryStatusAsync: async () => {
-		readerCalls += 1;
-		return repoProbeResult;
-	},
-}));
-
-// Import checkpoint AFTER mocks are set up
+// Import checkpoint BEFORE installing seam stubs (property assignment needs
+// the live _internals object).
 const { checkpoint, _internals } = await import(
 	'../../../src/tools/checkpoint'
 );
+
+const originalReadGitStatusAsync = _internals.readGitStatusAsync;
+const originalReadDetailed = _internals.readGitRepositoryStatusDetailedAsync;
 
 // Issue #2236 hardening: `gitExec` resolves the git executable via
 // `_internals.resolveGitExecutable()` before spawning. Left un-stubbed, that
@@ -91,16 +84,36 @@ function setupMock(...values: Array<child_process.SpawnSyncReturns<string>>) {
 function setupReader(isRepo: boolean) {
 	repoProbeResult = isRepo;
 	readerCalls = 0;
+	_internals.readGitRepositoryStatusDetailedAsync = (async () => {
+		readerCalls += 1;
+		return isRepo
+			? { isRepo: true as const }
+			: {
+					isRepo: false as const,
+					reason: 'not_git_repo' as const,
+					message: 'fatal: not a git repository',
+				};
+	}) as unknown as typeof _internals.readGitRepositoryStatusDetailedAsync;
+	_internals.readGitStatusAsync = (async () => {
+		readerCalls += 1;
+		return isRepo
+			? { ok: true as const, stdout: '.git' }
+			: { ok: false as const, code: null, status: 1, stderrTail: '' };
+	}) as unknown as typeof _internals.readGitStatusAsync;
 }
 
 beforeEach(() => {
 	_internals.resolveGitExecutable = () => 'git';
 });
 
-// Undo the module mocks after all tests in this file
+// Restore every property-assignment seam (the node:child_process mock.module
+// below stays for the file's lifetime — its isolation constraint is the
+// file-header note, unchanged from base).
 afterEach(() => {
 	mock.restore();
 	_internals.resolveGitExecutable = originalResolveGitExecutable;
+	_internals.readGitStatusAsync = originalReadGitStatusAsync;
+	_internals.readGitRepositoryStatusDetailedAsync = originalReadDetailed;
 });
 
 // =============================================================================
