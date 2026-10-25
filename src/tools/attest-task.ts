@@ -550,7 +550,7 @@ export async function executeAttestTask(
 	let current: ReturnType<typeof _internals.loadPlanTask>;
 	try {
 		current = _internals.loadPlanTask(directory, args.task_id);
-	} catch (error) {
+	} catch {
 		const message =
 			'the plan became unreadable while anchors were running; re-run attest against the current declaration';
 		return {
