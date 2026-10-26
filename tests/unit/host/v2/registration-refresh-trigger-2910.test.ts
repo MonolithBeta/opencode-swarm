@@ -4,29 +4,42 @@
  * registration-reload-2910.test.ts pins the refresh SEAMS; this suite pins
  * the trigger predicate and the production-path leg).
  *
+ * POST-PRR-005 contract (swarm-pr-review pr3444-20261025): the trigger
+ * fires ONLY on a policy-PERMITTED dispatch — canonicalized `config doctor`
+ * + `--fix`/`-f`, non-empty dispatched parts that are NOT the v1
+ * tool-policy refusal (both refusal arms, src/commands/tool-policy.ts:
+ * swarm_command gate + chat-fallback gate), and no swallowed handler error
+ * recorded since the dispatch began.
+ *
  *  - generic-route trigger: a dispatch through registry key `swarm` whose
- *    arguments canonicalize to `config doctor --fix` fires the refresh
+ *    arguments canonicalize to `config doctor --fix` and whose handler
+ *    output is a genuine non-refusal fires the refresh
  *    (swarm-command-routing.test.ts:303-306 shows the real generic shape);
  *  - shortcut trigger: the `swarm-config-doctor` registry shortcut fires too;
  *  - read-only commands (`swarm status`, `swarm config`) NEVER trigger;
- *  - error dispatches NEVER trigger: the canonical
- *    `Error executing /swarm …` envelope (executeSwarmCommand's catch arm)
- *    and a safeHook-swallowed handler failure (empty parts + registry
- *    record);
+ *  - POLICY REFUSALS never trigger: the REAL refusal text both v1 policy
+ *    gates emit for in-dispatcher `config doctor --fix` (submitted as-is,
+ *    no reloads, no rebuild-source consult) — this is the shape a real v2
+ *    host dispatch produces today, which is why the in-process trigger is a
+ *    policy-permitted-dispatch hook (CLI-path fixes apply on host restart);
+ *  - a safeHook-swallowed handler failure (empty parts + registry record)
+ *    never triggers;
  *  - PRODUCTION PATH: a real on-disk config, the REAL
  *    buildV2RegistrationTables (imported from src/index.ts) as the rebuild
  *    source, and a memory.enabled flip between rebuilds — the second
- *    config-doctor --fix dispatch observes changed tables and reloads BOTH
- *    domains.
+ *    permitted config-doctor --fix dispatch observes changed tables and
+ *    reloads BOTH domains.
  *
  * Sibling suites: registration-refresh-owner-parity-2910.test.ts (owner
- * isolation + v1 parity of the fresh builder).
+ * isolation + v1 parity of the fresh builder),
+ * registration-owner-release-2910.test.ts (snapshot release + rejected
+ * setup).
  *
  * Fakes only (no mock.module); plain-object recording contexts.
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
 	clearSwallowedCommandErrorRegistry,
@@ -42,7 +55,7 @@ import type { V1HooksSubset } from '../../../../src/host/v2/types';
 import { buildV2RegistrationTables } from '../../../../src/index';
 import { clearDeferredWarnings } from '../../../../src/services/warning-buffer';
 import { resetSwarmState } from '../../../../src/state';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 interface RegisteredCommand {
 	name: string;
@@ -160,7 +173,7 @@ function trackedMkdtemp(prefix: string): string {
 	return dir;
 }
 
-afterEach(() => {
+afterEach(async () => {
 	registerV2ConfigRebuildSource(undefined);
 	resetV2OperatorWarningState();
 	clearSwallowedCommandErrorRegistry();
@@ -168,7 +181,7 @@ afterEach(() => {
 	clearV2AgentTransformSurface();
 	resetSwarmState();
 	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
+		await removeTreeWithRetry(dir);
 	}
 });
 
@@ -293,16 +306,35 @@ describe('#2910 W3 config-doctor --fix refresh trigger', () => {
 		expect(served).toBe(0);
 	});
 
-	test('error dispatches never trigger: canonical error envelope and safeHook-swallowed failure', async () => {
-		// (a) The handler RESOLVED, but with the canonical error envelope the
-		// repo's own executeSwarmCommand catch arm produces
-		// (src/commands/command-dispatch.ts: `Error executing /swarm …`).
-		{
+	test('policy refusals never trigger: the REAL refusal text of BOTH v1 policy gates submits as-is without a refresh', async () => {
+		// The exact dispatched text buildSwarmCommandPrompt produces for a
+		// canonicalized `config doctor --fix` the policy refuses —
+		// (a) the swarm_command tool gate (classifySwarmCommandToolUse,
+		//     src/commands/tool-policy.ts, routable-agent arm) and
+		// (b) the chat-fallback gate (classifySwarmCommandChatFallbackUse —
+		//     the arm a host without the swarm_command tool takes).
+		// Both share the stable marker the dispatcher gates on
+		// (`/swarm config doctor --fix is not available through`); a genuine
+		// executed-doctor output never contains it.
+		const refusalTexts = [
+			[
+				'The user typed `/swarm config doctor --fix`.',
+				'/swarm config doctor --fix is not available through swarm_command. Run the CLI command directly when you intend to modify config files.',
+				'Do not invent command output. Explain the limitation and recommend the canonical CLI path above.',
+			].join('\n'),
+			[
+				'The user typed `/swarm config doctor --fix`.',
+				'/swarm config doctor --fix is not available through chat fallback because it can modify configuration files. Run the CLI command directly when you intend to apply fixes.',
+				'Do not execute this command through chat and do not invent command output.',
+			].join('\n'),
+		];
+		for (const refusalText of refusalTexts) {
 			const h = makeTriggerCtx();
-			registerV2ConfigRebuildSource(async () => ({
-				agentTable: tableB,
-				commandTable: {},
-			}));
+			let served = 0;
+			registerV2ConfigRebuildSource(async () => {
+				served += 1;
+				return { agentTable: tableB, commandTable: {} };
+			});
 			const hooks = {
 				config: async (cfg: Record<string, unknown>) => {
 					cfg.agent = tableA;
@@ -314,60 +346,69 @@ describe('#2910 W3 config-doctor --fix refresh trigger', () => {
 				) => {
 					output.parts.splice(0, output.parts.length, {
 						type: 'text',
-						text: 'Error executing /swarm config doctor: disk exploded',
+						text: refusalText,
 					});
 				},
 			} as unknown as V1HooksSubset;
 			await registerV2AgentsAndCommands(
 				h.ctx as never,
 				hooks,
-				trackedMkdtemp('v2-2910-trig-err-text-'),
+				trackedMkdtemp('v2-2910-trig-refusal-'),
 				[],
 			);
 			const generic = h.commands.find((c) => c.name === 'swarm');
+			expect(generic).toBeDefined();
+
 			await generic?.execute({
-				sessionID: 'trig-err-text',
+				sessionID: 'trig-refusal',
 				prompt: { text: 'config doctor --fix' },
 			});
+
+			// The refusal text was submitted AS-IS (the operator must still see
+			// the policy's guidance)…
 			expect(h.prompts.length).toBe(1);
+			expect(h.prompts[0]?.text).toBe(refusalText);
+			// …but a refusal fixed NOTHING: no rebuild-source consult, no
+			// reloads (this is the pre-PRR-005 defect — the trigger used to
+			// fire on exactly this shape).
+			expect(served).toBe(0);
 			expect(h.agentReloads).toBe(0);
 			expect(h.commandReloads).toBe(0);
 		}
-		// (b) Production shape: the handler is safeHook-wrapped and THROWS —
-		// empty parts + a swallowed-error registry record; fallback submitted.
-		{
-			const h = makeTriggerCtx();
-			registerV2ConfigRebuildSource(async () => ({
-				agentTable: tableB,
-				commandTable: {},
-			}));
-			const throwing = async (): Promise<void> => {
-				throw new Error('doctor handler exploded (deliberate)');
-			};
-			const hooks = {
-				config: async (cfg: Record<string, unknown>) => {
-					cfg.agent = tableA;
-					cfg.command = DOCTOR_TABLE;
-				},
-				'command.execute.before': safeHook(throwing),
-			} as unknown as V1HooksSubset;
-			await registerV2AgentsAndCommands(
-				h.ctx as never,
-				hooks,
-				trackedMkdtemp('v2-2910-trig-err-swallow-'),
-				[],
-			);
-			const generic = h.commands.find((c) => c.name === 'swarm');
-			await generic?.execute({
-				sessionID: 'trig-err-swallow',
-				prompt: { text: 'config doctor --fix' },
-			});
-			// Template fallback was submitted, no reload fired.
-			expect(h.prompts.length).toBe(1);
-			expect(h.prompts[0]?.text).toBe('/swarm config doctor --fix');
-			expect(h.agentReloads).toBe(0);
-			expect(h.commandReloads).toBe(0);
-		}
+	});
+
+	test('a safeHook-swallowed handler failure never triggers (empty parts + registry record)', async () => {
+		const h = makeTriggerCtx();
+		registerV2ConfigRebuildSource(async () => ({
+			agentTable: tableB,
+			commandTable: {},
+		}));
+		const throwing = async (): Promise<void> => {
+			throw new Error('doctor handler exploded (deliberate)');
+		};
+		const hooks = {
+			config: async (cfg: Record<string, unknown>) => {
+				cfg.agent = tableA;
+				cfg.command = DOCTOR_TABLE;
+			},
+			'command.execute.before': safeHook(throwing),
+		} as unknown as V1HooksSubset;
+		await registerV2AgentsAndCommands(
+			h.ctx as never,
+			hooks,
+			trackedMkdtemp('v2-2910-trig-err-swallow-'),
+			[],
+		);
+		const generic = h.commands.find((c) => c.name === 'swarm');
+		await generic?.execute({
+			sessionID: 'trig-err-swallow',
+			prompt: { text: 'config doctor --fix' },
+		});
+		// Template fallback was submitted, no reload fired.
+		expect(h.prompts.length).toBe(1);
+		expect(h.prompts[0]?.text).toBe('/swarm config doctor --fix');
+		expect(h.agentReloads).toBe(0);
+		expect(h.commandReloads).toBe(0);
 	});
 
 	test('production path: real buildV2RegistrationTables + on-disk memory.enabled flip reloads both domains', async () => {

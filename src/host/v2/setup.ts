@@ -114,7 +114,6 @@ async function deferredV2StartupModelPreflight(
 
 import { z } from 'zod';
 import { loadPluginConfigWithMetaAsync } from '../../config/loader';
-import { clearSwallowedCommandErrorRegistry } from '../../hooks/utils';
 import {
 	collectEnabledAgentModels,
 	collectModelRosterWarnings,
@@ -130,9 +129,10 @@ import { log } from '../../utils';
 import { resolveProjectRootDecision } from '../../utils/project-boundary';
 import { withTimeout } from '../../utils/timeout';
 import {
+	clearV2CtxOwnerBinding,
+	clearV2OwnerRegistrationSnapshot,
 	registerV2AgentsAndCommands,
 	registerV2ConfigRebuildSourceForOwner,
-	resetV2OperatorWarningState,
 	setV2OperatorQuiet,
 	setV2OperatorQuietForOwner,
 } from './agents-commands';
@@ -302,193 +302,230 @@ export async function openCodeSwarmV2Setup(
 		deps.buildV2RegistrationTables,
 	);
 	setV2OperatorQuietForOwner(ownerToken, false);
-	// Route the raw directory through the same project-root decision the v1
-	// init path applies (issue #2127): a subdirectory owned by a parent
-	// project root redirects, so session-scoped state does not split-brain
-	// between two .swarm trees. Fail-closed keeps the raw directory (matching
-	// the v1 bootstrapRoot behavior) with state writes disabled upstream.
-	const rootDecision = resolveProjectRootDecision(rawDirectory);
-	const directory =
-		rootDecision.kind === 'redirect'
-			? rootDecision.owningRoot
-			: rootDecision.kind === 'root'
-				? rootDecision.directory
-				: rawDirectory;
-	const state: CollectedState = createRegistrationSink();
+	// #PRR-017 (swarm-pr-review pr3444-20261025): everything AFTER the
+	// owner-state registration is guarded — a rejection (the designed FATAL
+	// posture: runInit timeout/throw) unregisters THIS instance's owner state
+	// (rebuild source, quiet, registration snapshot, transform surface, ctx
+	// binding — all sync owner-scoped calls) and RETHROWS, so a failed setup
+	// leaks no immortal owner entry and no dead-but-current token.
+	try {
+		// Route the raw directory through the same project-root decision the v1
+		// init path applies (issue #2127): a subdirectory owned by a parent
+		// project root redirects, so session-scoped state does not split-brain
+		// between two .swarm trees. Fail-closed keeps the raw directory (matching
+		// the v1 bootstrapRoot behavior) with state writes disabled upstream.
+		const rootDecision = resolveProjectRootDecision(rawDirectory);
+		const directory =
+			rootDecision.kind === 'redirect'
+				? rootDecision.owningRoot
+				: rootDecision.kind === 'root'
+					? rootDecision.directory
+					: rawDirectory;
+		const state: CollectedState = createRegistrationSink();
 
-	// v1 PluginInput view — the init core consumes only `directory` and
-	// `client`. #3169 Phase 2: the session-client shim bridges the v2
-	// `ctx.session` domain into the v1 client subset Epic's dispatch paths use
-	// (feature-detected; a host lacking the required surface keeps
-	// `undefined`, preserving every client-absent path).
-	const input = {
-		client: createV2SessionClient(ctx),
-		directory,
-		worktree: directory,
-	} as unknown as Parameters<V2SetupDependencies['runInit']>[0];
+		// v1 PluginInput view — the init core consumes only `directory` and
+		// `client`. #3169 Phase 2: the session-client shim bridges the v2
+		// `ctx.session` domain into the v1 client subset Epic's dispatch paths use
+		// (feature-detected; a host lacking the required surface keeps
+		// `undefined`, preserving every client-absent path).
+		const input = {
+			client: createV2SessionClient(ctx),
+			directory,
+			worktree: directory,
+		} as unknown as Parameters<V2SetupDependencies['runInit']>[0];
 
-	const hooks = await withTimeout(
-		deps.runInit(input),
-		V2_SETUP_TIMEOUT_MS,
-		new Error('[opencode-swarm] v2 setup: initialization exceeded budget'),
-	);
-
-	// The five registrations touch disjoint host Context domains and read no
-	// state written by one another, so they run concurrently under ONE
-	// registration-stage budget; each keeps its own non-fatal isolation. A domain
-	// still pending when the budget fires is named in a deferred warning (the
-	// operator-reachable channel; log() is debug-gated) — setup resolves with the
-	// registrations that completed, and a late arrival is disposed by the sink
-	// once cleanup has started.
-	const pendingDomains = new Set<string>();
-	const runRegistration = (
-		domain: string,
-		register: () => Promise<unknown>,
-	): Promise<unknown> => {
-		pendingDomains.add(domain);
-		return register()
-			.catch((err: unknown) => {
-				const message = err instanceof Error ? err.message : String(err);
-				log(`v2 ${domain} registration failed (non-fatal)`, {
-					error: message,
-				});
-				// #3352/#3318: a REJECTED domain is operator-visible, not only
-				// debug-logged (log() is OPENCODE_SWARM_DEBUG-gated).
-				addDeferredWarning(
-					`[opencode-swarm] v2 setup: ${domain} registration failed (${message}); the domain was not registered.`,
-				);
-			})
-			.finally(() => {
-				pendingDomains.delete(domain);
-			});
-	};
-	await withTimeout(
-		Promise.all([
-			runRegistration('agent/command', () =>
-				registerV2AgentsAndCommands(ctx, hooks, directory, state.registrations),
-			),
-			runRegistration('tool', () =>
-				registerV2Tools(ctx, hooks, directory, state.registrations),
-			),
-			runRegistration('context-hook', () =>
-				registerV2ContextHook(ctx, hooks, directory, state.registrations),
-			),
-			runRegistration('tool-hook', () =>
-				registerV2ToolHooks(ctx, hooks, directory, state.registrations),
-			),
-			runRegistration('prompt-hook', () =>
-				registerV2SessionHooks(ctx, hooks, directory, state.registrations),
-			),
-		]),
-		_internals.registrationTimeoutMs,
-		new Error(
-			'[opencode-swarm] v2 setup: parallel registration exceeded budget',
-		),
-	).catch((err: unknown) => {
-		const pending = [...pendingDomains];
-		log('v2 registration failed (non-fatal)', {
-			error: err instanceof Error ? err.message : String(err),
-			pending,
-		});
-		// #3350 AC5 (guard removed — decision recorded on
-		// https://github.com/ZaxbyHub/opencode-swarm/issues/3350#issuecomment-6388937737):
-		// the timeout catch ALWAYS warns, even when every domain completed
-		// after the budget raced ahead of the last .finally — the stage still
-		// exceeded its budget and the operator must see that.
-		const pendingText =
-			pending.length > 0
-				? pending.join(', ')
-				: 'none — domains completed but the stage exceeded budget';
-		addDeferredWarning(
-			`[opencode-swarm] v2 setup: registration still pending after ${_internals.registrationTimeoutMs}ms (${pendingText}); the plugin loaded with partial registration.`,
+		const hooks = await withTimeout(
+			deps.runInit(input),
+			V2_SETUP_TIMEOUT_MS,
+			new Error('[opencode-swarm] v2 setup: initialization exceeded budget'),
 		);
-	});
 
-	// Deferred event pump (detached; named for the C6 convention).
-	const stopPump = startDeferredEventPump(ctx, hooks);
-	state.pumpStop = stopPump;
-
-	// #3022 D2: remember the agent transform surface for runtime model
-	// rewrites (fallback advance application — the v2-native equivalent of the
-	// v1 output.message.model write). #2910 W5: token-carrying so this
-	// instance's cleanup clears only its own surface.
-	registerV2AgentTransformSurface(ctx, ownerToken);
-
-	// #3022 AC4: clientless startup roster preflight — the catalog-backed
-	// preflight is client-only, so on v2 validate the effective models against
-	// the checked-in verified roster instead. Every failure mode is a
-	// non-fatal warning. Run INLINE at the tail of setup: live 2.0.21 probing
-	// showed the host's plugin realm does NOT execute post-setup timer
-	// callbacks, so a setTimeout-deferred run never fired; this is a local
-	// two-file JSON read (no network, ~17 ms warm), within invariant 1's
-	// fast-init allowance. The withTimeout wrap satisfies the C6 scan's
-	// same-line bound requirement for awaits inside openCodeSwarmV2Setup.
-	await withTimeout(
-		deferredV2StartupModelPreflight(directory),
-		V2_SETUP_TIMEOUT_MS,
-		new Error('[opencode-swarm] v2: startup model preflight exceeded budget'),
-	);
-
-	state.disposeV1 =
-		typeof hooks.dispose === 'function' ? hooks.dispose : undefined;
-
-	log('[opencode-swarm] v2 setup complete', {
-		directory,
-		tools: Object.keys(hooks.tool ?? {}).length,
-	});
-
-	return async function cleanupV2Plugin(): Promise<void> {
-		state.closeRegistrations();
-		if (typeof state.pumpStop === 'function') state.pumpStop();
-		// #3169 Phase 2: drop the shim's bounded registries immediately after
-		// the pump stop flag — an in-flight pump iteration can still record one
-		// error envelope afterwards; that bounded residue is re-cleared on the
-		// next cleanup (documented in the trace).
-		clearV2SessionClientState();
-		// #2910 W5: owner-scoped clear — only THIS instance's surface + held
-		// registrations; a concurrent live setup's surface survives.
-		clearV2AgentTransformSurface(ownerToken);
-		// #3401: the pump-side tool-name registry must not outlive the pump —
-		// stale (session,call)→name residue would put a re-setup under
-		// eviction pressure (and could hand a recycled dispatch id a stale
-		// name).
-		clearToolNameRegistry();
-		// #3318 AC6 / #2910 W6: the safeHook swallowed-error registry and the
-		// operator-warning dedup state are setup-lifetime state — a re-setup
-		// must not inherit the previous instance's stale entries.
-		clearSwallowedCommandErrorRegistry();
-		resetV2OperatorWarningState();
-		// #2910 W3/W5: unregister THIS instance's rebuild source and quiet
-		// entry (ambient/other-owner entries are untouched — owner isolation).
-		registerV2ConfigRebuildSourceForOwner(ownerToken, undefined);
-		setV2OperatorQuietForOwner(ownerToken, undefined);
-		for (const registration of state.registrations) {
-			try {
-				await withTimeout(
-					registration.dispose(),
-					V2_SETUP_TIMEOUT_MS,
-					new Error(
-						'[opencode-swarm] v2 cleanup: registration dispose exceeded budget',
+		// The five registrations touch disjoint host Context domains and read no
+		// state written by one another, so they run concurrently under ONE
+		// registration-stage budget; each keeps its own non-fatal isolation. A domain
+		// still pending when the budget fires is named in a deferred warning (the
+		// operator-reachable channel; log() is debug-gated) — setup resolves with the
+		// registrations that completed, and a late arrival is disposed by the sink
+		// once cleanup has started.
+		const pendingDomains = new Set<string>();
+		const runRegistration = (
+			domain: string,
+			register: () => Promise<unknown>,
+		): Promise<unknown> => {
+			pendingDomains.add(domain);
+			return register()
+				.catch((err: unknown) => {
+					const message = err instanceof Error ? err.message : String(err);
+					log(`v2 ${domain} registration failed (non-fatal)`, {
+						error: message,
+					});
+					// #3352/#3318: a REJECTED domain is operator-visible, not only
+					// debug-logged (log() is OPENCODE_SWARM_DEBUG-gated).
+					addDeferredWarning(
+						`[opencode-swarm] v2 setup: ${domain} registration failed (${message}); the domain was not registered.`,
+					);
+				})
+				.finally(() => {
+					pendingDomains.delete(domain);
+				});
+		};
+		await withTimeout(
+			Promise.all([
+				runRegistration('agent/command', () =>
+					// #2910 W3/W5 / review PRR-003: the setup instance's token —
+					// binds this ctx to THIS instance so its dispatch-driven
+					// refresh resolves through its own rebuild source/snapshot.
+					registerV2AgentsAndCommands(
+						ctx,
+						hooks,
+						directory,
+						state.registrations,
+						ownerToken,
 					),
-				);
-			} catch (err) {
-				log('v2 registration dispose failed (non-fatal)', {
-					error: err instanceof Error ? err.message : String(err),
+				),
+				runRegistration('tool', () =>
+					registerV2Tools(ctx, hooks, directory, state.registrations),
+				),
+				runRegistration('context-hook', () =>
+					registerV2ContextHook(ctx, hooks, directory, state.registrations),
+				),
+				runRegistration('tool-hook', () =>
+					registerV2ToolHooks(ctx, hooks, directory, state.registrations),
+				),
+				runRegistration('prompt-hook', () =>
+					registerV2SessionHooks(ctx, hooks, directory, state.registrations),
+				),
+			]),
+			_internals.registrationTimeoutMs,
+			new Error(
+				'[opencode-swarm] v2 setup: parallel registration exceeded budget',
+			),
+		).catch((err: unknown) => {
+			const pending = [...pendingDomains];
+			log('v2 registration failed (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+				pending,
+			});
+			// #3350 AC5 (guard removed — decision recorded on
+			// https://github.com/ZaxbyHub/opencode-swarm/issues/3350#issuecomment-6388937737):
+			// the timeout catch ALWAYS warns, even when every domain completed
+			// after the budget raced ahead of the last .finally — the stage still
+			// exceeded its budget and the operator must see that.
+			const pendingText =
+				pending.length > 0
+					? pending.join(', ')
+					: 'none — domains completed but the stage exceeded budget';
+			addDeferredWarning(
+				`[opencode-swarm] v2 setup: registration still pending after ${_internals.registrationTimeoutMs}ms (${pendingText}); the plugin loaded with partial registration.`,
+			);
+		});
+
+		// Deferred event pump (detached; named for the C6 convention).
+		const stopPump = startDeferredEventPump(ctx, hooks);
+		state.pumpStop = stopPump;
+
+		// #3022 D2: remember the agent transform surface for runtime model
+		// rewrites (fallback advance application — the v2-native equivalent of
+		// the v1 output.message.model write). #2910 W5: token-carrying so this
+		// instance's cleanup clears only its own surface.
+		registerV2AgentTransformSurface(ctx, ownerToken);
+
+		// #3022 AC4: clientless startup roster preflight — the catalog-backed
+		// preflight is client-only, so on v2 validate the effective models against
+		// the checked-in verified roster instead. Every failure mode is a
+		// non-fatal warning. Run INLINE at the tail of setup: live 2.0.21 probing
+		// showed the host's plugin realm does NOT execute post-setup timer
+		// callbacks, so a setTimeout-deferred run never fired; this is a local
+		// two-file JSON read (no network, ~17 ms warm), within invariant 1's
+		// fast-init allowance. The withTimeout wrap satisfies the C6 scan's
+		// same-line bound requirement for awaits inside openCodeSwarmV2Setup.
+		await withTimeout(
+			deferredV2StartupModelPreflight(directory),
+			V2_SETUP_TIMEOUT_MS,
+			new Error('[opencode-swarm] v2: startup model preflight exceeded budget'),
+		);
+
+		state.disposeV1 =
+			typeof hooks.dispose === 'function' ? hooks.dispose : undefined;
+
+		log('[opencode-swarm] v2 setup complete', {
+			directory,
+			tools: Object.keys(hooks.tool ?? {}).length,
+		});
+
+		return async function cleanupV2Plugin(): Promise<void> {
+			state.closeRegistrations();
+			if (typeof state.pumpStop === 'function') state.pumpStop();
+			// #3169 Phase 2: drop the shim's bounded registries immediately after
+			// the pump stop flag — an in-flight pump iteration can still record one
+			// error envelope afterwards; that bounded residue is re-cleared on the
+			// next cleanup (documented in the trace).
+			clearV2SessionClientState();
+			// #2910 W5: owner-scoped clear — only THIS instance's surface + held
+			// registrations; a concurrent live setup's surface survives.
+			clearV2AgentTransformSurface(ownerToken);
+			// #3401: the pump-side tool-name registry must not outlive the pump —
+			// stale (session,call)→name residue would put a re-setup under
+			// eviction pressure (and could hand a recycled dispatch id a stale
+			// name).
+			clearToolNameRegistry();
+			// #2910 W3/W5 / review PRR-002 (swarm-pr-review pr3444-20261025): the
+			// process-global swallowed-error registry and the operator-warning
+			// dedup state are NOT cleared here anymore. Both are bounded FIFO
+			// with explicit eviction (64 / 32 — the AGENTS.md invariant-8
+			// strategy), so they cannot grow unbounded WITHOUT a clear; a global
+			// clear at cleanup WOULD cross instance boundaries (an overlapping
+			// live instance's unread entries and dedup state are its own).
+			// #2910 W3/W5: unregister THIS instance's owner-scoped state —
+			// rebuild source, quiet entry, the registration snapshot (review
+			// PRR-004: without the snapshot release every completed setup stayed
+			// immortal in the owner registry), and the ctx→owner binding (review
+			// PRR-003). Ambient/other-owner entries are untouched (owner
+			// isolation).
+			registerV2ConfigRebuildSourceForOwner(ownerToken, undefined);
+			setV2OperatorQuietForOwner(ownerToken, undefined);
+			clearV2OwnerRegistrationSnapshot(ownerToken);
+			clearV2CtxOwnerBinding(ctx);
+			for (const registration of state.registrations) {
+				try {
+					await withTimeout(
+						registration.dispose(),
+						V2_SETUP_TIMEOUT_MS,
+						new Error(
+							'[opencode-swarm] v2 cleanup: registration dispose exceeded budget',
+						),
+					);
+				} catch (err) {
+					log('v2 registration dispose failed (non-fatal)', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			}
+			if (state.disposeV1) {
+				await withTimeout(
+					state.disposeV1(),
+					V2_SETUP_TIMEOUT_MS,
+					new Error('[opencode-swarm] v2 cleanup: v1 dispose exceeded budget'),
+				).catch((err: unknown) => {
+					log('v1 dispose during v2 cleanup failed (non-fatal)', {
+						error: err instanceof Error ? err.message : String(err),
+					});
 				});
 			}
-		}
-		if (state.disposeV1) {
-			await withTimeout(
-				state.disposeV1(),
-				V2_SETUP_TIMEOUT_MS,
-				new Error('[opencode-swarm] v2 cleanup: v1 dispose exceeded budget'),
-			).catch((err: unknown) => {
-				log('v1 dispose during v2 cleanup failed (non-fatal)', {
-					error: err instanceof Error ? err.message : String(err),
-				});
-			});
-		}
-	};
+		};
+	} catch (err) {
+		// #PRR-017 (swarm-pr-review pr3444-20261025): a REJECTED setup must not
+		// leak this instance's owner state — the cleanup closure above never
+		// exists on this path, so the owner-scoped unregistration runs here
+		// (all sync; no awaits in the catch). The throw propagates to the v2
+		// host unchanged (it skips the plugin after the FATAL stderr line).
+		registerV2ConfigRebuildSourceForOwner(ownerToken, undefined);
+		setV2OperatorQuietForOwner(ownerToken, undefined);
+		clearV2OwnerRegistrationSnapshot(ownerToken);
+		clearV2AgentTransformSurface(ownerToken);
+		clearV2CtxOwnerBinding(ctx);
+		throw err;
+	}
 }
 
 /**

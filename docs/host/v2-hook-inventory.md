@@ -46,7 +46,7 @@ Every contract sentence of AGENTS.md invariant 10 (both the v1 and the v2 paragr
 
 ## ToolContext synthesis (v2 → v1)
 
-The v2 tool context (`{sessionID, agent, messageID, id, signal, progress}`) is bridged to the full v1 `ToolContext`: `directory`/`worktree` = project root captured at setup (invariant 4 — never `process.cwd()`), `abort` ← `signal`, `metadata({title?, metadata?})` → `progress` (argument shape mapped), `ask` → v2 permission domain when reply-capable, else fail-closed. Regression test: `tests/unit/host/v2/dual-shape-parity.test.ts` (third test - directory injection via the `src/host/v2/tools` `_internals` seam).
+The v2 tool context (`{sessionID, agent, messageID, id, signal, progress}`) is bridged to the full v1 `ToolContext`: `directory`/`worktree` = project root captured at setup (invariant 4 — never `process.cwd()`), `abort` ← `signal`, `metadata({title?, metadata?})` → `progress` (argument shape mapped), `ask` → the v2 permission domain: assert-first when `permission.assert` is available (2.0.29+; resolves = allow, rejects = deny; input `{sessionID, agent, action, resources}` with the host's normalizeAction table), else — on reply-only hosts (2.0.26 pin) — DENY on any `reply` resolution (`reply` is the answer-side RPC, not an ask surface; #3351 recorded decision), and fail-closed with no permission domain. Regression: tests/unit/host/v2/permission-bridge-fail-closed-3327.test.ts. Regression test: `tests/unit/host/v2/dual-shape-parity.test.ts` (third test - directory injection via the `src/host/v2/tools` `_internals` seam).
 
 ## Part-kind mapping (messages chain)
 

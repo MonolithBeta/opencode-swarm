@@ -6590,10 +6590,19 @@ export async function buildV2RegistrationTables(directory: string): Promise<{
 				return null;
 			})
 		: null;
+	// Review PRR-016 (swarm-pr-review pr3444-20261025): a STABLE sessionId —
+	// getAgentConfigs writes an `agent-tools-<sid>.json` evidence snapshot,
+	// and an undefined sid became `init-<Date.now()>`, so EVERY refresh (even
+	// one that later concludes tables-unchanged — the write happens inside
+	// getAgentConfigs, before the comparison) added a NEW timestamped file
+	// with no retention sweep. The stable sid makes the file a single
+	// overwritten agent-tools-v2-registration-refresh.json (getAgentConfigs
+	// only interpolates the sid into the filename — any non-numeric string is
+	// fine).
 	const agents = getAgentConfigs(
 		configWithResolvedAutoReview,
 		directory,
-		undefined,
+		'v2-registration-refresh',
 		projectContext ?? undefined,
 	);
 	const synthetic: Record<string, unknown> = {};

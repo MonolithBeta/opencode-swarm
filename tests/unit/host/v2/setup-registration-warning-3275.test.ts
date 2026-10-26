@@ -17,14 +17,13 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { clearV2AgentTransformSurface } from '../../../../src/host/v2/model-apply';
 import { openCodeSwarmV2Setup } from '../../../../src/host/v2/setup';
 import {
 	clearDeferredWarnings,
 	getDeferredWarnings,
 } from '../../../../src/services/warning-buffer';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 const tempDirs: string[] = [];
 
@@ -53,11 +52,11 @@ const isCommandRegistrationWarning = (text: string): boolean =>
 	text.includes('command') && text.includes('registration');
 
 describe('#3318 AC3 — registration failure records a command-registration warning on both surfaces', () => {
-	afterEach(() => {
+	afterEach(async () => {
 		clearDeferredWarnings();
 		clearV2AgentTransformSurface();
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			await removeTreeWithRetry(dir);
 		}
 	});
 
@@ -68,7 +67,8 @@ describe('#3318 AC3 — registration failure records a command-registration warn
 		const originalWarn = console.warn;
 		const warnTexts: string[] = [];
 		console.warn = (...args: unknown[]) => {
-			if (args.length > 0 && typeof args[0] === 'string') warnTexts.push(args[0]);
+			if (args.length > 0 && typeof args[0] === 'string')
+				warnTexts.push(args[0]);
 		};
 		let cleanup: (() => Promise<void>) | undefined;
 		try {
@@ -104,7 +104,9 @@ describe('#3318 AC3 — registration failure records a command-registration warn
 		// sanitizes whitespace runs on write).
 		const collapse = (s: string) => s.replace(/\s+/g, ' ').trim();
 		expect(
-			registrationWarnings.some((w) => collapse(w) === collapse(matchedWarn ?? '')),
+			registrationWarnings.some(
+				(w) => collapse(w) === collapse(matchedWarn ?? ''),
+			),
 		).toBe(true);
 	}, 30000);
 });

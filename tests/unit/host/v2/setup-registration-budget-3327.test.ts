@@ -10,7 +10,7 @@ import {
 	clearDeferredWarnings,
 	getDeferredWarnings,
 } from '../../../../src/services/warning-buffer';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 /**
  * #3327 review feedback: the v2 registration stage runs its five domains in
@@ -137,14 +137,14 @@ beforeEach(() => {
 	dir = canonicalMkdtemp('v2-reg-budget-3327-');
 });
 
-afterEach(() => {
+afterEach(async () => {
 	if (savedBudget !== undefined) {
 		_internals.registrationTimeoutMs = savedBudget;
 		savedBudget = undefined;
 	}
 	clearV2AgentTransformSurface();
 	clearDeferredWarnings();
-	fs.rmSync(dir, { recursive: true, force: true });
+	await removeTreeWithRetry(dir);
 });
 
 describe('#3327 registration budget: stalled domain (seam-pinned budget)', () => {

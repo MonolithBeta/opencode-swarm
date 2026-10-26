@@ -82,12 +82,11 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { getAgentConfigs } from '../../../../src/agents';
 import type { PluginConfig } from '../../../../src/config';
 import { registerV2AgentsAndCommands } from '../../../../src/host/v2/agents-commands';
 import type { V1HooksSubset } from '../../../../src/host/v2/types';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 /** A mapped v2 Agent.Info as captured from the agent editor. */
 interface CapturedAgent {
@@ -239,9 +238,9 @@ function rulesForAction(
 	return (agent.permissions ?? []).filter((rule) => rule.action === action);
 }
 
-afterEach(() => {
+afterEach(async () => {
 	for (const dir of tempDirs.splice(0)) {
-		rmSync(dir, { recursive: true, force: true });
+		await removeTreeWithRetry(dir);
 	}
 });
 

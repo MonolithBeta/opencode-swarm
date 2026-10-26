@@ -362,7 +362,20 @@ export function parseTar(
 	return files;
 }
 
-/** Gunzip + parse a tarball, bounded on both the compressed and plain sizes. */
+/**
+ * Gunzip + parse a tarball, bounded on both the compressed and plain sizes.
+ * FAIL-CLOSED (review PRR-032, swarm-pr-review pr3444-20261025): every
+ * gunzip failure — including the maxOutputLength
+ * capacity abort (ERR_BUFFER_TOO_LARGE / "Too large") — REJECTS the corpus
+ * (null → SOURCE_NOT_FOUND). The former unbounded-retry fallback ("some
+ * runtimes ignore maxOutputLength; retry unbounded gunzip and bound-check
+ * the result") is itself the unbounded-decompression hazard: a
+ * decompression-bomb tarball under the COMPRESSED cap could exhaust memory
+ * before the post-hoc bound check ran, and no bounded gunzip variant exists
+ * for a runtime that ignores maxOutputLength — so there is no legitimate
+ * non-capacity fallback to keep either (corrupt data fails the bounded call
+ * the same way).
+ */
 export function extractTarballEntries(
 	tgz: Uint8Array,
 ): Map<string, Uint8Array> | null {
@@ -370,14 +383,7 @@ export function extractTarballEntries(
 	try {
 		plain = new Uint8Array(zlib.gunzipSync(tgz, { maxOutputLength: MAX_TARBALL_TOTAL_BYTES }));
 	} catch {
-		// Some runtimes ignore maxOutputLength; retry unbounded gunzip and
-		// bound-check the result instead (the compressed input is already capped).
-		try {
-			plain = new Uint8Array(zlib.gunzipSync(tgz));
-		} catch {
-			return null;
-		}
-		if (plain.byteLength > MAX_TARBALL_TOTAL_BYTES) return null;
+		return null;
 	}
 	return parseTar(plain, MAX_TARBALL_MEMBER_BYTES);
 }

@@ -64,8 +64,18 @@ export function markFailClosed<I, O>(
  * READ-ONCE (a successful read consumes them) so a repeated empty-parts
  * dispatch cannot re-warn a stale failure. Write-only for v1 semantics: v1
  * callers never read, so recording never changes v1 behavior.
+ *
+ * #2910 W6 / review PRR-006: each record carries a timestamp so a reader can
+ * pass `sinceMs` (the dispatch-start time) and treat older records as STALE
+ * timeout residue — consume-and-ignore — instead of letting a timed-out
+ * dispatch's late-throwing handler poison the NEXT same-key dispatch.
  */
-const swallowedCommandErrors = new Map<string, string>();
+interface SwallowedCommandErrorRecord {
+	message: string;
+	/** Recording time (Date.now()) — staleness axis for readers. */
+	at: number;
+}
+const swallowedCommandErrors = new Map<string, SwallowedCommandErrorRecord>();
 const SWALLOWED_COMMAND_ERROR_BOUND = 64;
 
 /** Registry key: NUL cannot appear in a host-provided sessionID/command. */
@@ -82,7 +92,7 @@ function recordSwallowedCommandError(
 	const key = swallowedCommandErrorKey(sessionID, command);
 	// Delete-then-set so a re-recorded key is also the NEWEST for FIFO eviction.
 	swallowedCommandErrors.delete(key);
-	swallowedCommandErrors.set(key, message);
+	swallowedCommandErrors.set(key, { message, at: Date.now() });
 	while (swallowedCommandErrors.size > SWALLOWED_COMMAND_ERROR_BOUND) {
 		const oldest = swallowedCommandErrors.keys().next().value;
 		if (oldest === undefined) break;
@@ -95,16 +105,24 @@ function recordSwallowedCommandError(
  * returns the recorded error message for the exact (sessionID, command) pair
  * and consumes the entry, or undefined when nothing is recorded (a miss
  * consumes nothing). The v2 command dispatcher is the sole designed reader.
+ *
+ * `sinceMs` (#2910 W6 / review PRR-006): when provided, a record OLDER than
+ * this timestamp is STALE timeout residue (a timed-out dispatch's handler
+ * throwing after its dispatch already returned) — it is consumed and ignored
+ * (undefined) so it cannot poison this dispatch. Records created at or after
+ * `sinceMs` are fresh failures of THIS dispatch.
  */
 export function getLastSwallowedCommandError(
 	sessionID: string,
 	command: string,
+	sinceMs?: number,
 ): string | undefined {
 	const key = swallowedCommandErrorKey(sessionID, command);
-	const message = swallowedCommandErrors.get(key);
-	if (message === undefined) return undefined;
+	const record = swallowedCommandErrors.get(key);
+	if (record === undefined) return undefined;
 	swallowedCommandErrors.delete(key);
-	return message;
+	if (sinceMs !== undefined && record.at < sinceMs) return undefined;
+	return record.message;
 }
 
 /** Empty the swallowed-command-error registry (v2 setup cleanup / tests). */

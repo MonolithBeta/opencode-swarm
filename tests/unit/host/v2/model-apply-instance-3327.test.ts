@@ -29,9 +29,7 @@ import {
 } from '../../../../src/host/v2/model-apply';
 import { openCodeSwarmV2Setup } from '../../../../src/host/v2/setup';
 import type { V1HooksSubset } from '../../../../src/host/v2/types';
-import {
-	clearDeferredWarnings,
-} from '../../../../src/services/warning-buffer';
+import { clearDeferredWarnings } from '../../../../src/services/warning-buffer';
 import { resetSwarmState } from '../../../../src/state';
 import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 

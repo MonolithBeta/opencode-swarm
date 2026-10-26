@@ -121,12 +121,9 @@ describe('#3352 register* atomicity: sibling isolation', () => {
 			},
 		} as unknown as V1HooksSubset;
 
-		await registerV2AgentsAndCommands(
-			ctx,
-			hooks,
-			dir,
-			registrations,
-		).catch(() => {});
+		await registerV2AgentsAndCommands(ctx, hooks, dir, registrations).catch(
+			() => {},
+		);
 
 		expect(transformCalls).toContain('command');
 		expect(addedCommands).toEqual(['swarm-status']);
@@ -156,9 +153,7 @@ describe('#3352 register* atomicity: sibling isolation', () => {
 		);
 
 		expect(hookCalls).toContain('prompt');
-		const warning = getDeferredWarnings().find((w) =>
-			w.includes('compaction'),
-		);
+		const warning = getDeferredWarnings().find((w) => w.includes('compaction'));
 		expect(warning).toBeDefined();
 	});
 
@@ -176,8 +171,8 @@ describe('#3352 register* atomicity: sibling isolation', () => {
 		await registerV2ToolHooks(ctx, minimalHooks, dir, registrations);
 
 		expect(hookCalls).toEqual(['execute.before', 'execute.after']);
-		expect(
-			getDeferredWarnings().filter((w) => /execute\./.test(w)),
-		).toEqual([]);
+		expect(getDeferredWarnings().filter((w) => /execute\./.test(w))).toEqual(
+			[],
+		);
 	});
 });

@@ -16,10 +16,9 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { registerV2AgentsAndCommands } from '../../../../src/host/v2/agents-commands';
 import type { V1HooksSubset } from '../../../../src/host/v2/types';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 interface RecordedPrompt {
 	sessionID: string;
@@ -46,9 +45,9 @@ function trackedMkdtemp(prefix: string): string {
 }
 
 describe('#3318 AC9 — invocation.delivery is passed through to the submitted prompt input', () => {
-	afterEach(() => {
+	afterEach(async () => {
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			await removeTreeWithRetry(dir);
 		}
 	});
 
@@ -127,7 +126,10 @@ describe('#3318 AC9 — invocation.delivery is passed through to the submitted p
 	test('without delivery the input is exactly { sessionID, text } (green at both ends)', async () => {
 		const { commands, prompts } = await registerWithRecordingPrompt();
 		const swarm = commands.find((c) => c.name === 'swarm');
-		await swarm?.execute({ sessionID: 'ses-ac9-none', prompt: { text: 'status' } });
+		await swarm?.execute({
+			sessionID: 'ses-ac9-none',
+			prompt: { text: 'status' },
+		});
 		expect(prompts.length).toBe(1);
 		expect(prompts[0]).toEqual({
 			sessionID: 'ses-ac9-none',

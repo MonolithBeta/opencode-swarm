@@ -88,13 +88,17 @@ export interface V2RenderedModelRequest {
  * verbatim on both surfaces; nothing is dropped, reordered, or rewritten
  * except what the plugin hook itself did to the event.
  */
-export function hostV2ToModelRequest(event: V2PostContextEvent): V2RenderedModelRequest {
+export function hostV2ToModelRequest(
+	event: V2PostContextEvent,
+): V2RenderedModelRequest {
 	// Verbatim claim 2: `system: shaped.system` — array order preserved, one
 	// entry per part. Empty-text parts are kept by the host too (SystemPart is
 	// opaque to the request builder), but the renderer keeps them out of the
 	// joined-text helpers' way by preserving them here as-is.
 	const system = (event.system ?? [])
-		.filter((part) => part && part.type === 'text' && typeof part.text === 'string')
+		.filter(
+			(part) => part && part.type === 'text' && typeof part.text === 'string',
+		)
 		.map((part) => part.text);
 
 	// Verbatim claim 3: text parts pass through; media-only rewriting is out

@@ -16,14 +16,13 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { registerV2AgentsAndCommands } from '../../../../src/host/v2/agents-commands';
+import type { V1HooksSubset } from '../../../../src/host/v2/types';
 import {
 	clearDeferredWarnings,
 	getDeferredWarnings,
 } from '../../../../src/services/warning-buffer';
-import type { V1HooksSubset } from '../../../../src/host/v2/types';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 interface RegisteredCommand {
 	name: string;
@@ -48,10 +47,10 @@ function trackedMkdtemp(prefix: string): string {
 }
 
 describe('#3318 AC2 — agent-transform rejection records a deferred warning', () => {
-	afterEach(() => {
+	afterEach(async () => {
 		clearDeferredWarnings();
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			await removeTreeWithRetry(dir);
 		}
 	});
 
@@ -101,7 +100,9 @@ describe('#3318 AC2 — agent-transform rejection records a deferred warning', (
 		const warnings = getDeferredWarnings();
 		expect(warnings.length).toBeGreaterThan(0);
 		const matched = warnings.filter(
-			(w) => w.toLowerCase().includes('agent') && w.includes(AGENT_REJECTION_MESSAGE),
+			(w) =>
+				w.toLowerCase().includes('agent') &&
+				w.includes(AGENT_REJECTION_MESSAGE),
 		);
 		expect(matched.length).toBeGreaterThan(0);
 	}, 30000);

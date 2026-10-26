@@ -8,8 +8,8 @@
  * zero extraction from src/index.ts (the v1 TUI shortcut block stays
  * byte-pinned). DELTA: the lane-permission mutations the v1 hook writes into
  * the config object (applyLanePermissions) have no v2 destination here and
- * are dropped - external-directory lane scoping is a #2910 follow-up row in
- * docs/host/v2-hook-inventory.md.
+ * are dropped - external-directory lane scoping is tracked on #2910 (open)
+ * with its disclosure in docs/host/v2-hook-inventory.md row 4.
  *
  * Mappings (docs/host/v2-hook-inventory.md rows 4-5):
  *   - v1 AgentConfig → v2 Agent.Info: `prompt`→`system`, `mode` preserved
@@ -76,10 +76,19 @@ export const _internals = {
  * the operator can reach when the host runs plugins in a background service)
  * and a quiet-gated console.warn for foreground runs (#3022 precedent).
  *
- * Dedup is BOUNDED (max {@link V2_OPERATOR_WARNING_BOUND} distinct messages,
+ * Dedup is BOUNDED (max {@link V2_OPERATOR_WARNING_BOUND} distinct keys,
  * FIFO eviction — AGENTS.md invariant 8) so a repeated failure (e.g. one per
- * command invocation) warns once instead of flooding the buffer. Reset at v2
- * setup cleanup (`resetV2OperatorWarningState`).
+ * command invocation) warns once instead of flooding the buffer. Dedup keys
+ * are STABLE arm ids — varying error text must not bypass the dedup and
+ * churn the bound (review PRR-008): dispatch arms key on the command
+ * (`dispatch-failed:<key>`) or the dispatch pair
+ * (`handler-failed:<sid>:<key>`, `prompt-failed:<sid>:<key>`), while
+ * registration/refresh arms also carry the project directory
+ * (`agent-registration-failed:<directory>`) so distinct projects (and test
+ * fixtures with fresh tmp dirs) never starve each other's first warning. NOT
+ * reset at v2 setup cleanup: the map is itself bounded FIFO with explicit
+ * eviction, and a global clear would cross instance boundaries (review
+ * PRR-002) — re-setups inherit only bounded, self-evicting state.
  *
  * #2910 W3/W5 owner scoping: the quiet flag and the config rebuild source
  * live in an OWNER-TOKEN-KEYED map so two concurrent live setups each own
@@ -88,7 +97,10 @@ export const _internals = {
  * (`registerV2ConfigRebuildSource`, `setV2OperatorQuiet`) attach to the
  * AMBIENT owner / the currently-resolved owner, which is what direct test
  * calls observe; setup.ts registers through the ForOwner forms under its own
- * per-instance token.
+ * per-instance token, and the DISPATCHING ctx is bound to its owner token
+ * through {@link ownerTokenByCtx} so a dispatch-driven refresh resolves
+ * through the dispatching instance even when a newer setup registered later
+ * (review PRR-003).
  */
 const V2_OPERATOR_WARNING_BOUND = 32;
 const operatorWarningsSeen = new Map<string, true>();
@@ -124,6 +136,33 @@ interface V2OwnerState {
 const AMBIENT_V2_OWNER = '__ambient__';
 const v2OwnerStates = new Map<string, V2OwnerState>();
 let currentV2OwnerToken = AMBIENT_V2_OWNER;
+
+/**
+ * Dispatching-context → owner-token binding (#2910 W3/W5 / review PRR-003):
+ * `registerV2AgentsAndCommands` records the setup instance's token for the
+ * ctx it registered under, so a DISPATCH-DRIVEN refresh resolves the
+ * dispatching instance's rebuild source/snapshot/quiet instead of the
+ * module-global "most recent owner" — instance A's dispatch keeps using A
+ * even after instance B registered later. Weak so a dropped host ctx is
+ * collectable; the binding is removed at that instance's cleanup
+ * (`clearV2CtxOwnerBinding`).
+ */
+const ownerTokenByCtx = new WeakMap<V2PluginContext, string>();
+
+/**
+ * Stable policy-refusal marker for `config doctor --fix` (#2910 W3 / review
+ * PRR-005). BOTH refusal arms the v1 command dispatcher can produce for this
+ * command share this exact prefix (src/commands/tool-policy.ts): the
+ * swarm_command gate ("… is not available through swarm_command. Run the CLI
+ * command directly…", classifySwarmCommandToolUse) and the chat-fallback gate
+ * ("… is not available through chat fallback because it can modify
+ * configuration files…", classifySwarmCommandChatFallbackUse). A genuine
+ * executed-doctor output never contains this literal, so its presence in
+ * dispatched text identifies a REFUSAL (nothing was fixed — the refresh must
+ * not fire).
+ */
+const CONFIG_DOCTOR_FIX_POLICY_REFUSAL_MARKER =
+	'/swarm config doctor --fix is not available through';
 
 function v2OwnerEntry(
 	token: string,
@@ -161,24 +200,43 @@ function resolveCurrentV2OwnerToken(): string {
 	return newest ?? AMBIENT_V2_OWNER;
 }
 
-/** Rebuild source of the current owner, ambient fallback for direct calls. */
-function resolveV2ConfigRebuildSource(): V2ConfigRebuild | undefined {
-	const current = v2OwnerStates.get(resolveCurrentV2OwnerToken());
-	if (current?.rebuild !== undefined) return current.rebuild;
+/**
+ * Owner token for a DISPATCH-driven resolution (#2910 W3/W5 / review
+ * PRR-003): the ctx's bound setup token when one exists, else the ambient
+ * current-owner chain (direct/test calls that never went through a
+ * setup-owned registration — keeps the exported seam contracts intact).
+ */
+function resolveV2OwnerTokenForCtx(ctx: V2PluginContext): string {
+	return ownerTokenByCtx.get(ctx) ?? resolveCurrentV2OwnerToken();
+}
+
+/** Rebuild source of one owner token, ambient fallback. */
+function resolveV2ConfigRebuildSourceForToken(
+	token: string,
+): V2ConfigRebuild | undefined {
+	const entry = v2OwnerStates.get(token);
+	if (entry?.rebuild !== undefined) return entry.rebuild;
 	return v2OwnerStates.get(AMBIENT_V2_OWNER)?.rebuild;
 }
 
 /** Quiet flag of the current owner, ambient fallback, default false. */
 function resolveV2OperatorQuiet(): boolean {
-	const current = v2OwnerStates.get(resolveCurrentV2OwnerToken());
-	if (current?.quiet !== undefined) return current.quiet;
+	return resolveV2OperatorQuietForToken(resolveCurrentV2OwnerToken());
+}
+
+/** Quiet flag of one owner token, ambient fallback, default false. */
+function resolveV2OperatorQuietForToken(token: string): boolean {
+	const entry = v2OwnerStates.get(token);
+	if (entry?.quiet !== undefined) return entry.quiet;
 	return v2OwnerStates.get(AMBIENT_V2_OWNER)?.quiet ?? false;
 }
 
-/** Registration snapshot of the current owner, ambient fallback. */
-function resolveV2RegistrationSnapshot(): V2RegistrationSnapshot | undefined {
-	const current = v2OwnerStates.get(resolveCurrentV2OwnerToken());
-	return current?.snapshot ?? v2OwnerStates.get(AMBIENT_V2_OWNER)?.snapshot;
+/** Registration snapshot of one owner token, ambient fallback. */
+function resolveV2RegistrationSnapshotForToken(
+	token: string,
+): V2RegistrationSnapshot | undefined {
+	const entry = v2OwnerStates.get(token);
+	return entry?.snapshot ?? v2OwnerStates.get(AMBIENT_V2_OWNER)?.snapshot;
 }
 
 /**
@@ -214,7 +272,14 @@ export function setV2OperatorQuietForOwner(
 	currentV2OwnerToken = token;
 }
 
-/** Clear the operator-warning dedup state and the ambient quiet flag (v2 setup cleanup). */
+/**
+ * Clear the operator-warning dedup state and the ambient quiet entry (direct
+ * test calls). NOT part of setup cleanup anymore (review PRR-002): the dedup
+ * map is bounded FIFO with explicit eviction (the invariant-8 strategy) and a
+ * per-cleanup global clear would wipe a concurrent live instance's dedup
+ * state; per-owner quiet entries are unregistered only by their own
+ * instance's cleanup (owner isolation, #2910 W5).
+ */
 export function resetV2OperatorWarningState(): void {
 	operatorWarningsSeen.clear();
 	// Administrative ambient reset only — per-owner quiet entries are owned
@@ -227,20 +292,69 @@ export function resetV2OperatorWarningState(): void {
 	}
 }
 
-/** See the block comment above; module-private by design (frozen checks spy the surfaces, not this). */
-function deferredV2WarnOperator(message: string): void {
-	if (operatorWarningsSeen.has(message)) return;
-	operatorWarningsSeen.set(message, true);
+/**
+ * See the block comment above; module-private by design (frozen checks spy
+ * the surfaces, not this). `dedupKey` (review PRR-008): STABLE arm id the
+ * dedup map keys on — the message itself embeds varying error text and must
+ * not be the identity. `ownerToken` (review PRR-003): resolve the quiet gate
+ * through the dispatching instance's entry instead of the module-global
+ * current-owner chain (refresh-path warnings).
+ */
+function deferredV2WarnOperator(
+	message: string,
+	dedupKey?: string,
+	ownerToken?: string,
+): void {
+	const key = dedupKey ?? message;
+	if (operatorWarningsSeen.has(key)) return;
+	operatorWarningsSeen.set(key, true);
 	while (operatorWarningsSeen.size > V2_OPERATOR_WARNING_BOUND) {
 		const oldest = operatorWarningsSeen.keys().next().value;
 		if (oldest === undefined) break;
 		operatorWarningsSeen.delete(oldest);
 	}
 	addDeferredWarning(message);
-	if (!resolveV2OperatorQuiet()) {
+	const quiet =
+		ownerToken !== undefined
+			? resolveV2OperatorQuietForToken(ownerToken)
+			: resolveV2OperatorQuiet();
+	if (!quiet) {
 		// biome-ignore lint/suspicious/noConsole: #3318 operator warnings must be visible without OPENCODE_SWARM_DEBUG (live hosts relay neither debug logs nor background-service stderr), quiet-gated like the #3022 roster warnings
 		console.warn(message);
 	}
+}
+
+/**
+ * Release one owner's registration snapshot (#2910 W3 / review PRR-004):
+ * setup cleanup calls this after detaching rebuild + quiet so a torn-down
+ * instance's entry DROPS instead of staying immortal in `v2OwnerStates`
+ * (unbounded across re-setups, and a dead-but-resolvable owner shadows the
+ * fallback resolution for surviving instances).
+ */
+export function clearV2OwnerRegistrationSnapshot(ownerToken: string): void {
+	const entry = v2OwnerStates.get(ownerToken);
+	if (entry !== undefined) {
+		entry.snapshot = undefined;
+		dropV2OwnerEntryIfEmpty(ownerToken);
+	}
+}
+
+/**
+ * Remove the ctx→owner-token binding recorded at registration (#2910 W3/W5 /
+ * review PRR-003): setup cleanup detaches its ctx so a later dispatch through
+ * a re-used host ctx object cannot resolve a torn-down instance's state.
+ */
+export function clearV2CtxOwnerBinding(ctx: V2PluginContext): void {
+	ownerTokenByCtx.delete(ctx);
+}
+
+/**
+ * Test-only bounded-state proof (review PRR-004): number of live owner
+ * entries. Production never calls this; tests assert a setup's cleanup drops
+ * its own entry (snapshot released) and a rejected setup leaks none.
+ */
+export function countV2OwnerStatesForTests(): number {
+	return v2OwnerStates.size;
 }
 
 interface V1AgentConfigLike {
@@ -493,6 +607,9 @@ async function deferredV2ExecuteSwarmCommand(
 	directory: string,
 	registrations: V2Registration[],
 ): Promise<void> {
+	// #2910 W3/W5 / review PRR-003: every operator warning (and the refresh
+	// trigger below) resolves through the DISPATCHING instance's owner entry.
+	const dispatchOwnerToken = resolveV2OwnerTokenForCtx(ctx);
 	// The prompt-surface check precedes dispatch: a host without the session
 	// prompt surface must not run the registry handler (side-effect-free
 	// no-op, the pre-#3169 arm) — but #3318 AC4 makes the no-op
@@ -502,6 +619,8 @@ async function deferredV2ExecuteSwarmCommand(
 		log('v2 command executed without a session prompt surface', { name: key });
 		deferredV2WarnOperator(
 			`[opencode-swarm] v2: command ${key} was not run — the host exposes no session prompt surface; the registry handler was skipped.`,
+			`no-prompt-surface:${directory}:${key}`,
+			dispatchOwnerToken,
 		);
 		return;
 	}
@@ -536,6 +655,13 @@ async function deferredV2ExecuteSwarmCommand(
 		const dispatchTimeoutError = new Error(
 			`[opencode-swarm] v2: command ${key} dispatch exceeded budget`,
 		);
+		// #2910 W3 / review PRR-006: dispatch-start timestamp. BOTH
+		// swallowed-error consults below pass it as `sinceMs`, so residue a
+		// TIMED-OUT dispatch's still-running handler records LATE (after
+		// the timeout arm already returned) is stale — consumed-and-ignored
+		// — for every LATER dispatch instead of poisoning it with a false
+		// "handler failed" warning or a suppressed refresh.
+		const dispatchStartedAt = Date.now();
 		try {
 			await withTimeout(
 				Promise.resolve(
@@ -551,11 +677,12 @@ async function deferredV2ExecuteSwarmCommand(
 				_internals.dispatchTimeoutMs,
 				dispatchTimeoutError,
 			);
-			// DISPATCH-SUCCESS PATH (#2910 W3 attach point): the handler resolved
-			// and its spliced parts carry the prompt text to submit. The W3
-			// config-doctor --fix refresh trigger (landed) sits after the
-			// empty-parts consult below, gated on non-empty dispatched parts, the
-			// non-error canonical envelope and a clean swallowed-error registry.
+			// DISPATCH-SUCCESS PATH (#2910 W3 attach point): the handler
+			// resolved and its spliced parts carry the prompt text to
+			// submit. The W3 config-doctor --fix refresh trigger (landed)
+			// sits after the empty-parts consult below, gated on non-empty
+			// dispatched parts that are NOT the tool-policy refusal and a
+			// clean (post-dispatch-start) swallowed-error registry.
 			dispatched = extractDispatchedPromptText(output.parts);
 		} catch (err) {
 			if (err === dispatchTimeoutError) {
@@ -599,38 +726,75 @@ async function deferredV2ExecuteSwarmCommand(
 				`[opencode-swarm] v2: command ${key} dispatch failed (${
 					err instanceof Error ? err.message : String(err)
 				}); the expanded template fallback was submitted.`,
+				`dispatch-failed:${key}`,
+				dispatchOwnerToken,
 			);
 		}
+		// #2910 W3 / review PRR-005: a canonicalized `config doctor --fix`
+		// dispatch whose non-empty dispatched text carries the tool-policy
+		// refusal marker was REFUSED — nothing was fixed. The refusal text
+		// is submitted as-is below (the current submit path), the
+		// empty-parts warning arm never fires (dispatched is non-null),
+		// and the registration refresh does NOT trigger.
+		const configDoctorFixInvocation = isConfigDoctorFixInvocation(
+			key,
+			argumentsText,
+		);
+		const policyRefused =
+			configDoctorFixInvocation &&
+			dispatched !== null &&
+			dispatched.includes(CONFIG_DOCTOR_FIX_POLICY_REFUSAL_MARKER);
 		if (dispatched === null) {
 			// #3318 AC6: production installs the handler as safeHook(commandHandler)
 			// (src/index.ts ~5054), so a REAL handler failure surfaces here as
 			// empty parts, never as the catch arm above. Consult the swallowed-
-			// error registry (read-once): a recorded failure is operator-visible;
-			// no record is the designed legitimate-empty degradation and stays
-			// silent (no false positives).
-			const swallowed = getLastSwallowedCommandError(invocation.sessionID, key);
+			// error registry (read-once; records older than this dispatch's start
+			// are stale timeout residue — PRR-006): a recorded failure is
+			// operator-visible; no record is the designed legitimate-empty
+			// degradation and stays silent (no false positives).
+			const swallowed = getLastSwallowedCommandError(
+				invocation.sessionID,
+				key,
+				dispatchStartedAt,
+			);
 			if (swallowed !== undefined) {
 				deferredV2WarnOperator(
 					`[opencode-swarm] v2: command ${key} handler failed (${swallowed}); the expanded template fallback was submitted.`,
+					`handler-failed:${invocation.sessionID}:${key}`,
+					dispatchOwnerToken,
 				);
 			}
 		}
-		// #2910 W3 TRIGGER: a SUCCEEDED config-doctor --fix dispatch may have
-		// rewritten the on-disk config — refresh the registration tables INLINE
-		// (the live v2 plugin realm does not execute post-setup timer callbacks,
-		// so the refresh cannot be deferred to a timer). Fires ONLY on the
-		// canonical `config doctor` + `--fix`/`-f` command with a genuinely
-		// successful dispatch: non-empty dispatched parts that are not the
-		// canonical error envelope (`Error executing /swarm …` — the
-		// executeSwarmCommand catch arm, src/commands/command-dispatch.ts) and
-		// no swallowed handler error for this (sessionID, command). The
+		// #2910 W3 TRIGGER (post-review contract, PRR-005): fires ONLY when
+		// the (key, args) canonicalize to `config doctor` + `--fix`/`-f`, the
+		// dispatched parts are non-empty, the text is NOT the tool-policy
+		// refusal (CONFIG_DOCTOR_FIX_POLICY_REFUSAL_MARKER — both the
+		// swarm_command and chat-fallback arms refuse in-dispatcher --fix),
+		// and no swallowed handler error was recorded for this
+		// (sessionID, command) since the dispatch began — a MAY-HAVE-FIXED
+		// dispatch refreshes the registration tables INLINE (the live v2
+		// plugin realm does not execute post-setup timer callbacks, so the
+		// refresh cannot be deferred to a timer). HONEST SCOPE: the v1
+		// tool-policy currently refuses in-dispatcher --fix (the human CLI
+		// path is the sanctioned fix channel), so this in-process trigger is
+		// a policy-permitted-dispatch hook — it exists for a host/policy
+		// that ever permits the in-process fix. CLI-path fixes
+		// (`bunx opencode-swarm run config doctor --fix`, out-of-process)
+		// trigger nothing and apply on HOST RESTART (disclosed limitation,
+		// documented in the release fragment and the PR #3444 body — the
+		// inventory's ask-bridge paragraph covers the permission contract).
+		// The
 		// canonical-command check runs FIRST so non-doctor dispatches never
 		// consult the read-once swallowed-error registry.
 		if (
-			isConfigDoctorFixInvocation(key, argumentsText) &&
+			configDoctorFixInvocation &&
+			!policyRefused &&
 			dispatched !== null &&
-			!dispatched.startsWith('Error executing /swarm') &&
-			getLastSwallowedCommandError(invocation.sessionID, key) === undefined
+			getLastSwallowedCommandError(
+				invocation.sessionID,
+				key,
+				dispatchStartedAt,
+			) === undefined
 		) {
 			await deferredV2RefreshRegistrations(
 				ctx,
@@ -664,17 +828,30 @@ async function deferredV2ExecuteSwarmCommand(
 			`[opencode-swarm] v2: command ${key} prompt submission failed (${
 				err instanceof Error ? err.message : String(err)
 			}); the handler output was not delivered to the session.`,
+			`prompt-failed:${invocation.sessionID}:${key}`,
+			dispatchOwnerToken,
 		);
 	}
 }
 
-/** Register agents + commands via the synthetic config-hook run. */
+/**
+ * Register agents + commands via the synthetic config-hook run.
+ *
+ * `ownerToken` (#2910 W3/W5 / review PRR-003): the setup instance's token —
+ * binds the ctx (WeakMap) to that instance and stores the registration
+ * snapshot on ITS entry, so a dispatch-driven refresh through this ctx
+ * resolves this instance's rebuild source and snapshot even after a newer
+ * setup registered later. Omitted (direct/test calls): the ambient
+ * current-owner resolution, unchanged from the pre-PRR-003 contract.
+ */
 export async function registerV2AgentsAndCommands(
 	ctx: V2PluginContext,
 	hooks: V1HooksSubset,
 	directory: string,
 	registrations: V2Registration[],
+	ownerToken?: string,
 ): Promise<void> {
+	if (ownerToken !== undefined) ownerTokenByCtx.set(ctx, ownerToken);
 	if (typeof hooks.config !== 'function') return;
 
 	// The v1 config hook mutates this object in place — the shared builder.
@@ -700,6 +877,8 @@ export async function registerV2AgentsAndCommands(
 		});
 		deferredV2WarnOperator(
 			`[opencode-swarm] v2: command registration failed — the shared config-hook run errored (${message}); no agents or commands were registered.`,
+			`registration-config-hook-failed:${directory}`,
+			ownerToken,
 		);
 		return;
 	}
@@ -716,7 +895,8 @@ export async function registerV2AgentsAndCommands(
 	// #2910 W3: the registration transforms iterate this LIVE holder (not a
 	// captured table), so a refresh that swaps the tables makes the host's
 	// post-reload re-run of the transforms replay the fresh data. Stored on
-	// the CURRENT owner's entry (the setup instance in production; ambient
+	// the OWNING setup instance's entry when an ownerToken was passed (review
+	// PRR-003), else the CURRENT owner's (the pre-existing ambient contract
 	// for direct/test calls).
 	const registrationSnapshot: V2RegistrationSnapshot = {
 		agentTable,
@@ -724,7 +904,10 @@ export async function registerV2AgentsAndCommands(
 		dirtyAgent: false,
 		dirtyCommand: false,
 	};
-	const ownerEntry = v2OwnerEntry(resolveCurrentV2OwnerToken(), true);
+	const ownerEntry = v2OwnerEntry(
+		ownerToken ?? resolveCurrentV2OwnerToken(),
+		true,
+	);
 	if (ownerEntry !== undefined) ownerEntry.snapshot = registrationSnapshot;
 
 	let agentLanded = false;
@@ -771,6 +954,8 @@ export async function registerV2AgentsAndCommands(
 		log('v2 agent transform failed (non-fatal)', { error: message });
 		deferredV2WarnOperator(
 			`[opencode-swarm] v2: agent registration failed (${message}); no v2 agents were registered.`,
+			`agent-registration-failed:${directory}`,
+			ownerToken,
 		);
 	}
 
@@ -823,6 +1008,8 @@ export async function registerV2AgentsAndCommands(
 		log('v2 command transform failed (non-fatal)', { error: message });
 		deferredV2WarnOperator(
 			`[opencode-swarm] v2: command registration failed (${message}); the v2 command table was not registered.`,
+			`command-registration-failed:${directory}`,
+			ownerToken,
 		);
 	}
 
@@ -931,6 +1118,13 @@ async function deferredV2ReloadRegistrationDomain(
  * registered transforms replays the fresh tables), then feature-detected
  * `ctx.agent.reload()` + `ctx.command.reload()` fire; a failed reload marks
  * its domain dirty for the next refresh.
+ *
+ * #2910 W3/W5 / review PRR-003: the OWNING instance is resolved through the
+ * dispatching ctx's bound owner token (`ownerTokenByCtx`, recorded by
+ * registerV2AgentsAndCommands under the setup instance's token), falling
+ * back to the ambient current-owner chain when the ctx was never bound
+ * (direct/test calls — the frozen C5 arms). Rebuild source, snapshot and the
+ * quiet gate all resolve through the SAME token.
  */
 export async function deferredV2RefreshRegistrations(
 	ctx: V2PluginContext,
@@ -938,10 +1132,13 @@ export async function deferredV2RefreshRegistrations(
 	directory: string,
 	registrations?: V2Registration[],
 ): Promise<void> {
-	const rebuild = resolveV2ConfigRebuildSource();
+	const ownerToken = resolveV2OwnerTokenForCtx(ctx);
+	const rebuild = resolveV2ConfigRebuildSourceForToken(ownerToken);
 	if (rebuild === undefined) {
 		deferredV2WarnOperator(
 			'[opencode-swarm] v2: registration refresh skipped — no config rebuild source is registered on this host; the registration tables were not reloaded.',
+			`refresh-no-rebuild-source:${directory}`,
+			ownerToken,
 		);
 		return;
 	}
@@ -957,10 +1154,12 @@ export async function deferredV2RefreshRegistrations(
 			`[opencode-swarm] v2: registration refresh failed — the config rebuild source errored (${
 				err instanceof Error ? err.message : String(err)
 			}); the registration tables were not reloaded.`,
+			`refresh-rebuild-failed:${directory}`,
+			ownerToken,
 		);
 		return;
 	}
-	const snapshot = resolveV2RegistrationSnapshot();
+	const snapshot = resolveV2RegistrationSnapshotForToken(ownerToken);
 	if (snapshot === undefined) {
 		// Nothing was ever registered on this owner: registration is the fresh
 		// path; a refresh with no snapshot has nothing to reload.
@@ -1003,6 +1202,8 @@ export async function deferredV2RefreshRegistrations(
 			.join(', ');
 		deferredV2WarnOperator(
 			`[opencode-swarm] v2: registration tables changed but the ${failed} domain reload failed; the domain stays marked dirty and the next refresh retries it.`,
+			`refresh-reload-failed:${directory}`,
+			ownerToken,
 		);
 	}
 	log('v2 registration tables refreshed', {

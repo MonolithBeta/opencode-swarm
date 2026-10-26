@@ -15,14 +15,13 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { registerV2AgentsAndCommands } from '../../../../src/host/v2/agents-commands';
+import type { V1HooksSubset } from '../../../../src/host/v2/types';
 import {
 	clearDeferredWarnings,
 	getDeferredWarnings,
 } from '../../../../src/services/warning-buffer';
-import type { V1HooksSubset } from '../../../../src/host/v2/types';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 interface RegisteredCommand {
 	name: string;
@@ -42,10 +41,10 @@ function trackedMkdtemp(prefix: string): string {
 }
 
 describe('#3318 AC4 — no session.prompt surface warns instead of silently no-opping', () => {
-	afterEach(() => {
+	afterEach(async () => {
 		clearDeferredWarnings();
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			await removeTreeWithRetry(dir);
 		}
 	});
 

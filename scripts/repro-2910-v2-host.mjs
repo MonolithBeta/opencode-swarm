@@ -294,7 +294,10 @@ async function ensureDist() {
 /**
  * Resolve an npm argv that is array-form-spawnable: prefer the npm CLI JS
  * bundled with the running Node (spawning npm.cmd without a shell is
- * refused by Node on Windows), then $npm_execpath, then a bare `npm`.
+ * refused by Node on Windows), then $npm_execpath. A bare `npm` is a last
+ * resort ONLY off win32 — on win32 `npm` is a .cmd shim Node cannot
+ * array-form-spawn, so the win32 fallback stays on the bundled npm-cli.js
+ * idiom (same as scripts/package-smoke.mjs npmInvocation; review PRR-030).
  */
 function resolveNpmArgv() {
 	const candidates = [
@@ -310,6 +313,22 @@ function resolveNpmArgv() {
 	if (execPath && /\.(m?js|cjs)$/.test(execPath)) candidates.push(execPath);
 	for (const cliJs of candidates) {
 		if (existsSync(cliJs)) return [process.execPath, cliJs];
+	}
+	if (process.platform === 'win32') {
+		// The existence probes missed, but win32 still cannot array-form-spawn
+		// a bare `npm` — return the bundled CLI JS argv unconditionally (the
+		// package-smoke idiom) so a genuinely missing file surfaces as a clear
+		// spawn error instead of an unconditional spawn failure on `npm`.
+		return [
+			process.execPath,
+			path.join(
+				path.dirname(process.execPath),
+				'node_modules',
+				'npm',
+				'bin',
+				'npm-cli.js',
+			),
+		];
 	}
 	return ['npm'];
 }

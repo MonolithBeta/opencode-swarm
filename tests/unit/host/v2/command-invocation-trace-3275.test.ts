@@ -17,10 +17,9 @@
  */
 
 import { afterEach, describe, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
 import { registerV2AgentsAndCommands } from '../../../../src/host/v2/agents-commands';
 import type { V1HooksSubset } from '../../../../src/host/v2/types';
-import { canonicalMkdtemp } from '../../../helpers/tmpdir';
+import { canonicalMkdtemp, removeTreeWithRetry } from '../../../helpers/tmpdir';
 
 interface RegisteredCommand {
 	name: string;
@@ -121,11 +120,11 @@ async function setupTraceHarness(): Promise<TraceHarness> {
 describe('#3318 AC8 — OPENCODE_SWARM_DEBUG=1 traces the raw invocation text and delivery', () => {
 	const savedDebug = process.env.OPENCODE_SWARM_DEBUG;
 
-	afterEach(() => {
+	afterEach(async () => {
 		if (savedDebug === undefined) delete process.env.OPENCODE_SWARM_DEBUG;
 		else process.env.OPENCODE_SWARM_DEBUG = savedDebug;
 		for (const dir of tempDirs.splice(0)) {
-			rmSync(dir, { recursive: true, force: true });
+			await removeTreeWithRetry(dir);
 		}
 	});
 

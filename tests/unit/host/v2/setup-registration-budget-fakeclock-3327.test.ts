@@ -48,10 +48,11 @@ function requireSeam(): Seam {
 /** Fast fake v2 Context; `stallAgent` makes the agent transform never settle. */
 function buildCtx(directory: string, stallAgent: boolean) {
 	const registration = () => ({ dispose: async () => {} });
-	const transformWith = (editor: unknown) => async (fn: (e: unknown) => void) => {
-		fn(editor);
-		return registration();
-	};
+	const transformWith =
+		(editor: unknown) => async (fn: (e: unknown) => void) => {
+			fn(editor);
+			return registration();
+		};
 	const agentEditor = { update: () => {}, remove: () => {}, list: () => [] };
 	const addEditor = { add: () => {} };
 	return {
