@@ -1,5 +1,15 @@
 # Changelog
 
+## [7.200.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.200.1...v7.200.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* [pr-review] Gate-side critic admission and PR_FEEDBACK critic predicate are looser than the review-phase rule ([#3340](https://github.com/ZaxbyHub/opencode-swarm/issues/3340)) ([70cc51e](https://github.com/ZaxbyHub/opencode-swarm/commit/70cc51e765ef60f647b11d343b0e84338ca2de2b))
+* Auto-detected flaky tests (merge-group) — review for quarantine ([#3264](https://github.com/ZaxbyHub/opencode-swarm/issues/3264)) ([f6406fc](https://github.com/ZaxbyHub/opencode-swarm/commit/f6406fc8752ed610d61987fdf5df7bc6cdc6e24b))
+* **full-auto:** close the remaining review findings on the OpenCode 2 PR ([#3446](https://github.com/ZaxbyHub/opencode-swarm/issues/3446)) ([e768cdc](https://github.com/ZaxbyHub/opencode-swarm/commit/e768cdcb691fb3221f873ebae20e3cd3288f715e))
+* **full-auto:** make Full-Auto usable on OpenCode 2 ([956f3a3](https://github.com/ZaxbyHub/opencode-swarm/commit/956f3a30b9843dec4c5bb1537d9c99e1b2976011))
+
 ## [7.200.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.200.0...v7.200.1) (2026-10-25)
 
 
