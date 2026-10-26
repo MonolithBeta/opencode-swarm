@@ -25,10 +25,16 @@
  * (fail-closed preserved; documented v2 delta in the inventory).
  */
 
+import { loadFullAutoRunState } from '../../full-auto/state';
+import {
+	clearCodeModeWrapperCall,
+	recordCodeModeWrapperCall,
+} from '../../hooks/code-mode-wrapper';
 import { normalizeToolNameLowerCase } from '../../hooks/normalize-tool-name';
 import { addDeferredWarning } from '../../services/warning-buffer';
 import { log } from '../../utils';
 import { withTimeout } from '../../utils/timeout';
+import { resolveV2ToolBeforeBudgetMs } from './hook-budget';
 import { normalizeV2AgentRef, seedV1SessionState } from './setup';
 import type {
 	V1HooksSubset,
@@ -64,6 +70,22 @@ export function isV2SubagentToolId(
 		return /^tool\.[^.:]+\.subagent$/i.test(toolName);
 	}
 	return normalizeToolNameLowerCase(toolName) === 'subagent';
+}
+
+/**
+ * True for the host's Code Mode wrapper (#3446): the host-owned `execute`
+ * tool whose input is a JS program. The host id is matched exactly (no
+ * namespace stripping), and the call must carry a string `code` program.
+ */
+export function isV2CodeModeWrapper(event: {
+	readonly tool: string;
+	readonly input?: unknown;
+}): boolean {
+	return (
+		event.tool === 'execute' &&
+		isPlainObject(event.input) &&
+		typeof (event.input as Record<string, unknown>).code === 'string'
+	);
 }
 
 /**
@@ -184,6 +206,16 @@ function renderV1TaskEnvelopeFromV2(wrapper: V2SubagentWrapper): string {
 	return `<task id="${wrapper.sessionID}" state="${wrapper.state}"><task_result>${inner}</task_result></task>`;
 }
 
+/** Is a Full-Auto run active (not idle) for this session? Fail-safe to false. */
+function isFullAutoRunActive(directory: string, sessionID: string): boolean {
+	try {
+		const status = loadFullAutoRunState(directory, sessionID)?.status;
+		return status !== undefined && status !== 'idle';
+	} catch {
+		return false;
+	}
+}
+
 /** adapter for tool.execute.before */
 async function onV2ToolBefore(
 	event: V2ToolHookInput,
@@ -194,38 +226,58 @@ async function onV2ToolBefore(
 	if (typeof handler !== 'function') return;
 	seedV1SessionState(event.sessionID, event.agent, directory);
 	const isSubagent = isV2SubagentToolId(event.tool);
-	const output = {
-		args: isSubagent ? mapV2SubagentArgsToV1(event.input) : event.input,
-	};
-	await withTimeout(
-		Promise.resolve(
-			handler(
-				{
-					tool: isSubagent ? 'task' : event.tool,
-					sessionID: event.sessionID,
-					callID: event.id,
-					agent: normalizeV2AgentRef(event.agent),
-					messageID: event.messageID,
-				},
-				output,
+	// The host's Code Mode wrapper (#3446): only this adapter sees the host's
+	// real tool id, so it marks the call for the Full-Auto classifier. Nested
+	// `tools.<name>()` calls arrive as their own events under their own names.
+	// The mark is consumed by the permission hook inside this before chain, so
+	// it is cleared in `finally` — a rejected or timed-out chain must not leave
+	// it behind (the after hook may never fire for a rejected before).
+	const wrapperMarked = isV2CodeModeWrapper(event);
+	if (wrapperMarked) {
+		recordCodeModeWrapperCall(event.sessionID, event.id);
+	}
+	try {
+		const output = {
+			args: isSubagent ? mapV2SubagentArgsToV1(event.input) : event.input,
+		};
+		const budgetMs = resolveV2ToolBeforeBudgetMs(
+			isFullAutoRunActive(directory, event.sessionID),
+			directory,
+		);
+		await withTimeout(
+			Promise.resolve(
+				handler(
+					{
+						tool: isSubagent ? 'task' : event.tool,
+						sessionID: event.sessionID,
+						callID: event.id,
+						agent: normalizeV2AgentRef(event.agent),
+						messageID: event.messageID,
+					},
+					output,
+				),
 			),
-		),
-		V2_HOOK_TIMEOUT_MS,
-		new Error('[opencode-swarm] v2: tool.execute.before exceeded budget'),
-	);
-	if (isSubagent) {
-		// Write back IN PLACE onto the retained original input object: the v2
-		// host may hold its own reference to the event payload (the v1
-		// invariant-10 class), so reassignment could be invisible to it.
-		const mapped = mapV1TaskArgsToV2(output.args);
-		if (isPlainObject(event.input) && isPlainObject(mapped)) {
-			for (const key of Object.keys(event.input)) {
-				delete (event.input as Record<string, unknown>)[key];
+			budgetMs,
+			new Error(
+				`[opencode-swarm] v2: tool.execute.before exceeded budget (${budgetMs} ms; set full_auto.oversight.hook_timeout_ms to change)`,
+			),
+		);
+		if (isSubagent) {
+			// Write back IN PLACE onto the retained original input object: the v2
+			// host may hold its own reference to the event payload (the v1
+			// invariant-10 class), so reassignment could be invisible to it.
+			const mapped = mapV1TaskArgsToV2(output.args);
+			if (isPlainObject(event.input) && isPlainObject(mapped)) {
+				for (const key of Object.keys(event.input)) {
+					delete (event.input as Record<string, unknown>)[key];
+				}
+				Object.assign(event.input as Record<string, unknown>, mapped);
 			}
-			Object.assign(event.input as Record<string, unknown>, mapped);
+		} else {
+			event.input = output.args;
 		}
-	} else {
-		event.input = output.args;
+	} finally {
+		if (wrapperMarked) clearCodeModeWrapperCall(event.sessionID, event.id);
 	}
 }
 
@@ -235,6 +287,9 @@ async function onV2ToolAfter(
 	hooks: V1HooksSubset,
 	directory: string,
 ): Promise<void> {
+	// The Code Mode wrapper mark is only read by the before chain; drop it now
+	// the call has completed, whether or not an after handler is registered.
+	clearCodeModeWrapperCall(event.sessionID, event.id);
 	const handler = hooks['tool.execute.after'];
 	if (typeof handler !== 'function') return;
 	seedV1SessionState(event.sessionID, event.agent, directory);

@@ -18,12 +18,13 @@ import {
 	GIT_STATUS_ARGS,
 	issueConfirmToken,
 	type PurgeCandidate,
-	parseTrackedDirtyPaths,
+	parseTrackedDirtyPathsWithExclusions,
 } from '../destructive-purge.js';
 import {
 	type GitStatusReadResult,
 	readGitStatusAsync,
 } from '../git-status-read.js';
+import { formatExcludedRecord } from '../rollback-gate.js';
 import { runAlignStage } from './align-stage.js';
 import { emitCloseArchiveResult, runArchiveStage } from './archive-stage.js';
 import { runCleanStage } from './clean-stage.js';
@@ -74,6 +75,13 @@ export interface ClosePurgeGate {
 		status: number | null;
 		stderrTail: string;
 	};
+	/**
+	 * #3434: porcelain records whose path normalized outside the project
+	 * root — excluded from `dirtyPaths`/`candidates` (and therefore from the
+	 * confirm-token digest) and surfaced as a bounded warning instead of
+	 * being joined into the scope unvalidated.
+	 */
+	excludedOutOfRoot: string[];
 }
 
 /**
@@ -192,17 +200,20 @@ export async function evaluateClosePurgeGate(
 	swarmDir: string,
 ): Promise<ClosePurgeGate> {
 	// #2953: the gate measurement consumes the SAME argv (GIT_STATUS_ARGS) and
-	// the SAME parser (parseTrackedDirtyPaths) as the align-stage guard's
+	// the SAME parser family as the align-stage guard's
 	// pre-destruction re-check — both live in destructive-purge.ts, so both
 	// reads parse identically. (Separate spawn wrappers by design: this one
 	// keeps the #2508 test seam.)
 	// #3317: the read is async, bounded, and killable; a failure carries its
 	// cause out through `statusFailure` so the abort can name it.
+	// #3434: the WithExclusions form carries the out-of-root records so the
+	// gate result can surface them; the digest input stays the filtered set.
 	const statusOutput = await readCloseGateGit([...GIT_STATUS_ARGS], directory);
-	const dirtyPaths =
+	const parsed =
 		statusOutput.kind === 'ok'
-			? parseTrackedDirtyPaths(statusOutput.stdout)
-			: [];
+			? parseTrackedDirtyPathsWithExclusions(statusOutput.stdout)
+			: { dirtyPaths: [] as string[], excludedOutOfRoot: [] as string[] };
+	const dirtyPaths = parsed.dirtyPaths;
 	const candidates: PurgeCandidate[] = dirtyPaths.map((p) => ({
 		path: path.join(directory, p),
 		reason: 'uncommitted tracked change — discarded by git alignment',
@@ -233,6 +244,7 @@ export async function evaluateClosePurgeGate(
 			statusOutput.kind === 'failed' && isRealGitRepository(directory)
 				? statusOutput.failure
 				: undefined,
+		excludedOutOfRoot: parsed.excludedOutOfRoot,
 	};
 }
 
@@ -379,12 +391,20 @@ export async function handleCloseCommand(
 		});
 		const listed = purgeGate.dirtyPaths.slice(0, 10);
 		const overflow = purgeGate.dirtyPaths.length - listed.length;
+		// #3434: the early confirmation preview surfaces out-of-root
+		// exclusions here — it returns before any ctx exists.
 		return [
 			'🔐 Destructive close preview — confirmation required.',
 			'',
 			`Git alignment would DISCARD ${purgeGate.dirtyPaths.length} uncommitted tracked change(s):`,
 			...listed.map((p) => `  - ${p}`),
 			...(overflow > 0 ? [`  … and ${overflow} more`] : []),
+			...(purgeGate.excludedOutOfRoot.length > 0
+				? [
+						'',
+						`⚠ ${purgeGate.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from this scope (first: ${formatExcludedRecord(purgeGate.excludedOutOfRoot[0])})`,
+					]
+				: []),
 			'',
 			`${activeStateCount} active-state artifact(s) will be archived, then removed.`,
 			'',
@@ -473,7 +493,15 @@ export async function handleCloseCommand(
 			planAlreadyDone,
 			config,
 			projectName: planData.title ?? 'Unknown Project',
-			warnings: [],
+			// #3434: the confirmed full-pipeline run seeds the close summary
+			// with the exclusion diagnostic (the early preview carried it in
+			// its own output; the warnings channel keeps it visible here).
+			warnings:
+				purgeGate.excludedOutOfRoot.length > 0
+					? [
+							`⚠ ${purgeGate.excludedOutOfRoot.length} out-of-root porcelain record(s) were excluded from the destructive scope (first: ${formatExcludedRecord(purgeGate.excludedOutOfRoot[0])})`,
+						]
+					: [],
 			closedPhases: [],
 			closedTasks: [],
 			sessionStart: undefined,

@@ -1,5 +1,19 @@
 # Changelog
 
+## [7.200.1](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.200.0...v7.200.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **ci:** merge main and drop an unused catch binding that tripped biome ci on the merge ref ([8970d12](https://github.com/ZaxbyHub/opencode-swarm/commit/8970d12d5cbda0891e11a675bd898b084e147f4e))
+* **close:** async checkpoint/align git probes, fail-closed rollback enumeration, porcelain path containment ([e124345](https://github.com/ZaxbyHub/opencode-swarm/commit/e124345acf1aede6e725dc906fcf098d35f2cc3d))
+* **close:** close swarm-pr-review findings — probe retry tolerance, source-aware refusals, record sanitization, seam-based test stubs ([70af457](https://github.com/ZaxbyHub/opencode-swarm/commit/70af457137c81bd2e6de67797401ef2eb1de8be7))
+* **lint:** satisfy biome on the merge ref — rollback-gate suppression placement, attest template literal ([0f1f7af](https://github.com/ZaxbyHub/opencode-swarm/commit/0f1f7af2e3ca7acf6ca176a709bfba9db994c1ca))
+* Quarantine aging: 4 entries expire within 21 days ([#3203](https://github.com/ZaxbyHub/opencode-swarm/issues/3203)) ([4c2abb9](https://github.com/ZaxbyHub/opencode-swarm/commit/4c2abb9e8ac541a6bb863c414445fdc76c1abf20))
+* **session:** close swarm-pr-review findings on the reset-session recovery contract ([9365ab1](https://github.com/ZaxbyHub/opencode-swarm/commit/9365ab175f53e73952547058cd5aa2adff61463d))
+* **session:** honor the reset-session recovery contract and make the persistence stop loud ([020dfdb](https://github.com/ZaxbyHub/opencode-swarm/commit/020dfdb4f5ef838155d247fa2f7779e1b6d97fb9))
+* **session:** honor the reset-session recovery contract and make the persistence stop loud ([32f32ec](https://github.com/ZaxbyHub/opencode-swarm/commit/32f32ecadc0baa7134a4133e315bfab50cdf0fc0)), closes [#2963](https://github.com/ZaxbyHub/opencode-swarm/issues/2963)
+
 ## [7.200.0](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.199.6...v7.200.0) (2026-10-24)
 
 

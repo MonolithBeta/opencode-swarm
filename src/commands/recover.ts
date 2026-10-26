@@ -183,12 +183,50 @@ export async function handleRecoverCommand(
 				'✅ Coordination initialization/import completed successfully.',
 			].join('\n');
 		} catch (err) {
-			return [
+			const message = err instanceof Error ? err.message : String(err);
+			// #2963: the settle-wait advice is reachable ONLY for the
+			// still-settling / still-unsettled class — a settled closing
+			// entry (a partially-failed reset) gets the reset-re-run
+			// contract, ordinary failures get a neutral refusal.
+			const lines = [
 				'## SQLite Coordination Recovery',
 				'',
-				`❌ Recovery refused or failed: ${sanitizeDiagnosticText(err instanceof Error ? err.message : String(err), 512)}`,
-				'If an earlier attempt timed out, wait for that underlying attempt to settle before retrying; it is never abandoned or run concurrently.',
-			].join('\n');
+				`❌ Recovery refused or failed: ${sanitizeDiagnosticText(message, 512)}`,
+			];
+			if (
+				message.includes('still settling') ||
+				message.includes('still unsettled')
+			) {
+				lines.push(
+					'If an earlier attempt timed out, wait for that underlying attempt to settle before retrying; it is never abandoned or run concurrently.',
+				);
+				if (message.includes('guard stranded')) {
+					lines.push(
+						'Once it settles: re-run /swarm reset-session to completion, or restart the host.',
+					);
+				}
+			} else if (message.includes('in-flight /swarm reset-session')) {
+				lines.push(
+					'A /swarm reset-session is in progress; wait for it to complete and retry.',
+				);
+			} else if (message.includes('host shutdown')) {
+				lines.push(
+					'Coordination is closing for host shutdown; restart the host.',
+				);
+			} else if (message.includes('closing for reset-session')) {
+				return [
+					'## SQLite Coordination Recovery',
+					'',
+					'❌ Recovery refused: coordination is closing for a partially-failed /swarm reset-session (settled).',
+					'Durable session-snapshot persistence is stopped for this project until the guard clears.',
+					'Recovery: re-run /swarm reset-session to completion, or restart the host.',
+				].join('\n');
+			} else {
+				lines.push(
+					'Fix the reported cause (or restart the host) and re-run /swarm recover --coordination.',
+				);
+			}
+			return lines.join('\n');
 		}
 	}
 	const positional = args.filter((arg) => !arg.startsWith('--'));
