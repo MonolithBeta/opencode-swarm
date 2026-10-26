@@ -1,5 +1,12 @@
 # Changelog
 
+## [7.200.3](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.200.2...v7.200.3) (2026-10-26)
+
+
+### Bug Fixes
+
+* **host/v2:** dual-host CI lane, v2 adapter hardening, and the deferred [#2910](https://github.com/ZaxbyHub/opencode-swarm/issues/2910) tail ([d539a93](https://github.com/ZaxbyHub/opencode-swarm/commit/d539a939289f59a493df9915be40f03c98bb0c5d))
+
 ## [7.200.2](https://github.com/ZaxbyHub/opencode-swarm/compare/v7.200.1...v7.200.2) (2026-10-26)
 
 
