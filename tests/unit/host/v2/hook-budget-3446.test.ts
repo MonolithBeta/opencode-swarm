@@ -8,6 +8,7 @@ import {
 	resetV2ToolBeforeBudget,
 	resolveV2ToolBeforeBudgetMs,
 	V2_TOOL_BEFORE_BASE_MS,
+	V2_TOOL_BEFORE_BUDGET_MAX_ENTRIES,
 	V2_TOOL_BEFORE_MARGIN_MS,
 	V2_TOOL_BEFORE_MAX_MS,
 } from '../../../../src/host/v2/hook-budget';
@@ -72,8 +73,66 @@ describe('resolveV2ToolBeforeBudgetMs', () => {
 	});
 });
 
+describe('per-directory budgets', () => {
+	const A = { oversight: { hook_timeout_ms: 111_000 } };
+	const B = {
+		oversight: { total_timeout_ms: 200_000 },
+	};
+
+	test('each directory resolves its own budget', () => {
+		configureV2ToolBeforeBudget(A, '/proj/a');
+		configureV2ToolBeforeBudget(B, '/proj/b');
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/a')).toBe(111_000);
+		expect(resolveV2ToolBeforeBudgetMs(true, '/proj/a')).toBe(111_000);
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/b')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+		expect(resolveV2ToolBeforeBudgetMs(true, '/proj/b')).toBe(
+			200_000 + V2_TOOL_BEFORE_MARGIN_MS,
+		);
+	});
+
+	test('resetting one directory leaves the other intact', () => {
+		configureV2ToolBeforeBudget(A, '/proj/a');
+		configureV2ToolBeforeBudget(A, '/proj/b');
+		resetV2ToolBeforeBudget('/proj/a');
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/a')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/b')).toBe(111_000);
+	});
+
+	test('an unknown directory falls back to the default slot, then defaults', () => {
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/x')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+		configureV2ToolBeforeBudget(A);
+		configureV2ToolBeforeBudget(B, '/proj/b');
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/x')).toBe(111_000);
+		expect(resolveV2ToolBeforeBudgetMs(false)).toBe(111_000);
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/b')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+	});
+
+	test('the map is bounded: the oldest directory is evicted', () => {
+		const cap = V2_TOOL_BEFORE_BUDGET_MAX_ENTRIES;
+		for (let i = 0; i < cap + 1; i++) {
+			configureV2ToolBeforeBudget(A, `/proj/${i}`);
+		}
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/0')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/1')).toBe(111_000);
+		expect(resolveV2ToolBeforeBudgetMs(false, `/proj/${cap}`)).toBe(111_000);
+		// Re-configuring an existing key never evicts.
+		configureV2ToolBeforeBudget(A, '/proj/5');
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/1')).toBe(111_000);
+	});
+});
+
 describe('v2 execute.before uses the resolved budget', () => {
-	async function beforeHook(slowMs: number) {
+	async function beforeHook(slowMs: number, dir = '.') {
 		const hooks = {
 			tool: {},
 			agent: {},
@@ -98,7 +157,7 @@ describe('v2 execute.before uses the resolved budget', () => {
 				},
 			},
 		};
-		await registerV2ToolHooks(ctx as never, hooks, '.', []);
+		await registerV2ToolHooks(ctx as never, hooks, dir, []);
 		return cb as (e: V2ToolHookInput) => Promise<void>;
 	}
 	const event = {
@@ -122,5 +181,20 @@ describe('v2 execute.before uses the resolved budget', () => {
 		configureV2ToolBeforeBudget({ oversight: { hook_timeout_ms: 2_000 } });
 		const cb = await beforeHook(30);
 		await expect(cb(event)).resolves.toBeUndefined();
+	});
+
+	test('the adapter applies the budget of its own project directory', async () => {
+		configureV2ToolBeforeBudget(
+			{ oversight: { hook_timeout_ms: 40 } },
+			'/proj/short',
+		);
+		configureV2ToolBeforeBudget(
+			{ oversight: { hook_timeout_ms: 2_000 } },
+			'/proj/long',
+		);
+		const short = await beforeHook(300, '/proj/short');
+		const long = await beforeHook(300, '/proj/long');
+		await expect(short(event)).rejects.toThrow(/exceeded budget \(40 ms/);
+		await expect(long(event)).resolves.toBeUndefined();
 	});
 });

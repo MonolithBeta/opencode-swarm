@@ -13,6 +13,10 @@
  *   2. else, while a Full-Auto run is active for the session:
  *      `oversight.total_timeout_ms + 30 s` (never below the base);
  *   3. else the 60 s base.
+ *
+ * Settings are keyed by project directory (one plugin process can host several
+ * projects, each with its own config); a call without a directory, or for an
+ * unknown one, uses the default slot, then the module defaults.
  */
 
 export const V2_TOOL_BEFORE_BASE_MS = 60_000;
@@ -25,9 +29,15 @@ interface BudgetConfig {
 	oversightTotalMs: number;
 }
 
-let budgetConfig: BudgetConfig = {
+/** Max distinct project directories retained (invariant 8: bounded state). */
+export const V2_TOOL_BEFORE_BUDGET_MAX_ENTRIES = 64;
+const DEFAULT_SLOT = '';
+const DEFAULT_CONFIG: BudgetConfig = {
 	oversightTotalMs: DEFAULT_OVERSIGHT_TOTAL_MS,
 };
+
+// Insertion-ordered; a NEW key beyond the cap evicts the oldest (FIFO).
+const budgets = new Map<string, BudgetConfig>();
 
 function finitePositive(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) && value > 0
@@ -35,36 +45,57 @@ function finitePositive(value: unknown): number | undefined {
 		: undefined;
 }
 
-/** Record the relevant `full_auto.oversight` settings (call once at setup). */
-export function configureV2ToolBeforeBudget(fullAuto: unknown): void {
+/**
+ * Record the relevant `full_auto.oversight` settings for a project directory
+ * (call at setup; omit `directory` to set the default slot).
+ */
+export function configureV2ToolBeforeBudget(
+	fullAuto: unknown,
+	directory?: string,
+): void {
 	const oversight = (
 		fullAuto as { oversight?: Record<string, unknown> } | undefined
 	)?.oversight;
 	const hook = finitePositive(oversight?.hook_timeout_ms);
-	budgetConfig = {
+	const key = directory ?? DEFAULT_SLOT;
+	if (!budgets.has(key) && budgets.size >= V2_TOOL_BEFORE_BUDGET_MAX_ENTRIES) {
+		const oldest = budgets.keys().next().value;
+		if (oldest !== undefined) budgets.delete(oldest);
+	}
+	budgets.set(key, {
 		...(hook !== undefined
 			? { hookTimeoutMs: Math.min(V2_TOOL_BEFORE_MAX_MS, Math.round(hook)) }
 			: {}),
 		oversightTotalMs:
 			finitePositive(oversight?.total_timeout_ms) ?? DEFAULT_OVERSIGHT_TOTAL_MS,
-	};
+	});
 }
 
 /** Budget, in ms, for one `tool.execute.before` chain. */
-export function resolveV2ToolBeforeBudgetMs(fullAutoActive: boolean): number {
-	if (budgetConfig.hookTimeoutMs !== undefined)
-		return budgetConfig.hookTimeoutMs;
+export function resolveV2ToolBeforeBudgetMs(
+	fullAutoActive: boolean,
+	directory?: string,
+): number {
+	const cfg =
+		(directory !== undefined ? budgets.get(directory) : undefined) ??
+		budgets.get(DEFAULT_SLOT) ??
+		DEFAULT_CONFIG;
+	if (cfg.hookTimeoutMs !== undefined) return cfg.hookTimeoutMs;
 	if (!fullAutoActive) return V2_TOOL_BEFORE_BASE_MS;
 	return Math.min(
 		V2_TOOL_BEFORE_MAX_MS,
 		Math.max(
 			V2_TOOL_BEFORE_BASE_MS,
-			budgetConfig.oversightTotalMs + V2_TOOL_BEFORE_MARGIN_MS,
+			cfg.oversightTotalMs + V2_TOOL_BEFORE_MARGIN_MS,
 		),
 	);
 }
 
-/** Test seam: restore defaults. */
-export function resetV2ToolBeforeBudget(): void {
-	budgetConfig = { oversightTotalMs: DEFAULT_OVERSIGHT_TOTAL_MS };
+/**
+ * Restore defaults for one project directory (setup failure path), or for
+ * everything when called without an argument (test seam).
+ */
+export function resetV2ToolBeforeBudget(directory?: string): void {
+	if (directory === undefined) budgets.clear();
+	else budgets.delete(directory);
 }

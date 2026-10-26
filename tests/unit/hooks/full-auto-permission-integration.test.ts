@@ -390,7 +390,9 @@ describe('#3446 — Code Mode execute wrapper under the permission hook', () => 
 				{ tool: 'execute', sessionID: SESSION_ID, callID: 'wrap-default-1' },
 				{ args: { code } },
 			),
-		).rejects.toThrow();
+		).rejects.toThrow(
+			/FULL_AUTO_BLOCKED: critic verdict BLOCKED.*opencodeClient unavailable/,
+		);
 		expect(loadFullAutoRunState(tmpDir, SESSION_ID)?.status).toBe('paused');
 		resetCodeModeWrapperCalls();
 	});
@@ -407,7 +409,9 @@ describe('#3446 — Code Mode execute wrapper under the permission hook', () => 
 				{ tool: 'execute', sessionID: SESSION_ID, callID: 'plugin-exec-1' },
 				{ args: { code } },
 			),
-		).rejects.toThrow();
+		).rejects.toThrow(
+			/FULL_AUTO_BLOCKED: critic verdict BLOCKED.*opencodeClient unavailable/,
+		);
 		expect(loadFullAutoRunState(tmpDir, SESSION_ID)?.status).toBe('paused');
 	});
 	test('an opted-in marked wrapper whose program reaches the network is still escalated (and pauses without a critic)', async () => {
@@ -423,7 +427,9 @@ describe('#3446 — Code Mode execute wrapper under the permission hook', () => 
 				{ tool: 'execute', sessionID: SESSION_ID, callID: 'wrap-fetch-1' },
 				{ args: { code: "return await fetch('http://localhost:4000/x');" } },
 			),
-		).rejects.toThrow();
+		).rejects.toThrow(
+			/FULL_AUTO_BLOCKED: critic verdict BLOCKED.*opencodeClient unavailable/,
+		);
 		expect(loadFullAutoRunState(tmpDir, SESSION_ID)?.status).toBe('paused');
 		resetCodeModeWrapperCalls();
 	});

@@ -56,9 +56,10 @@ async function deferredV2StartupModelPreflight(
 
 /**
  * Read `full_auto.oversight` once and size the v2 tool.execute.before budget
- * from it (#3446). Bounded and fail-open: on any error the module defaults are
- * restored (60 s base; 150 s while a Full-Auto run is active, i.e. the default
- * 120 s oversight deadline + 30 s) and an operator-visible warning is queued,
+ * for this project directory from it (#3446). Bounded and fail-open: on any
+ * error this project's entry is dropped and the module defaults apply (60 s
+ * base; 150 s while a Full-Auto run is active, i.e. the default 120 s
+ * oversight deadline + 30 s) and an operator-visible warning is queued,
  * because a custom `hook_timeout_ms` / `total_timeout_ms` would not apply.
  */
 async function deferredV2ConfigureToolBeforeBudget(
@@ -71,10 +72,11 @@ async function deferredV2ConfigureToolBeforeBudget(
 			V2_PREFLIGHT_CONFIG_TIMEOUT_MS,
 			new Error('[opencode-swarm] v2: hook-budget config read exceeded budget'),
 		);
-		configureV2ToolBeforeBudget(loaded?.config?.full_auto);
+		configureV2ToolBeforeBudget(loaded?.config?.full_auto, directory);
 	} catch (err) {
-		// A previous setup in this process must not leave a stale custom budget.
-		resetV2ToolBeforeBudget();
+		// A previous setup for THIS project must not leave a stale custom
+		// budget; other projects' entries are untouched.
+		resetV2ToolBeforeBudget(directory);
 		const reason = err instanceof Error ? err.message : String(err);
 		addDeferredWarning(
 			`[opencode-swarm] v2: could not read full_auto.oversight for the tool.execute.before budget (${reason}); default budgets apply (60 s, or 150 s while Full-Auto runs).`,

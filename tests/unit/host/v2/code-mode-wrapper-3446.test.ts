@@ -206,7 +206,9 @@ describe('real v2 adapter + real Full-Auto permission hook (#3446)', () => {
 	}
 
 	test('default: a colliding execute tool with { code } is escalated (run pauses without a critic)', async () => {
-		await expect(runThroughAdapter(false, { code })).rejects.toThrow();
+		await expect(runThroughAdapter(false, { code })).rejects.toThrow(
+			/FULL_AUTO_BLOCKED: critic verdict BLOCKED.*opencodeClient unavailable/,
+		);
 		expect(loadFullAutoRunState(tmp, SESSION)?.status).toBe('paused');
 	});
 
@@ -218,7 +220,9 @@ describe('real v2 adapter + real Full-Auto permission hook (#3446)', () => {
 	test('opted in: a program that can reach the network is still escalated', async () => {
 		await expect(
 			runThroughAdapter(true, { code: "return await fetch('http://x');" }),
-		).rejects.toThrow();
+		).rejects.toThrow(
+			/FULL_AUTO_BLOCKED: critic verdict BLOCKED.*opencodeClient unavailable/,
+		);
 		expect(loadFullAutoRunState(tmp, SESSION)?.status).toBe('paused');
 	});
 });

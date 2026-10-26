@@ -34,6 +34,8 @@ describe('FULL_AUTO_CRITIC_DENIED_TOOLS', () => {
 	});
 
 	test('keeps the swarm verification tools reachable (execute is not denied)', () => {
+		// Intentional: `execute` is how OpenCode 2 reaches diff/evidence/test_impact;
+		// see the limit documented in critic-tools.ts.
 		expect('execute' in FULL_AUTO_CRITIC_DENIED_TOOLS).toBe(false);
 	});
 

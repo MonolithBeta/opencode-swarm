@@ -241,6 +241,7 @@ async function onV2ToolBefore(
 		};
 		const budgetMs = resolveV2ToolBeforeBudgetMs(
 			isFullAutoRunActive(directory, event.sessionID),
+			directory,
 		);
 		await withTimeout(
 			Promise.resolve(

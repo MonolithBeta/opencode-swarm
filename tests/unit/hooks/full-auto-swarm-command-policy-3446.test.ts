@@ -127,6 +127,20 @@ describe('READ_ONLY_SWARM_COMMANDS — effect confinement', () => {
 		return out;
 	}
 
+	/**
+	 * Best-effort teardown only: the `memory *` keys leave a SQLite memory.db
+	 * handle open under .swarm/, which Windows refuses to delete (EBUSY/EPERM).
+	 * Any other error is real. Kept out of the `finally` (noUnsafeFinally).
+	 */
+	function removeDirBestEffort(dir: string): void {
+		try {
+			fs.rmSync(dir, { recursive: true, force: true });
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== 'EBUSY' && code !== 'EPERM') throw err;
+		}
+	}
+
 	test('every key leaves the tree outside .swarm/ untouched', async () => {
 		for (const key of [...READ_ONLY_SWARM_COMMANDS].sort()) {
 			const dir = canonicalMkdtemp('ro-swarm-cmd-');
@@ -146,7 +160,7 @@ describe('READ_ONLY_SWARM_COMMANDS — effect confinement', () => {
 					tree: [...before],
 				});
 			} finally {
-				fs.rmSync(dir, { recursive: true, force: true });
+				removeDirBestEffort(dir);
 			}
 		}
 	}, 120_000);

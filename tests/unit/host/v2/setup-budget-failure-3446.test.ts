@@ -31,18 +31,27 @@ describe('v2 hook-budget config read', () => {
 		await _internals.configureToolBeforeBudget('.', (async () => ({
 			config: { full_auto: { oversight: { hook_timeout_ms: 400_000 } } },
 		})) as never);
-		expect(resolveV2ToolBeforeBudgetMs(false)).toBe(400_000);
+		expect(resolveV2ToolBeforeBudgetMs(false, '.')).toBe(400_000);
 		expect(getDeferredWarnings()).toHaveLength(0);
+		// Keyed by directory: another project does not inherit it.
+		expect(resolveV2ToolBeforeBudgetMs(false, '/other')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
 	});
 
 	test('a failed read restores the defaults and queues a warning', async () => {
-		configureV2ToolBeforeBudget({ oversight: { hook_timeout_ms: 400_000 } });
-		expect(resolveV2ToolBeforeBudgetMs(false)).toBe(400_000);
+		configureV2ToolBeforeBudget(
+			{ oversight: { hook_timeout_ms: 400_000 } },
+			'.',
+		);
+		expect(resolveV2ToolBeforeBudgetMs(false, '.')).toBe(400_000);
 		await _internals.configureToolBeforeBudget('.', (async () => {
 			throw new Error('disk stalled');
 		}) as never);
-		expect(resolveV2ToolBeforeBudgetMs(false)).toBe(V2_TOOL_BEFORE_BASE_MS);
-		expect(resolveV2ToolBeforeBudgetMs(true)).toBe(150_000);
+		expect(resolveV2ToolBeforeBudgetMs(false, '.')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+		expect(resolveV2ToolBeforeBudgetMs(true, '.')).toBe(150_000);
 		const warnings = getDeferredWarnings();
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain('disk stalled');
@@ -50,12 +59,35 @@ describe('v2 hook-budget config read', () => {
 	});
 
 	test('a read that exceeds its own timeout also restores the defaults', async () => {
-		configureV2ToolBeforeBudget({ oversight: { hook_timeout_ms: 400_000 } });
+		configureV2ToolBeforeBudget(
+			{ oversight: { hook_timeout_ms: 400_000 } },
+			'.',
+		);
 		await _internals.configureToolBeforeBudget(
 			'.',
 			(() => new Promise(() => {})) as never,
 		);
-		expect(resolveV2ToolBeforeBudgetMs(false)).toBe(V2_TOOL_BEFORE_BASE_MS);
+		expect(resolveV2ToolBeforeBudgetMs(false, '.')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
 		expect(getDeferredWarnings().length).toBeGreaterThanOrEqual(1);
 	}, 10_000);
+
+	test('a failed read resets only that project, not another one', async () => {
+		configureV2ToolBeforeBudget(
+			{ oversight: { hook_timeout_ms: 400_000 } },
+			'/proj/a',
+		);
+		configureV2ToolBeforeBudget(
+			{ oversight: { hook_timeout_ms: 300_000 } },
+			'/proj/b',
+		);
+		await _internals.configureToolBeforeBudget('/proj/a', (async () => {
+			throw new Error('disk stalled');
+		}) as never);
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/a')).toBe(
+			V2_TOOL_BEFORE_BASE_MS,
+		);
+		expect(resolveV2ToolBeforeBudgetMs(false, '/proj/b')).toBe(300_000);
+	});
 });
